@@ -116,6 +116,8 @@ type RPCError struct {
 	Message    string
 	Metadata   map[string]string
 	RetryDelay time.Duration
+	// ResponseBody 保留上游已提供的 JSON error 对象，供公开接口原样返回。
+	ResponseBody json.RawMessage
 }
 
 // ContextOverflow 返回错误是否为上游报告的输入 token 超过模型上限
@@ -232,6 +234,19 @@ func DecodeRPCError(method string, statusCode int, raw []byte) *RPCError {
 		Method:     method,
 		StatusCode: statusCode,
 		Message:    http.StatusText(statusCode),
+	}
+	var response struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &response) == nil && response.Error != nil {
+		rpcError.ResponseBody = append(json.RawMessage(nil), raw...)
+		if response.Error.Message != "" {
+			rpcError.Message = response.Error.Message
+		}
+		rpcError.RetryDelay = messageRetryDelay(rpcError.Message)
+		return rpcError
 	}
 	value, err := decodeJSONValue(raw)
 	if err != nil {

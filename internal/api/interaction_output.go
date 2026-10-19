@@ -258,7 +258,11 @@ func (s *server) streamInteraction(w http.ResponseWriter, r *http.Request, reque
 	if err != nil {
 		SetAccessLogError(r.Context(), err)
 		if shouldWriteRequestError(r, err) {
-			_ = send("error", map[string]any{"error": map[string]any{"code": geminiErrorStatus(err), "message": err.Error()}})
+			payload, ok := upstreamErrorPayload(err)
+			if !ok {
+				payload = map[string]any{"error": map[string]any{"code": geminiErrorStatus(err), "message": err.Error()}}
+			}
+			_ = send("error", payload)
 		}
 		return
 	}

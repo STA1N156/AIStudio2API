@@ -1453,9 +1453,13 @@ func (s *server) streamGemini(w http.ResponseWriter, r *http.Request, request ai
 			_ = write(response)
 			return
 		}
-		_ = write(map[string]any{"error": map[string]any{
-			"code": statusFromError(err), "message": err.Error(), "status": geminiErrorStatus(err),
-		}})
+		payload, ok := upstreamErrorPayload(err)
+		if !ok {
+			payload = map[string]any{"error": map[string]any{
+				"code": statusFromError(err), "message": err.Error(), "status": geminiErrorStatus(err),
+			}}
+		}
+		_ = write(payload)
 		return
 	}
 	candidates.record(r.Context(), results)

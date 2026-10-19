@@ -1663,6 +1663,9 @@ func (writer *responsesStreamWriter) failed(err error) error {
 	response := responseShell(writer.id, writer.created, "failed", writer.request)
 	response["output"] = writer.items()
 	response["error"] = map[string]any{"code": responsesErrorCode(err), "message": err.Error()}
+	if payload, ok := upstreamErrorPayload(err); ok {
+		response["error"] = payload["error"]
+	}
 	return writer.emit("response.failed", map[string]any{"response": response})
 }
 

@@ -1076,8 +1076,17 @@ func (writer *anthropicStreamWriter) finish(result generationResult) error {
 }
 
 func (writer *anthropicStreamWriter) error(err error) error {
+	if payload, ok := upstreamErrorPayload(err); ok {
+		if detail, ok := payload["error"].(map[string]any); ok {
+			if _, exists := detail["type"]; !exists {
+				detail["type"] = "api_error"
+			}
+		}
+		payload["type"] = "error"
+		return writer.emit("error", payload)
+	}
 	return writer.emit("error", map[string]any{
 		"type":  "error",
-		"error": map[string]string{"type": anthropicErrorType(err), "message": anthropicErrorMessage(err)},
+		"error": map[string]string{"type": anthropicErrorType(err), "message": publicErrorMessage(err)},
 	})
 }

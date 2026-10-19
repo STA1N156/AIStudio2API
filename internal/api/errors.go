@@ -29,7 +29,9 @@ type errorCodeProvider interface {
 
 type emptyOutputError struct{}
 
-func (emptyOutputError) Error() string   { return "输出为空" }
+func (emptyOutputError) Error() string {
+	return "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容"
+}
 func (emptyOutputError) HTTPStatus() int { return http.StatusBadRequest }
 
 func decodeJSON(r *http.Request, target any) error {
@@ -101,6 +103,10 @@ func writeSSEHeartbeat(w http.ResponseWriter) error {
 }
 
 func statusFromError(err error) int {
+	var rpcError *aistudio.RPCError
+	if errors.As(err, &rpcError) && rpcError.StatusCode >= 400 && rpcError.StatusCode <= 599 {
+		return rpcError.StatusCode
+	}
 	if errors.Is(err, context.Canceled) {
 		return http.StatusServiceUnavailable
 	}
@@ -123,10 +129,6 @@ func statusFromError(err error) int {
 	if isUnverifiedProtocolError(err) {
 		return http.StatusBadRequest
 	}
-	var rpcError *aistudio.RPCError
-	if errors.As(err, &rpcError) && rpcError.StatusCode == http.StatusNotFound {
-		return http.StatusBadGateway
-	}
 	var statusErr httpStatusError
 	if errors.As(err, &statusErr) {
 		return validHTTPStatus(statusErr.HTTPStatus())
@@ -136,6 +138,64 @@ func statusFromError(err error) int {
 		return validHTTPStatus(codeErr.StatusCode())
 	}
 	return http.StatusBadGateway
+}
+
+// upstreamErrorPayload 保留上游错误对象，仅替换指定 400 的提示。
+func upstreamErrorPayload(err error) (map[string]any, bool) {
+	var empty emptyOutputError
+	if errors.As(err, &empty) {
+		return map[string]any{"error": map[string]any{
+			"code": http.StatusBadRequest, "message": empty.Error(), "status": "EMPTY_MODEL_OUTPUT",
+		}}, true
+	}
+	var rpc *aistudio.RPCError
+	if !errors.As(err, &rpc) {
+		return nil, false
+	}
+	message := publicErrorMessage(err)
+	var payload map[string]any
+	for _, raw := range []json.RawMessage{rpc.ResponseBody, json.RawMessage(rpc.Message)} {
+		if json.Unmarshal(raw, &payload) == nil && payload["error"] != nil {
+			if detail, ok := payload["error"].(map[string]any); ok && message != rpc.Message && rpc.Message != "" {
+				detail["message"] = message
+			}
+			return payload, true
+		}
+	}
+	details := make([]any, 0, 2)
+	if len(rpc.Metadata) > 0 {
+		details = append(details, map[string]any{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": rpc.Metadata})
+	}
+	if rpc.RetryDelay > 0 {
+		details = append(details, map[string]any{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": strconv.FormatFloat(rpc.RetryDelay.Seconds(), 'f', -1, 64) + "s"})
+	}
+	providerError := map[string]any{"code": statusFromError(err), "message": message, "status": geminiErrorStatus(err)}
+	if len(details) > 0 {
+		providerError["details"] = details
+	}
+	return map[string]any{"error": providerError}, true
+}
+
+func publicErrorMessage(err error) string {
+	var rpc *aistudio.RPCError
+	if errors.As(err, &rpc) && rpc.Message != "" {
+		if rpc.StatusCode == http.StatusBadRequest && strings.Contains(rpc.Message, "131072") {
+			return "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
+		}
+		return rpc.Message
+	}
+	return err.Error()
+}
+
+func writeUpstreamError(w http.ResponseWriter, err error) bool {
+	payload, ok := upstreamErrorPayload(err)
+	if !ok {
+		return false
+	}
+	setRetryAfter(w, err)
+	setAccessLogResponseError(w, publicErrorMessage(err))
+	writeJSON(w, statusFromError(err), payload)
+	return true
 }
 
 // shouldWriteRequestError 判断仍在线的客户端是否需要收到结构化错误
@@ -231,14 +291,20 @@ func writeGeminiError(w http.ResponseWriter, status int, statusName string, mess
 
 // writeOpenAIRequestError 以 OpenAI 错误体写出请求失败，可重试时带 Retry-After
 func writeOpenAIRequestError(w http.ResponseWriter, err error) {
+	if writeUpstreamError(w, err) {
+		return
+	}
 	setRetryAfter(w, err)
 	writeOpenAIError(w, statusFromError(err), openAIErrorCode(err), err.Error())
 }
 
 // writeAnthropicRequestError 以 Anthropic 错误体写出请求失败，可重试时带 Retry-After
 func writeAnthropicRequestError(w http.ResponseWriter, err error) {
+	if writeUpstreamError(w, err) {
+		return
+	}
 	setRetryAfter(w, err)
-	writeAnthropicError(w, statusFromError(err), anthropicErrorType(err), anthropicErrorMessage(err))
+	writeAnthropicError(w, statusFromError(err), anthropicErrorType(err), publicErrorMessage(err))
 }
 
 // contextOverflow 判断错误是否为上游的上下文超限
@@ -247,16 +313,11 @@ func contextOverflow(err error) bool {
 	return errors.As(err, &rpc) && rpc.ContextOverflow()
 }
 
-// anthropicErrorMessage 返回 Anthropic 错误消息，上下文超限时以 prompt is too long 开头
-func anthropicErrorMessage(err error) string {
-	if contextOverflow(err) {
-		return "prompt is too long: " + err.Error()
-	}
-	return err.Error()
-}
-
 // writeGeminiRequestError 以 Gemini 错误体写出请求失败，可重试时带 Retry-After 与 RetryInfo
 func writeGeminiRequestError(w http.ResponseWriter, err error) {
+	if writeUpstreamError(w, err) {
+		return
+	}
 	status := statusFromError(err)
 	payload := map[string]any{"code": status, "message": err.Error(), "status": geminiErrorStatus(err)}
 	if seconds := setRetryAfter(w, err); seconds > 0 {

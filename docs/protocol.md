@@ -2364,13 +2364,9 @@ OpenAI Responses 的 `previous_response_id` 与 Interactions 的 `previous_inter
 | 本地 API key 无效 | 401 | `invalid_api_key` | `authentication_error` | `UNAUTHENTICATED` |
 | 模型或方法不存在 | 404 | `model_not_found` | `not_found_error` | `NOT_FOUND` |
 | 本地文件不存在 | 404 | `file_not_found` | `not_found_error` | `NOT_FOUND` |
-| 输入 token 超过模型上限（上游原文含 `The input token count exceeds the maximum number of tokens allowed`） | 400 | `context_length_exceeded` | `invalid_request_error`，消息以 `prompt is too long: ` 开头 | `INVALID_ARGUMENT` |
-| 上游拒绝权限 | 403 | `upstream_error` | `permission_error` | `PERMISSION_DENIED` |
 | 视频仍在生成 | 409 | `video_not_ready` | `api_error` | `INTERNAL` |
 | 文件超过 512 MiB | 413 | `file_too_large` | `request_too_large` | `INTERNAL` |
-| 上游配额或限流（上游给出重试时长时带 `Retry-After`，Gemini 错误体带 `RetryInfo`） | 429 | `rate_limit_exceeded` | `rate_limit_error` | `RESOURCE_EXHAUSTED` |
 | 候选账户均在冷却且 1 分钟内不恢复（带 `Retry-After`，Gemini 错误体带 `RetryInfo`） | 429 | `rate_limit_exceeded` | `rate_limit_error` | `RESOURCE_EXHAUSTED` |
-| 上游过载 | 529 | `upstream_error` | `overloaded_error` | `INTERNAL` |
 | 当前客户端请求被管理端取消 | 503 | `request_canceled` | `api_error` | `UNAVAILABLE` |
 | 生成服务已停止 | 503 | `service_stopped` | `api_error` | `UNAVAILABLE` |
 | 生成服务正在启动且模型目录尚未就绪 | 503 | `service_starting` | `api_error` | `UNAVAILABLE` |
@@ -2381,11 +2377,16 @@ OpenAI Responses 的 `previous_response_id` 与 Interactions 的 `previous_inter
 - 权益不满足时错误消息写明模型需要的权益：`1` 为付费 API key，`3` 为 Google AI Pro 或 Ultra 订阅，`4` 为 Google AI Ultra 订阅
 - “支持请求的账户均不可调度”指这些账户都处于需要重新登录、不可用或已停用状态，错误消息逐个列出账户、状态与原因
 - 生成服务处于 `STOPPED` 时，生成与计数端点返回 `service_stopped`；处于 `LAUNCHING` 时返回 `service_starting`
-- OpenAI 错误对象的 `type` 在参数、认证、权限与资源不存在时为 `invalid_request_error`，429 为 `requests`，其余为 `server_error`；`param` 为 `null`
-- Responses 流中的 `response.failed` 的 `error.code` 取官方枚举：429 为 `rate_limit_exceeded`，400 为 `invalid_prompt`，其余为 `server_error`
-- 错误消息以服务的中文说明开头，上游错误随后附上游方法、HTTP 状态、协议错误码与上游原文，例如 `AI Studio GenerateContent 返回 HTTP 429、协议错误码 8: You've reached your usage limit…`
+- 上表是本地生成错误的协议映射。上游 RPC 错误与空回使用下述统一错误体，不再按各协议重命名上游错误或为消息添加 `AI Studio ... 返回 HTTP ...` 前缀。
+- 上游已有 JSON `error` 对象时，保留原对象及其他返回字段；MakerSuite 数组错误转为 `{"error":{"code":HTTP状态码,"message":"上游原文","status":"对应状态"}}`，保留可解析的错误详情和重试时间。
+- 上游 HTTP 400 的错误消息包含 `131072` 时，仅将消息替换为“预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容”，保留 400 和其他错误字段，不重试、不换号，也不按空回包装输入。此为自定义提示，不代表已检测到上游模型降级。
+- 空回在输入包装重试后仍无有效输出时，统一返回 HTTP 400 与 `{"error":{"code":400,"message":"模型输出为空，请降低思考强度，并检查是否含有过多敏感内容","status":"EMPTY_MODEL_OUTPUT"}}`；已包装过最新输入则不再补试。
+- 本地 OpenAI 错误对象的 `type` 在参数、认证、权限与资源不存在时为 `invalid_request_error`，429 为 `requests`，其余为 `server_error`；`param` 为 `null`。
+- Responses 流中的 `response.failed` 保留原外层事件，其 `error` 对上游错误和空回使用统一错误对象；其他本地错误仍使用 Responses 枚举。
 
-上游 RPC 的 HTTP 404 表示传输或上游失败，默认映射为 502；公开 404 对应本地模型目录或本地资源查找失败。客户端自身断开时，访问日志记录 499 并结束响应写入。
+上游 RPC 的 HTTP 状态码原样保留，包括 400、401、403、404、429 和 5xx，不再将 404 改为 502。只有没有上游 HTTP 状态的本地传输或解码错误才使用本地映射。客户端自身断开时，访问日志记录 499 并结束响应写入。
+
+OpenAI、Anthropic、Gemini 在响应头发送前使用相同的上游错误 JSON；流开始后 HTTP 状态已经提交，无法改写，改由错误事件携带原上游错误码。Anthropic 错误事件额外保留 `type: "error"` 与默认 `error.type: "api_error"`，OpenAI Chat 错误事件后发送 `[DONE]`。以下各协议格式示例只表示本地生成的错误。
 
 错误对象 raw body：
 

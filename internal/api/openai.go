@@ -983,14 +983,16 @@ func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 	if err != nil {
 		choices.settle(r.Context())
 		if shouldWriteRequestError(r, err) {
-			status := statusFromError(err)
-			code := openAIErrorCode(err)
-			_ = writeSSE(w, "", map[string]any{"error": map[string]any{
-				"message": err.Error(),
-				"type":    openAIErrorType(status, code),
-				"param":   nil,
-				"code":    code,
-			}})
+			payload, ok := upstreamErrorPayload(err)
+			if !ok {
+				status, code := statusFromError(err), openAIErrorCode(err)
+				payload = map[string]any{"error": map[string]any{
+					"message": err.Error(), "type": openAIErrorType(status, code), "param": nil, "code": code,
+				}}
+			}
+			if writeSSE(w, "", payload) == nil {
+				_ = writeSSEText(w, "[DONE]")
+			}
 		}
 		return
 	}

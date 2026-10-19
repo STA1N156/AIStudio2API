@@ -464,6 +464,9 @@ func writeFileRequestError(w http.ResponseWriter, r *http.Request, err error) {
 	if !shouldWriteRequestError(r, err) {
 		return
 	}
+	if writeUpstreamError(w, err) {
+		return
+	}
 	if errors.Is(err, aistudio.ErrResourceNotFound) {
 		writeFileError(w, r, http.StatusNotFound, "file_not_found", "file not found")
 		return

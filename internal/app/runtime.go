@@ -3593,6 +3593,13 @@ func (service *trackedService) generateWithRetry(
 		if proxyNetworkError(requestCtx, err) {
 			service.reportProxyFailure(attemptProxy, accountLabel, err)
 		}
+		var rpcErr *aistudio.RPCError
+		if errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusBadRequest && strings.Contains(rpcErr.Message, "131072") {
+			// 直接返回，不切换 Build/Playground、换号或重建后重试。
+			err = errors.Join(err, lease.Release())
+			lease = nil
+			break
+		}
 		workerFailed := service.workers.WorkerFailed(request.AccountID)
 		waaRuntimeFailed := aistudio.DefinitiveWAARuntimeFailure(err)
 		workerReplaced := errors.Is(err, errAccountWorkerReplaced)
@@ -3632,7 +3639,6 @@ func (service *trackedService) generateWithRetry(
 				}
 			}
 		}
-		var rpcErr *aistudio.RPCError
 		if lease.Channel() == aistudio.ChannelBuild && service.pool.PlaygroundEnabled() && requestCtx.Err() == nil &&
 			errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusBadRequest && rpcErr.Code == 3 {
 			buildRejection = &rejectedBuildAttempt{
