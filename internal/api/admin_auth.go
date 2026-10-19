@@ -53,7 +53,11 @@ func (auth *adminAuth) handler(next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		limit := int64(1 << 20)
+		if r.Method == http.MethodPost && r.URL.Path == "/api/accounts/import" {
+			limit = maxAccountImportBytes
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		handler.ServeHTTP(w, r)
 	})
 }

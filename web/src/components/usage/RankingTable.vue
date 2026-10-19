@@ -7,7 +7,7 @@ import { useUsageFormat } from './format'
 import { rateTone, readPreference, successRate, writePreference } from './model'
 
 type Tab = UsageDimension | 'status'
-type SortKey = 'key' | 'requests' | 'rate' | 'tokens' | 'p50' | 'p95' | 'first' | 'last'
+type SortKey = 'key' | 'requests' | 'rate' | 'tokens' | 'last'
 
 const props = defineProps<{ report: UsageReport; now: number }>()
 const emit = defineEmits<{
@@ -16,7 +16,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { compact, integer, duration, percent, ago, dimensionLabel } = useUsageFormat()
+const { compact, integer, percent, ago, dimensionLabel } = useUsageFormat()
 const id = useId()
 const tabs: Tab[] = ['account', 'model', 'channel', 'protocol', 'state', 'status']
 const tab = ref<Tab>(
@@ -34,9 +34,6 @@ const columns: { key: SortKey; label: () => string; numeric: boolean }[] = [
   { key: 'requests', label: () => t('usage.requests'), numeric: true },
   { key: 'rate', label: () => t('usage.successRate'), numeric: true },
   { key: 'tokens', label: () => t('usage.tokens'), numeric: true },
-  { key: 'p50', label: () => `${t('usage.duration')} P50`, numeric: true },
-  { key: 'p95', label: () => `${t('usage.duration')} P95`, numeric: true },
-  { key: 'first', label: () => `${t('usage.firstEvent')} P95`, numeric: true },
   { key: 'last', label: () => t('usage.lastRequest'), numeric: true },
 ]
 
@@ -51,12 +48,6 @@ function sortValue(key: string, stats: UsageStats, column: SortKey): number | st
       return successRate(stats) ?? -1
     case 'tokens':
       return stats.total_tokens
-    case 'p50':
-      return stats.duration.p50_ms
-    case 'p95':
-      return stats.duration.p95_ms
-    case 'first':
-      return stats.first_event.p95_ms
     case 'last':
       return stats.last_at ? new Date(stats.last_at).getTime() : 0
   }
@@ -149,7 +140,7 @@ const total = computed(() => props.report.totals.requests)
       :aria-labelledby="`${id}-tab-${tab}`"
       class="relative overflow-x-auto"
     >
-      <table class="w-full min-w-[56rem] text-left text-xs">
+      <table class="w-full min-w-[36rem] text-left text-xs">
         <thead class="text-gray-500">
           <tr>
             <th
@@ -226,11 +217,6 @@ const total = computed(() => props.report.totals.requests)
                 {{ percent(successRate(row)) }}
               </td>
               <td class="px-4 py-2 text-right tabular-nums">{{ compact(row.total_tokens) }}</td>
-              <td class="px-4 py-2 text-right tabular-nums">{{ duration(row.duration.p50_ms) }}</td>
-              <td class="px-4 py-2 text-right tabular-nums">{{ duration(row.duration.p95_ms) }}</td>
-              <td class="px-4 py-2 text-right tabular-nums">
-                {{ duration(row.first_event.p95_ms) }}
-              </td>
               <td class="px-4 py-2 text-right whitespace-nowrap text-gray-400">
                 {{ row.last_at ? ago(row.last_at, now) : '—' }}
               </td>
@@ -266,15 +252,6 @@ const total = computed(() => props.report.totals.requests)
                 </td>
                 <td class="px-4 py-1.5 text-right tabular-nums">
                   {{ compact(child.stats.total_tokens) }}
-                </td>
-                <td class="px-4 py-1.5 text-right tabular-nums">
-                  {{ duration(child.stats.duration.p50_ms) }}
-                </td>
-                <td class="px-4 py-1.5 text-right tabular-nums">
-                  {{ duration(child.stats.duration.p95_ms) }}
-                </td>
-                <td class="px-4 py-1.5 text-right tabular-nums">
-                  {{ duration(child.stats.first_event.p95_ms) }}
                 </td>
                 <td class="px-4 py-1.5 text-right whitespace-nowrap">
                   {{ child.stats.last_at ? ago(child.stats.last_at, now) : '—' }}

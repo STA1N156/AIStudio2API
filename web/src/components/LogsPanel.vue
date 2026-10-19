@@ -6,6 +6,7 @@ import UiIcon from './UiIcon.vue'
 import UiSelect from './UiSelect.vue'
 import RequestLogCard from './RequestLogCard.vue'
 import StageLogCard from './StageLogCard.vue'
+import PageHeader from './PageHeader.vue'
 import { groupLogs } from '@/logs'
 import { useQueryParam, useQueryText } from '@/url'
 
@@ -190,9 +191,10 @@ watch(autoScroll, () => {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col bg-canvas">
+  <section class="page-panel flex min-h-0 flex-1 flex-col bg-canvas">
+    <PageHeader :title="t('nav.logs')" :description="t('ui.logsHelp')" />
     <div
-      class="flex min-h-10 flex-wrap items-center justify-between gap-2 border-b border-line bg-panel px-4 py-1"
+      class="flex min-h-10 flex-wrap items-center justify-between gap-3 border-b border-line bg-panel px-4 py-3 md:px-8"
     >
       <div class="flex min-w-0 flex-wrap items-center gap-3">
         <span class="text-xs text-gray-400">{{ t('logs.level') }}:</span>
@@ -200,7 +202,7 @@ watch(autoScroll, () => {
           <button
             v-for="item in levels"
             :key="item"
-            class="rounded px-2 py-0.5 text-xs transition"
+            class="rounded-lg px-3 py-2 text-xs transition"
             :class="
               level === item
                 ? item === 'ERROR'
@@ -231,7 +233,7 @@ watch(autoScroll, () => {
           type="search"
           :placeholder="t('logs.search')"
           :aria-label="t('logs.search')"
-          class="w-full rounded border border-line bg-canvas px-2 py-1 text-xs text-gray-200 outline-none focus:border-blue-500 sm:w-64"
+          class="ui-input w-full sm:w-64"
         />
       </div>
 
@@ -262,7 +264,7 @@ watch(autoScroll, () => {
 
     <div
       ref="output"
-      class="min-h-0 flex-1 overflow-auto bg-canvas p-2 font-mono text-[13px] leading-5"
+      class="min-h-0 flex-1 overflow-auto bg-canvas p-3 text-[13px] leading-6 md:p-5"
       @scroll.passive="followScroll"
     >
       <div v-if="filteredLogs.length === 0" class="mt-10 text-center text-gray-600 italic">
@@ -300,7 +302,7 @@ watch(autoScroll, () => {
         <div
           v-for="row in visibleLogs"
           :key="row.key"
-          class="log-entry log-grid border-l-2 px-2 py-0.5 select-text"
+          class="log-entry log-grid mb-1 rounded-r-lg border-l-2 px-3 py-2 select-text"
           :class="{
             'border-blue-500 text-gray-300': row.entry.level.toUpperCase() === 'INFO',
             'border-yellow-500 bg-yellow-500/5 text-yellow-100':

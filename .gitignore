@@ -1,5 +1,6 @@
 # 构建产物
 *.exe
+*.exe~
 *.dll
 *.so
 *.dylib

@@ -5,6 +5,33 @@ export const label = 'English'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.menu': 'Menu',
+  'ui.more': 'More actions',
+  'ui.overview': 'Overview',
+  'ui.advanced': 'Advanced details',
+  'ui.attention': 'Needs attention',
+  'ui.searchAccounts': 'Search account email',
+  'ui.noMatches': 'No matching results',
+  'ui.cooldowns': '{count} cooldowns',
+  'ui.all': 'All',
+  'ui.logsHelp': 'Inspect requests and service issues. Expand technical details only when needed.',
+  'ui.cooldownScope':
+    'Only the models and channels listed below are affected; other capabilities depend on account availability.',
+  'usage.clear': 'Clear records',
+  'usage.clearAction': 'Confirm clear',
+  'usage.clearConfirm':
+    'Delete all usage history, summaries and saved request/response bodies, regardless of current filters. Accounts, settings and ongoing requests are not affected. This cannot be undone.',
+  'accounts.importFiles': 'Import accounts',
+  'accounts.exportSelected': 'Export selected',
+  'accounts.exportAll': 'Export all',
+  'accounts.dropHint':
+    'Drop JSON / ZIP files here, or choose multiple files to import. Existing accounts are skipped, never overwritten.',
+  'accounts.backupWarning':
+    'Exports contain sign-in credentials. Keep them private; do not share or upload to public repositories.',
+  'accounts.importLimit': 'Only JSON / ZIP files are supported, up to 32 MiB in total.',
+  'accounts.imported': 'Imported',
+  'accounts.skipped': 'Skipped',
+  'accounts.failed': 'Failed',
   'auth.username': 'Username',
   'auth.password': 'Password',
   'auth.login': 'Sign in',
@@ -383,7 +410,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotalHelp':
     'Deletes the oldest files when the log directory exceeds this size. Minimum 20.',
   'usage.title': 'Usage',
-  'usage.description': 'Public API request counts, outcomes, tokens and latency, kept for 90 days',
+  'usage.description':
+    'Success rate, requests, tokens and throughput. Request records are kept for 90 days.',
   'usage.range': 'Time range',
   'usage.range.1h': 'Last hour',
   'usage.range.6h': 'Last 6 hours',

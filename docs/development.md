@@ -166,8 +166,8 @@ Camoufox 由 Go 通过 WebDriver BiDi 直接管理。启动数据面时，服务
 | `PROXY` | setup 与未设置账户代理时使用的出口，多个代理用逗号分隔组成代理池；留空时生成服务使用系统代理 | 空 |
 | `INIT_TIMEOUT` | 单账户初始化超时 | `2m` |
 | `REQUEST_TIMEOUT` | 单次请求最大执行时间，自动续写请求按续写轮数倍增 | `30m` |
-| `WARM_WORKER_LIMIT` | 常驻预热账户数 | `5` |
-| `MAX_ACTIVE_WORKERS` | 活动 Worker 容量上限，必须不小于热池目标 | `10` |
+| `WARM_WORKER_LIMIT` | 常驻预热账户数 | `20` |
+| `MAX_ACTIVE_WORKERS` | 活动 Worker 容量上限，必须不小于热池目标 | `50` |
 | `WARM_STARTUP_CONCURRENCY` | 同时冷启动的 Camoufox Worker 数，预热与按需扩容共用；`WAA_BACKEND=go` 时不限制 | `5` |
 | `PER_ACCOUNT_CONCURRENCY` | 单账号同时执行的请求数 | `2` |
 | `ROUTING_STRATEGY` | 账户轮询 `round-robin` 或粘性优先 `fill-first` | `round-robin` |

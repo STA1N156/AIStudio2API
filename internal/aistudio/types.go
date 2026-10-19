@@ -178,6 +178,8 @@ type Tools struct {
 	Google       []string              `json:"google,omitempty"`
 	GoogleSearch *GoogleSearchOptions  `json:"google_search,omitempty"`
 	ToolConfig   ToolConfig            `json:"tool_config,omitempty"`
+	// StreamReplyArguments 仅供内部回复工具请求 Build 原生参数分片。
+	StreamReplyArguments bool `json:"-"`
 }
 
 // ResponseModality 表示模型输出模态
@@ -360,6 +362,8 @@ const (
 	EventReasoning EventKind = "reasoning"
 	// EventToolCall 表示函数调用
 	EventToolCall EventKind = "tool_call"
+	// EventToolCallDelta 是内部回复工具的参数文字增量，不是已完成的可执行调用。
+	EventToolCallDelta EventKind = "tool_call_delta"
 	// EventExecutableCode 表示内置代码执行器生成代码
 	EventExecutableCode EventKind = "executable_code"
 	// EventCodeExecutionResult 表示内置代码执行结果

@@ -2348,15 +2348,14 @@ func (service *trackedService) mappedModel(name string) string {
 			return alias.Model
 		}
 	}
-	open := strings.LastIndex(trimmed, "(")
-	if open <= 0 || !strings.HasSuffix(trimmed, ")") {
+	base, _, _ := aistudio.ApplyModelSuffix(trimmed, aistudio.GenerationConfig{})
+	if base == "" || base == trimmed {
 		return name
 	}
-	base := strings.TrimSpace(trimmed[:open])
 	for _, alias := range service.modelMapping {
 		if alias.Alias == base {
 			target, _, _ := aistudio.ApplyModelSuffix(alias.Model, aistudio.GenerationConfig{})
-			return target + trimmed[open:]
+			return target + trimmed[len(base):]
 		}
 	}
 	return name

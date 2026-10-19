@@ -5,6 +5,33 @@ export const label = 'Deutsch'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.menu': 'Menü',
+  'ui.more': 'Weitere Aktionen',
+  'ui.overview': 'Übersicht',
+  'ui.advanced': 'Erweiterte Details',
+  'ui.attention': 'Handlungsbedarf',
+  'ui.searchAccounts': 'Konto-E-Mail suchen',
+  'ui.noMatches': 'Keine passenden Ergebnisse',
+  'ui.cooldowns': '{count} Wartezeiten',
+  'ui.all': 'Alle',
+  'ui.logsHelp': 'Anfragen und Dienstprobleme prüfen. Technische Details bei Bedarf öffnen.',
+  'ui.cooldownScope':
+    'Nur die folgenden Modelle und Kanäle sind betroffen; weitere Funktionen hängen vom Kontostatus ab.',
+  'usage.clear': 'Datensätze löschen',
+  'usage.clearAction': 'Löschen bestätigen',
+  'usage.clearConfirm':
+    'Alle Nutzungsdaten, Statistiken und gespeicherten Anfrage-/Antwortinhalte werden unabhängig von den Filtern gelöscht. Konten, Einstellungen und laufende Anfragen bleiben unverändert. Dies kann nicht rückgängig gemacht werden.',
+  'accounts.importFiles': 'Konten importieren',
+  'accounts.exportSelected': 'Auswahl exportieren',
+  'accounts.exportAll': 'Alle exportieren',
+  'accounts.dropHint':
+    'JSON / ZIP-Dateien hier ablegen oder mehrere Dateien auswählen. Vorhandene Konten werden übersprungen, nicht überschrieben.',
+  'accounts.backupWarning':
+    'Exporte enthalten Anmeldedaten. Nicht teilen oder in öffentliche Repositories hochladen.',
+  'accounts.importLimit': 'Nur JSON / ZIP-Dateien, insgesamt höchstens 32 MiB.',
+  'accounts.imported': 'Importiert',
+  'accounts.skipped': 'Übersprungen',
+  'accounts.failed': 'Fehlgeschlagen',
   'auth.username': 'Benutzername',
   'auth.password': 'Passwort',
   'auth.login': 'Anmelden',

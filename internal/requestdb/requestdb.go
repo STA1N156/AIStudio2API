@@ -86,8 +86,9 @@ type Row struct {
 
 // write 是写入协程处理的一条用量或正文
 type write struct {
-	row  *Row
-	body *api.RequestBody
+	row   *Row
+	body  *api.RequestBody
+	clear chan error
 }
 
 // Logger 输出账本写入失败与丢弃记录的运行日志
@@ -187,6 +188,29 @@ func (store *Store) SaveBody(body api.RequestBody) {
 	}
 }
 
+// Clear 与记录共用写入队列，避免清空前排队的记录随后重新出现。
+func (store *Store) Clear(ctx context.Context) error {
+	done := make(chan error, 1)
+	store.mu.RLock()
+	if store.closed {
+		store.mu.RUnlock()
+		return fmt.Errorf("请求账本已关闭")
+	}
+	select {
+	case store.writes <- write{clear: done}:
+		store.mu.RUnlock()
+	case <-ctx.Done():
+		store.mu.RUnlock()
+		return ctx.Err()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // enqueue 把记录交给写入协程，队列已满时计入丢弃数而不阻塞请求
 func (store *Store) enqueue(item write) {
 	if store == nil {
@@ -239,8 +263,14 @@ func (store *Store) run() {
 
 // commit 写入一批记录，记录写入失败与队列丢弃
 func (store *Store) commit(batch []write) {
-	if err := store.write(batch); err != nil {
+	err := store.write(batch)
+	if err != nil {
 		store.log("ERROR", fmt.Sprintf("请求账本写入失败 | 记录=%d | 错误=%v", len(batch), err))
+	}
+	for _, item := range batch {
+		if item.clear != nil {
+			item.clear <- err
+		}
 	}
 	if dropped := store.dropped.Swap(0); dropped > 0 {
 		store.log("WARN", fmt.Sprintf("请求账本写入队列已满 | 丢弃=%d", dropped))
@@ -291,6 +321,15 @@ func (store *Store) write(batch []write) (err error) {
 	hours, days := map[rollupKey]*entry{}, map[rollupKey]*entry{}
 	bodies := false
 	for _, item := range batch {
+		if item.clear != nil {
+			if _, err := tx.Exec(`DELETE FROM requests; DELETE FROM hours; DELETE FROM days; DELETE FROM bodies;`); err != nil {
+				return err
+			}
+			clear(hours)
+			clear(days)
+			bodies = false
+			continue
+		}
 		if row := item.row; row != nil {
 			attempts := row.Attempts
 			if attempts == nil {

@@ -475,6 +475,8 @@ generation config 字段：
 
 生成与计数请求的模型名可以带思考后缀 `<模型 ID>(<值>)`，例如 `gemini-4-argon(low)`、`gemini-2.5-pro(16384)`。值不区分大小写：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 作为思考强度，非负整数作为思考预算，`auto` 与 `-1` 使用模型默认思考设置；后缀覆盖请求体中的思考强度与预算，去掉后缀的模型 ID 用于调度、请求日志与用量统计。其他值返回 400。
 
+同样支持 `-low`、`-medium`、`-high`，例如 `gemini-3.8-flash-high` 与 `gemini-3.8-flash(high)` 等价；普通模型、`抗截断/` 模型与模型别名均适用，OpenAI Chat、Responses、Anthropic Messages 和 Gemini 接口共用此规则。其他连字符结尾不当作思考后缀。
+
 能力码 48 的模型在目录中另有 `<模型 ID>-build` 条目，经 Build 写代码助手生成，思考后缀写在 `-build` 之后，例如 `gemini-3.8-flash-build(low)`；条目定义、请求与流格式见 [Build 通道](build.md) 第 8 节。
 
 模型名等于 `MODEL_MAPPING` 中的别名（可带 `models/` 前缀）时，生成、计数、embedding、Live、Veo 与转录请求先换成映射的模型名，再解析思考后缀，映射目标可以带后缀，例如 `fast:gemini-4-argon(low)`；别名本身带后缀时以该后缀替换目标自带的后缀，例如 `fast(high)` 按 `gemini-4-argon(high)` 处理。同一别名写了多次时以第一项为准，映射只替换一次。`/v1/models` 与 `/v1beta/models` 在目录之后列出目标在目录中的别名，字段取自目标模型；与目录 ID 同名的别名替换该条目。

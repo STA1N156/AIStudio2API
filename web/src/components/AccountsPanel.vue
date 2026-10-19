@@ -1,21 +1,26 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { api } from '@/api'
-import { useI18n, type TranslationKey } from '@/i18n'
+import { channelLabelKey, useI18n, type TranslationKey } from '@/i18n'
 import { maskedProxy } from '@/proxy'
+import { useCountdown } from '@/countdown'
 import type {
   Account,
   AccountDraft,
   AccountRefresh,
   AccountState,
   ChromeImportProfile,
+  Cooldown,
   PairingToken,
 } from '@/types'
 import DetailDialog from './DetailDialog.vue'
 import UiIcon from './UiIcon.vue'
+import AccountTransfer from './AccountTransfer.vue'
+import PageHeader from './PageHeader.vue'
 
 const props = defineProps<{
   accounts: Account[]
+  cooldowns: Cooldown[]
   loading: boolean
   error: string
 }>()
@@ -27,6 +32,52 @@ const emit = defineEmits<{
 }>()
 
 const { t, locale, errorText } = useI18n()
+const { remaining } = useCountdown(locale)
+const query = ref('')
+const selectedState = ref('all')
+const cooldownsByAccount = computed(() => {
+  const grouped = new Map<string, Cooldown[]>()
+  for (const cooldown of props.cooldowns) {
+    const list = grouped.get(cooldown.account_id) ?? []
+    list.push(cooldown)
+    grouped.set(cooldown.account_id, list)
+  }
+  return grouped
+})
+const accountCooldowns = (account: Account) => cooldownsByAccount.value.get(account.id) ?? []
+const attention = (account: Account) =>
+  account.enabled && ['auth_required', 'unavailable'].includes(account.state)
+const readyCount = computed(
+  () =>
+    props.accounts.filter((account) => account.enabled && ['ready', 'busy'].includes(account.state))
+      .length,
+)
+const attentionCount = computed(() => props.accounts.filter(attention).length)
+const filters = [
+  { id: 'all', label: 'ui.all' },
+  { id: 'ready', label: 'state.ready' },
+  { id: 'cooldown', label: 'state.cooldown' },
+  { id: 'attention', label: 'ui.attention' },
+  { id: 'disabled', label: 'state.disabled' },
+] as const
+const filteredAccounts = computed(() =>
+  props.accounts.filter((account) => {
+    if (!`${account.label} ${account.id}`.toLowerCase().includes(query.value.trim().toLowerCase()))
+      return false
+    switch (selectedState.value) {
+      case 'ready':
+        return account.enabled && ['ready', 'busy'].includes(account.state)
+      case 'cooldown':
+        return account.state === 'cooldown' || accountCooldowns(account).length > 0
+      case 'attention':
+        return attention(account)
+      case 'disabled':
+        return !account.enabled
+      default:
+        return true
+    }
+  }),
+)
 const defaultAccountLocale = navigator.language || 'en-US'
 const defaultAccountTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 const showEditor = ref(false)
@@ -34,6 +85,26 @@ const showBrowserLogin = ref(false)
 const showChromeImport = ref(false)
 const editingAccountID = ref('')
 const pendingAction = ref('')
+const selectedAccounts = ref<string[]>([])
+watch(
+  () => props.accounts,
+  (accounts) => {
+    selectedAccounts.value = selectedAccounts.value.filter((id) =>
+      accounts.some((account) => account.id === id),
+    )
+  },
+)
+
+async function exportAccount(account: Account): Promise<void> {
+  pendingAction.value = `export:${account.id}`
+  try {
+    await api.exportAccounts([account.id], true)
+  } catch (error) {
+    actionError(error)
+  } finally {
+    pendingAction.value = ''
+  }
+}
 const refreshing = reactive(new Set<string>())
 const refreshingAll = ref(false)
 const chromeProfiles = ref<ChromeImportProfile[]>([])
@@ -306,55 +377,104 @@ async function refreshAllAccounts(): Promise<void> {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-auto md:overflow-hidden">
-    <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-8">
-      <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('section.accounts.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('section.accounts.description') }}</p>
+  <section class="page-panel flex min-h-0 flex-1 flex-col overflow-auto">
+    <PageHeader
+      :title="t('section.accounts.title')"
+      :description="t('section.accounts.description')"
+    >
+      <button
+        class="ui-button"
+        type="button"
+        :disabled="refreshingAll"
+        :aria-busy="refreshingAll"
+        @click="refreshAllAccounts"
+      >
+        <UiIcon name="refresh" :size="15" />
+        {{ t('accounts.refreshAll') }}
+      </button>
+      <details class="action-details">
+        <summary class="ui-button"><UiIcon name="options" :size="15" />{{ t('ui.more') }}</summary>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button
+            class="ui-button"
+            type="button"
+            :disabled="pendingAction !== ''"
+            :aria-busy="pendingAction === 'pairing'"
+            @click="openPairing"
+          >
+            <UiIcon name="remote" :size="15" />
+            {{ t('accounts.remoteAdd') }}
+          </button>
+          <button
+            class="ui-button"
+            type="button"
+            :disabled="pendingAction !== ''"
+            :aria-busy="pendingAction === 'chrome-discover'"
+            @click="openChromeImport"
+          >
+            <UiIcon name="accounts" :size="15" />
+            {{ t('accounts.importChrome') }}
+          </button>
+        </div>
+      </details>
+      <button
+        class="ui-button ui-button-primary"
+        type="button"
+        :disabled="pendingAction !== ''"
+        @click="openBrowserLogin"
+      >
+        <UiIcon name="login" :size="15" />
+        {{ t('common.add') }}
+      </button>
+    </PageHeader>
+    <div class="mx-auto w-full max-w-6xl p-4 md:p-8">
+      <div class="summary-grid">
+        <button type="button" @click="selectedState = 'all'">
+          <span>{{ t('metric.totalAccounts') }}</span
+          ><strong>{{ accounts.length }}</strong>
+        </button>
+        <button type="button" @click="selectedState = 'ready'">
+          <span>{{ t('state.ready') }}</span
+          ><strong class="!text-green-400">{{ readyCount }}</strong>
+        </button>
+        <button type="button" @click="selectedState = 'attention'">
+          <span>{{ t('ui.attention') }}</span
+          ><strong :class="{ '!text-red-400': attentionCount > 0 }">{{ attentionCount }}</strong>
+        </button>
       </div>
-      <div class="flex flex-wrap justify-end gap-2">
-        <button
-          class="flex items-center gap-2 rounded border border-line bg-raised px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-line disabled:opacity-50"
-          type="button"
-          :disabled="refreshingAll"
-          :aria-busy="refreshingAll"
-          @click="refreshAllAccounts"
-        >
-          <UiIcon name="refresh" :size="15" />
-          {{ t('accounts.refreshAll') }}
-        </button>
-        <button
-          class="flex items-center gap-2 rounded border border-line bg-raised px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-line disabled:opacity-50"
-          type="button"
-          :disabled="pendingAction !== ''"
-          :aria-busy="pendingAction === 'pairing'"
-          @click="openPairing"
-        >
-          <UiIcon name="remote" :size="15" />
-          {{ t('accounts.remoteAdd') }}
-        </button>
-        <button
-          class="flex items-center gap-2 rounded border border-line bg-raised px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-line disabled:opacity-50"
-          type="button"
-          :disabled="pendingAction !== ''"
-          :aria-busy="pendingAction === 'chrome-discover'"
-          @click="openChromeImport"
-        >
-          <UiIcon name="accounts" :size="15" />
-          {{ t('accounts.importChrome') }}
-        </button>
-        <button
-          class="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-50"
-          type="button"
-          :disabled="pendingAction !== ''"
-          @click="openBrowserLogin"
-        >
-          <UiIcon name="login" :size="15" />
-          {{ t('accounts.browserLogin') }}
-        </button>
+      <AccountTransfer
+        v-model:selected="selectedAccounts"
+        :accounts="accounts"
+        @refresh="emit('refresh')"
+        @notice="(message, tone) => emit('notice', message, tone)"
+      />
+      <div class="mb-4 flex flex-wrap items-center gap-3">
+        <div class="relative min-w-52 flex-1">
+          <UiIcon
+            name="search"
+            :size="16"
+            class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500"
+          />
+          <input
+            v-model="query"
+            type="search"
+            class="ui-input !pl-9"
+            :placeholder="t('ui.searchAccounts')"
+            :aria-label="t('ui.searchAccounts')"
+          />
+        </div>
+        <div class="filter-tabs">
+          <button
+            v-for="filter in filters"
+            :key="filter.id"
+            type="button"
+            :aria-pressed="selectedState === filter.id"
+            @click="selectedState = filter.id"
+          >
+            {{ t(filter.label) }}
+          </button>
+        </div>
       </div>
-    </header>
-    <div class="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col p-4 md:p-8">
       <div v-if="error" class="rounded border border-red-500/40 bg-red-500/10 p-4 text-red-300">
         {{ error }}
       </div>
@@ -369,18 +489,28 @@ async function refreshAllAccounts(): Promise<void> {
         <p class="text-xs">{{ t('accounts.emptyHint') }}</p>
       </div>
       <div
-        v-else
-        class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-panel max-md:max-h-[70vh]"
+        v-else-if="filteredAccounts.length === 0"
+        class="rounded-xl border border-dashed border-line p-10 text-center text-gray-500"
       >
+        {{ t('ui.noMatches') }}
+      </div>
+      <div v-else>
         <div
-          v-for="account in accounts"
+          v-for="account in filteredAccounts"
           :key="account.id"
-          class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line/60 px-4 py-2.5"
+          class="account-card"
           :class="{ 'opacity-60': !account.enabled }"
         >
-          <div class="flex min-w-0 flex-1 basis-72 items-center gap-3">
+          <div class="flex min-w-0 items-start gap-3">
+            <input
+              v-model="selectedAccounts"
+              type="checkbox"
+              :value="account.id"
+              class="mt-1 h-4 w-4 shrink-0 accent-blue-500"
+              :aria-label="account.label"
+            />
             <div
-              class="h-2.5 w-2.5 shrink-0 rounded-full"
+              class="mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full"
               :class="{
                 'bg-green-500': account.state === 'ready',
                 'bg-blue-500': account.state === 'busy',
@@ -389,26 +519,23 @@ async function refreshAllAccounts(): Promise<void> {
                 'bg-gray-500': account.state === 'disabled',
               }"
             ></div>
-            <div class="min-w-0">
+            <div class="min-w-0 flex-1">
               <span
                 v-tooltip.overflow="account.label"
-                class="block truncate font-mono text-sm text-white"
+                class="block break-all text-sm font-semibold text-white"
                 >{{ account.label }}</span
               >
-              <span
-                v-tooltip.overflow="accountSummary(account)"
-                class="block truncate text-xs text-gray-500"
-                >{{ accountSummary(account) }}</span
+              <span v-tooltip="accountSummary(account)" class="mt-1 block text-xs text-gray-400"
+                >{{
+                  account.benefit_tier === 'Unknown'
+                    ? t('accounts.tierUnknown')
+                    : account.benefit_tier
+                }}
+                · {{ t('accounts.models') }} {{ account.models.length }}</span
               >
             </div>
-          </div>
-          <span class="w-16 shrink-0 text-xs text-gray-500"
-            >{{ t('accounts.models') }}
-            {{ account.models.length === 0 ? '—' : account.models.length }}</span
-          >
-          <div class="flex w-36 shrink-0 items-center gap-2">
             <span
-              class="text-xs font-medium uppercase"
+              class="status-pill shrink-0"
               :class="{
                 'text-green-400': account.state === 'ready',
                 'text-blue-400': account.state === 'busy',
@@ -420,6 +547,41 @@ async function refreshAllAccounts(): Promise<void> {
             >
               {{ t(stateKeys[account.state]) }}
             </span>
+          </div>
+          <div
+            v-if="accountCooldowns(account).length"
+            class="mt-4 rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3"
+          >
+            <div class="mb-2 flex items-center gap-2 text-xs font-medium text-yellow-400">
+              <UiIcon name="firstEvent" :size="14" />{{
+                t('ui.cooldowns').replace('{count}', String(accountCooldowns(account).length))
+              }}
+            </div>
+            <div
+              v-for="cooldown in accountCooldowns(account).slice(0, 2)"
+              :key="`${cooldown.model_id}:${cooldown.channel}`"
+              class="mt-1 flex flex-wrap justify-between gap-x-3 gap-y-1 text-xs"
+            >
+              <span class="min-w-0 break-all text-gray-300"
+                >{{ cooldown.model_id || t('ui.all') }} ·
+                {{ t(channelLabelKey(cooldown.channel)) }}</span
+              >
+              <time
+                :title="new Date(cooldown.until).toLocaleString()"
+                class="shrink-0 text-yellow-400"
+                >{{ remaining(cooldown.until) }}</time
+              >
+            </div>
+            <button
+              v-if="accountCooldowns(account).length > 2"
+              type="button"
+              class="mt-2 text-xs text-blue-400"
+              @click="messageAccount = account"
+            >
+              {{ t('ui.advanced') }} ({{ accountCooldowns(account).length }})
+            </button>
+          </div>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
             <button
               v-if="account.message"
               type="button"
@@ -428,18 +590,8 @@ async function refreshAllAccounts(): Promise<void> {
             >
               {{ t('accounts.reason') }}
             </button>
-          </div>
-          <div class="flex shrink-0 flex-wrap justify-end gap-2">
             <button
-              class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"
-              type="button"
-              :disabled="pendingAction !== '' || refreshing.has(account.id)"
-              @click="beginEdit(account)"
-            >
-              {{ t('common.edit') }}
-            </button>
-            <button
-              class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"
+              class="ui-button"
               type="button"
               :disabled="pendingAction !== '' || refreshing.has(account.id)"
               :aria-busy="pendingAction === `toggle:${account.id}`"
@@ -449,7 +601,7 @@ async function refreshAllAccounts(): Promise<void> {
             </button>
             <button
               v-if="account.state === 'auth_required'"
-              class="rounded bg-green-600 px-3 py-1 text-xs text-white transition hover:bg-green-500 disabled:opacity-50"
+              class="ui-button ui-button-primary"
               type="button"
               :disabled="pendingAction !== '' || refreshing.has(account.id) || !account.enabled"
               :aria-busy="pendingAction === `login:${account.id}`"
@@ -458,7 +610,7 @@ async function refreshAllAccounts(): Promise<void> {
               {{ t('common.relogin') }}
             </button>
             <button
-              class="rounded border border-line bg-raised px-3 py-1 text-xs text-gray-300 transition hover:bg-line disabled:opacity-50"
+              class="ui-button"
               type="button"
               :disabled="
                 refreshing.has(account.id) ||
@@ -470,14 +622,37 @@ async function refreshAllAccounts(): Promise<void> {
             >
               {{ t('accounts.refresh') }}
             </button>
-            <button
-              class="rounded border border-red-900/50 bg-red-900/30 px-3 py-1 text-xs text-red-400 transition hover:bg-red-900/50 disabled:opacity-50"
-              type="button"
-              :disabled="pendingAction !== '' || refreshing.has(account.id)"
-              @click="emit('delete', account)"
-            >
-              {{ t('common.delete') }}
-            </button>
+            <details class="action-details">
+              <summary class="ui-button">
+                <UiIcon name="options" :size="14" />{{ t('ui.more') }}
+              </summary>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button
+                  class="ui-button"
+                  type="button"
+                  :disabled="pendingAction !== '' || refreshing.has(account.id)"
+                  @click="beginEdit(account)"
+                >
+                  {{ t('common.edit') }}
+                </button>
+                <button
+                  class="ui-button"
+                  type="button"
+                  :disabled="pendingAction !== ''"
+                  @click="exportAccount(account)"
+                >
+                  <UiIcon name="download" :size="14" />{{ t('accounts.exportSelected') }}
+                </button>
+                <button
+                  class="ui-button ui-button-danger"
+                  type="button"
+                  :disabled="pendingAction !== '' || refreshing.has(account.id)"
+                  @click="emit('delete', account)"
+                >
+                  {{ t('common.delete') }}
+                </button>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -489,6 +664,24 @@ async function refreshAllAccounts(): Promise<void> {
         :copy-text="messageAccount?.message"
         @close="messageAccount = null"
       >
+        <div
+          v-if="messageAccount && accountCooldowns(messageAccount).length"
+          class="mb-4 space-y-3"
+        >
+          <p class="text-xs text-gray-400">{{ t('ui.cooldownScope') }}</p>
+          <div
+            v-for="cooldown in accountCooldowns(messageAccount)"
+            :key="`${cooldown.model_id}:${cooldown.channel}`"
+            class="rounded-lg border border-line p-3"
+          >
+            <p class="break-all text-sm">
+              {{ cooldown.model_id }} · {{ t(channelLabelKey(cooldown.channel)) }}
+            </p>
+            <p class="mt-1 text-xs text-yellow-400">
+              {{ remaining(cooldown.until) }} · {{ new Date(cooldown.until).toLocaleString() }}
+            </p>
+          </div>
+        </div>
         <pre
           v-if="messageAccount"
           class="rounded-md border border-line bg-canvas p-3 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere] text-red-300"

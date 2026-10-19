@@ -71,13 +71,17 @@ const note = computed(() =>
       :class="tone ?? 'text-white'"
       >{{ value }}</data
     >
-    <p v-tooltip.overflow="note" class="mt-1 truncate text-xs text-gray-500">
-      <template v-for="(detail, index) in details" :key="detail.label">
-        <span v-if="index > 0" aria-hidden="true"> · </span>{{ detail.label }}
+    <p v-tooltip="note" class="mt-1 flex flex-wrap gap-x-2 text-xs leading-5 text-gray-500">
+      <span
+        v-for="(detail, index) in details"
+        :key="detail.label"
+        class="inline-flex items-baseline gap-1 whitespace-nowrap"
+      >
+        <span v-if="index > 0" aria-hidden="true">·</span>{{ detail.label }}
         <span v-if="detail.value" class="tabular-nums" :class="detail.tone ?? 'text-gray-300'">{{
           detail.value
         }}</span>
-      </template>
+      </span>
     </p>
     <svg
       v-if="sparkPath"

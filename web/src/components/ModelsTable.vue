@@ -6,6 +6,7 @@ import { useQueryText } from '@/url'
 import DetailDialog from './DetailDialog.vue'
 import UiIcon from './UiIcon.vue'
 import UiSelect from './UiSelect.vue'
+import PageHeader from './PageHeader.vue'
 
 const props = defineProps<{
   models: Model[]
@@ -80,18 +81,13 @@ function tokenLimit(value: number | undefined): string {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-auto md:overflow-hidden">
-    <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-8">
-      <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('section.models.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('section.models.description') }}</p>
-      </div>
-    </header>
+  <section class="page-panel flex min-h-0 flex-1 flex-col overflow-auto md:overflow-hidden">
+    <PageHeader :title="t('section.models.title')" :description="t('section.models.description')" />
     <div class="mx-auto flex min-h-0 w-full max-w-5xl flex-1 flex-col p-4 md:p-8">
       <div class="mb-4 flex flex-wrap items-center gap-3">
         <input
           v-model="query"
-          class="min-w-0 flex-1 basis-full rounded border border-line bg-canvas px-3 py-2 text-sm text-white transition focus:border-blue-500 focus:outline-none sm:min-w-64 sm:basis-0"
+          class="ui-input min-w-0 flex-1 basis-full sm:min-w-64 sm:basis-0"
           :placeholder="t('models.search')"
           type="search"
         />
@@ -118,18 +114,15 @@ function tokenLimit(value: number | undefined): string {
       >
         {{ t('models.empty') }}
       </div>
-      <div
-        v-else
-        class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-line bg-panel max-md:max-h-[70vh]"
-      >
+      <div v-else class="min-h-0 flex-1 overflow-y-auto rounded-xl border border-line bg-panel">
         <button
           v-for="model in filteredModels"
           :key="model.id"
           type="button"
-          class="flex w-full items-center gap-3 border-b border-line/60 px-4 py-2 text-left transition hover:bg-raised"
+          class="flex w-full flex-wrap items-center gap-x-4 gap-y-2 border-b border-line/60 px-4 py-4 text-left transition hover:bg-raised"
           @click="detail = model"
         >
-          <div class="min-w-0 flex-1">
+          <div class="min-w-0 flex-1 basis-full sm:basis-0">
             <div class="flex min-w-0 items-center gap-2">
               <span v-tooltip.overflow="model.name" class="truncate text-sm text-gray-200">{{
                 model.name
@@ -141,11 +134,13 @@ function tokenLimit(value: number | undefined): string {
                 {{ t('models.paid') }}
               </span>
             </div>
-            <code v-tooltip.overflow="model.id" class="block truncate text-xs text-blue-400">{{
-              model.id
-            }}</code>
+            <code
+              v-tooltip.overflow="model.id"
+              class="mt-1 block break-all text-xs text-blue-400"
+              >{{ model.id }}</code
+            >
           </div>
-          <div class="hidden shrink-0 gap-1 sm:flex">
+          <div class="flex shrink-0 flex-wrap gap-1">
             <span
               v-for="channel in model.channels ?? []"
               :key="channel"
@@ -154,15 +149,15 @@ function tokenLimit(value: number | undefined): string {
               {{ t(channelLabelKey(channel)) }}
             </span>
           </div>
-          <span class="w-24 shrink-0 text-right font-mono text-xs text-gray-400">
+          <span class="shrink-0 text-left text-xs text-gray-300 sm:w-24 sm:text-right">
             <span class="block text-[10px] text-gray-600">{{ t('models.context') }}</span>
             {{ tokenLimit(model.input_token_limit) }}
           </span>
-          <span class="w-20 shrink-0 text-right font-mono text-xs text-gray-400">
+          <span class="shrink-0 text-left text-xs text-gray-300 sm:w-20 sm:text-right">
             <span class="block text-[10px] text-gray-600">{{ t('models.output') }}</span>
             {{ tokenLimit(outputLimit(model)) }}
           </span>
-          <UiIcon name="chevronRight" :size="14" class="shrink-0 text-gray-600" />
+          <UiIcon name="chevronRight" :size="14" class="ml-auto shrink-0 text-gray-500 sm:ml-0" />
         </button>
       </div>
     </div>

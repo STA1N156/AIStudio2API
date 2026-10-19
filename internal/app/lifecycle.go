@@ -202,20 +202,25 @@ func (manager *runtimeManager) Close() error {
 func (manager *runtimeManager) Models(ctx context.Context) ([]aistudio.Model, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.current.service.Models(ctx)
+	models, err := manager.current.service.Models(ctx)
+	return antiTruncationModels(models), err
 }
 
 // CatalogModels 返回当前生成服务的管理目录
 func (manager *runtimeManager) CatalogModels(ctx context.Context) ([]aistudio.Model, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.current.admin.CatalogModels(ctx)
+	models, err := manager.current.admin.CatalogModels(ctx)
+	return antiTruncationModels(models), err
 }
 
 // CountTokens 由当前生成服务计数
 func (manager *runtimeManager) CountTokens(ctx context.Context, request aistudio.TokenCountRequest) (aistudio.TokenCount, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
+	prepared := aistudio.GenerateRequest{Model: request.Model, System: request.System, Contents: request.Contents, Tools: request.Tools}
+	prepareAntiTruncation(&prepared)
+	request.Model, request.System, request.Contents, request.Tools = prepared.Model, prepared.System, prepared.Contents, prepared.Tools
 	return manager.current.service.CountTokens(ctx, request)
 }
 
@@ -223,7 +228,16 @@ func (manager *runtimeManager) CountTokens(ctx context.Context, request aistudio
 func (manager *runtimeManager) Generate(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.current.service.Generate(ctx, request)
+	if !prepareAntiTruncation(&request) {
+		return manager.current.service.Generate(ctx, request)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	events, err := manager.current.service.Generate(ctx, request)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return antiTruncationEvents(ctx, cancel, events), nil
 }
 
 // GenerateVideo 由当前生成服务创建视频任务

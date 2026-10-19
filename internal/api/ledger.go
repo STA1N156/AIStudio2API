@@ -30,6 +30,7 @@ var ErrRequestBodyNotFound = errors.New("请求正文不存在")
 type RequestLedger interface {
 	BodyCapture() bool
 	SaveBody(RequestBody)
+	Clear(context.Context) error
 	Usage(context.Context, UsageQuery) (UsageReport, error)
 	Records(context.Context, UsageRecordQuery) (UsageRecordPage, error)
 	ExportRecords(context.Context, UsageRecordQuery, io.Writer) error
@@ -222,9 +223,18 @@ type RequestBody struct {
 // registerLedger 注册用量统计、请求记录与请求正文接口
 func (s *server) registerLedger(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/usage", s.handleUsage)
+	mux.HandleFunc("DELETE /api/usage", s.handleClearUsage)
 	mux.HandleFunc("GET /api/usage/records", s.handleUsageRecords)
 	mux.HandleFunc("GET /api/usage/records.csv", s.handleUsageExport)
 	mux.HandleFunc("GET /api/requests/{id}/body", s.handleRequestBody)
+}
+
+func (s *server) handleClearUsage(w http.ResponseWriter, r *http.Request) {
+	if err := s.config.Ledger.Clear(r.Context()); err != nil {
+		writeAdminError(w, statusFromError(err), "usage_clear_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // usageBucketSizes 是允许手动选择的分桶时长

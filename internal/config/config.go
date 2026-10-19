@@ -20,8 +20,8 @@ const (
 	defaultListenAddr         = "127.0.0.1:2048"
 	defaultInitTimeout        = 2 * time.Minute
 	defaultRequestTimeout     = 30 * time.Minute
-	defaultWarmWorkerLimit    = 5
-	defaultMaxActiveWorkers   = 10
+	defaultWarmWorkerLimit    = 20
+	defaultMaxActiveWorkers   = 50
 	defaultWarmConcurrency    = 5
 	defaultAccountConcurrency = 2
 )

@@ -5,6 +5,33 @@ export const label = '日本語'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.menu': 'メニュー',
+  'ui.more': 'その他の操作',
+  'ui.overview': '概要',
+  'ui.advanced': '詳細情報',
+  'ui.attention': '要確認',
+  'ui.searchAccounts': 'メールアドレスで検索',
+  'ui.noMatches': '該当する結果はありません',
+  'ui.cooldowns': '{count} 件待機中',
+  'ui.all': 'すべて',
+  'ui.logsHelp': 'リクエストや動作状況を確認できます。技術的な詳細は必要なときに開いてください。',
+  'ui.cooldownScope':
+    '以下のモデルと経路のみ対象です。その他の機能はアカウントの利用状況に依存します。',
+  'usage.clear': '履歴を消去',
+  'usage.clearAction': '消去を確定',
+  'usage.clearConfirm':
+    'フィルターに関係なく、使用履歴、集計、保存済みのリクエスト・応答本文をすべて削除します。アカウント、設定、実行中のリクエストには影響しません。元に戻せません。',
+  'accounts.importFiles': 'アカウントをインポート',
+  'accounts.exportSelected': '選択項目をエクスポート',
+  'accounts.exportAll': 'すべてエクスポート',
+  'accounts.dropHint':
+    'JSON / ZIP をここにドロップするか、複数のファイルを選択してください。既存のアカウントは上書きせずスキップします。',
+  'accounts.backupWarning':
+    'エクスポートにはログイン情報が含まれます。共有したり公開リポジトリにアップロードしないでください。',
+  'accounts.importLimit': 'JSON / ZIP のみ対応しています。合計サイズは 32 MiB 以下です。',
+  'accounts.imported': 'インポート済み',
+  'accounts.skipped': 'スキップ',
+  'accounts.failed': '失敗',
   'auth.username': 'ユーザー名',
   'auth.password': 'パスワード',
   'auth.login': 'ログイン',

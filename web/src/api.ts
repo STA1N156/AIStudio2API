@@ -1,6 +1,7 @@
 import { EventSourceParserStream } from 'eventsource-parser/stream'
 import type {
   Account,
+  AccountImportResult,
   AccountDraft,
   AccountLoginInput,
   AccountRefresh,
@@ -160,12 +161,46 @@ export const api = {
     requestJSON<UpdateStatus>(refresh ? '/api/update?refresh=1' : '/api/update'),
   applyUpdate: () => requestJSON<UpdateStatus>('/api/update', { method: 'POST' }),
   accounts: async () => (await requestJSON<AccountsResponse>('/api/accounts')).accounts,
+  importAccounts: async (files: File[]): Promise<AccountImportResult[]> => {
+    const body = new FormData()
+    files.forEach((file) => body.append('files', file))
+    const response = await fetch('/api/accounts/import', { method: 'POST', body })
+    checkSessionResponse('/api/accounts/import', response)
+    if (!response.ok) throw await responseError(response)
+    return ((await response.json()) as { results: AccountImportResult[] }).results
+  },
+  exportAccounts: async (ids: string[], single = false): Promise<void> => {
+    const path = single
+      ? `/api/accounts/${encodeURIComponent(ids[0]!)}/export`
+      : '/api/accounts/export'
+    const response = await fetch(
+      path,
+      single
+        ? undefined
+        : {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+          },
+    )
+    checkSessionResponse(path, response)
+    if (!response.ok) throw await responseError(response)
+    const url = URL.createObjectURL(await response.blob())
+    const link = document.createElement('a')
+    link.href = url
+    link.download = single ? `${ids[0]}.json` : 'aistudio-accounts.zip'
+    document.body.append(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  },
   models: async () => (await requestJSON<ModelsResponse>('/api/models')).models,
   cooldowns: async () => (await requestJSON<CooldownsResponse>('/api/cooldowns')).cooldowns,
   requests: async () => (await requestJSON<RequestsResponse>('/api/requests')).requests,
   config: () => requestJSON<ServiceConfig>('/api/config'),
   usage: (query: URLSearchParams, signal?: AbortSignal) =>
     requestJSON<UsageReport>(`/api/usage?${query.toString()}`, { signal: signal ?? null }),
+  clearUsage: () => requestCommand('/api/usage', { method: 'DELETE' }),
   usageRecords: (query: URLSearchParams, signal?: AbortSignal) =>
     requestJSON<UsageRecordPage>(`/api/usage/records?${query.toString()}`, {
       signal: signal ?? null,

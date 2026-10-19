@@ -20,6 +20,7 @@ import type {
   PlaygroundTool,
 } from '@/types'
 import UiIcon from './UiIcon.vue'
+import PageHeader from './PageHeader.vue'
 import UiSelect from './UiSelect.vue'
 import UiSwitch from './UiSwitch.vue'
 
@@ -106,8 +107,8 @@ const form = reactive<PlaygroundInput>({
   apiKey: props.apiKey,
 })
 const stopDraft = ref('')
-// settingsOpen 控制运行设置面板，宽屏默认展开
-const settingsOpen = ref(window.matchMedia('(min-width: 1024px)').matches)
+// 高级参数按需展开，先让用户专注于模型与消息。
+const settingsOpen = ref(false)
 const result = reactive<PlaygroundResult>({
   text: '',
   reasoning: '',
@@ -456,8 +457,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 bg-canvas">
+  <section class="page-panel flex min-h-0 flex-1 bg-canvas">
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <PageHeader
+        :title="t('section.playground.title')"
+        :description="t('section.playground.description')"
+      />
       <header class="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3 md:px-4">
         <div
           class="flex min-w-0 items-center gap-1 overflow-x-auto"
@@ -761,7 +766,7 @@ onUnmounted(() => {
               <button
                 v-if="isRunning"
                 type="button"
-                class="flex h-8 w-8 items-center justify-center rounded-md bg-gray-200 text-gray-900 transition-colors hover:bg-white"
+                class="flex h-11 w-11 items-center justify-center rounded-xl bg-gray-200 text-gray-900 transition-colors hover:bg-white"
                 :aria-label="t('playground.stop')"
                 @click="stop"
               >
@@ -770,7 +775,7 @@ onUnmounted(() => {
               <button
                 v-else
                 type="submit"
-                class="flex h-8 w-8 items-center justify-center rounded-md bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:bg-white/10 disabled:text-gray-500"
+                class="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-600 text-white transition-colors hover:bg-blue-500 disabled:bg-white/10 disabled:text-gray-500"
                 :aria-label="t('playground.send')"
                 :disabled="form.model === '' || form.prompt.trim() === ''"
               >

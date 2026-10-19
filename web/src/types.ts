@@ -1,5 +1,12 @@
 export type Locale = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko' | 'fr' | 'de'
 
+export interface AccountImportResult {
+  file: string
+  account?: string
+  status: 'imported' | 'skipped' | 'failed'
+  error?: string
+}
+
 export type TabID =
   'logs' | 'accounts' | 'models' | 'requests' | 'usage' | 'settings' | 'playground' | 'version'
 

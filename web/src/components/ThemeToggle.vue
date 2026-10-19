@@ -18,7 +18,7 @@ function toggle(event: MouseEvent): void {
     v-tooltip="t(theme === 'dark' ? 'app.lightMode' : 'app.darkMode')"
     type="button"
     :aria-label="t(theme === 'dark' ? 'app.lightMode' : 'app.darkMode')"
-    class="theme-toggle relative flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded border border-gray-700 text-gray-500 transition hover:text-white"
+    class="theme-toggle relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg text-gray-400 transition hover:bg-raised hover:text-white"
     :data-current="theme"
     @click="toggle"
   >

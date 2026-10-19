@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { markdown } from '@/markdown'
 import type { UpdateStatus } from '@/types'
 import UiIcon from '@/components/UiIcon.vue'
+import PageHeader from './PageHeader.vue'
 
 const props = defineProps<{ status: UpdateStatus | null; activeRequests: number }>()
 const emit = defineEmits<{ status: [UpdateStatus]; restarting: [] }>()
@@ -27,6 +28,7 @@ const installable = computed(
 const summary = computed(() => {
   if (phase.value === 'installing') return t('version.installing')
   if (phase.value === 'restarting') return t('version.restarting')
+  if (props.status?.mode === 'development') return t('version.development')
   if (props.status?.available) return t('version.available').replace('{version}', latest.value)
   if (latest.value) return t('version.upToDate')
   return ''
@@ -70,13 +72,11 @@ onActivated(() => void check(false))
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-auto md:overflow-hidden">
-    <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-8">
-      <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('section.version.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('section.version.description') }}</p>
-      </div>
-    </header>
+  <section class="page-panel flex min-h-0 flex-1 flex-col overflow-auto md:overflow-hidden">
+    <PageHeader
+      :title="t('section.version.title')"
+      :description="t('section.version.description')"
+    />
     <div class="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col p-4 md:p-8">
       <article class="shrink-0 rounded-lg border border-line bg-panel p-4 md:p-6">
         <dl class="grid gap-4 sm:grid-cols-2">
@@ -164,9 +164,6 @@ onActivated(() => void check(false))
             >docker compose pull &amp;&amp; docker compose up -d</code
           >
         </div>
-        <p v-else-if="status?.mode === 'development'" class="mt-4 text-sm text-gray-400">
-          {{ t('version.development') }}
-        </p>
 
         <p
           v-if="error || status?.error"

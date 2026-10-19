@@ -54,7 +54,7 @@ const pageSize = ref(
 const visible = ref<Column[]>(
   readPreference<Column[]>(
     'usage.columns',
-    ['model', 'account', 'channel', 'tokens', 'latency', 'attempts'],
+    ['model', 'account', 'channel', 'tokens', 'attempts'],
     (value) => Array.isArray(value) && value.every((item) => allColumns.includes(item as Column)),
   ),
 )
@@ -357,9 +357,6 @@ function latencyWidth(milliseconds: number): number {
                 <td v-else-if="column === 'latency'" class="w-44 px-4 py-2">
                   <div class="flex items-center justify-between gap-2 tabular-nums">
                     <span class="text-gray-200">{{ duration(record.duration_ms) }}</span>
-                    <span class="text-[11px] text-gray-500">{{
-                      duration(record.first_event_ms)
-                    }}</span>
                   </div>
                   <div class="mt-1 h-1 rounded-full bg-raised">
                     <div

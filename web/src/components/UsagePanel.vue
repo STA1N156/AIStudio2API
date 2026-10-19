@@ -4,6 +4,7 @@ import { api } from '@/api'
 import { useI18n } from '@/i18n'
 import type { Model, UsageDimension, UsageReport, UsageStats } from '@/types'
 import UiIcon from './UiIcon.vue'
+import PageHeader from './PageHeader.vue'
 import UiSelect from './UiSelect.vue'
 import FilterMenu from './usage/FilterMenu.vue'
 import KpiCard from './usage/KpiCard.vue'
@@ -26,8 +27,7 @@ import {
 
 const props = defineProps<{ models: Model[] }>()
 const { t, errorText } = useI18n()
-const { compact, integer, usd, percent, duration, dateTime, clock, ago, dimensionLabel } =
-  useUsageFormat()
+const { compact, integer, percent, dateTime, clock, ago, dimensionLabel } = useUsageFormat()
 const state = useUsageState()
 
 // filterOptions 返回筛选候选，模型按模型目录顺序排列，目录外的取值排在最后
@@ -45,6 +45,10 @@ const error = ref('')
 const updatedAt = ref(0)
 const now = ref(Date.now())
 const recordsRefresh = ref(0)
+const view = ref('overview')
+const confirmClear = ref(false)
+const clearing = ref(false)
+const clearError = ref('')
 const refreshChoices = [0, 15, 30, 60] as const
 const autoRefresh = ref<number>(
   readPreference('usage.autoRefresh', 30, (value) =>
@@ -106,6 +110,28 @@ async function load(): Promise<void> {
 function refresh(): void {
   void load()
   recordsRefresh.value++
+}
+
+function showClearConfirmation(): void {
+  confirmClear.value = true
+  clearError.value = ''
+}
+
+async function clearUsage(): Promise<void> {
+  if (clearing.value) return
+  clearing.value = true
+  clearError.value = ''
+  try {
+    await api.clearUsage()
+    confirmClear.value = false
+    report.value = null
+    status.value = 'loading'
+    refresh()
+  } catch (reason) {
+    clearError.value = errorText(reason)
+  } finally {
+    clearing.value = false
+  }
 }
 
 watch(
@@ -227,26 +253,7 @@ const kpis = computed(() => {
   const series = (pick: (bucket: UsageStats) => number | null) =>
     buckets.map(pick).filter((item): item is number => item !== null)
   const otherErrors = totals.failed - totals.rate_limited
-  const first = totals.first_event
   return [
-    {
-      label: t('usage.requests'),
-      icon: 'requests' as const,
-      value: integer(totals.requests),
-      raw: totals.requests,
-      help: t('usage.requestsHelp'),
-      details: [
-        {
-          label: t('usage.failed'),
-          value: integer(totals.failed),
-          tone: totals.failed > 0 ? 'text-red-400' : undefined,
-        },
-        { label: t('usage.canceled'), value: integer(totals.canceled) },
-      ],
-      delta: delta(relative(totals.requests, previous.requests), (item) => percent(item), 'none'),
-      spark: buckets.map((bucket) => bucket.requests),
-      color: '#60a5fa',
-    },
     {
       label: t('usage.successRate'),
       icon: 'success' as const,
@@ -276,6 +283,25 @@ const kpis = computed(() => {
       }),
       color: '#22c55e',
       tone: rateTone(rate),
+    },
+    {
+      label: t('usage.requests'),
+      icon: 'requests' as const,
+      value: integer(totals.requests),
+      raw: totals.requests,
+      help: t('usage.requestsHelp'),
+      details: [
+        { label: t('usage.succeeded'), value: integer(totals.succeeded) },
+        {
+          label: t('usage.failed'),
+          value: integer(totals.failed),
+          tone: totals.failed > 0 ? 'text-red-400' : undefined,
+        },
+        { label: t('usage.canceled'), value: integer(totals.canceled) },
+      ],
+      delta: delta(relative(totals.requests, previous.requests), (item) => percent(item), 'none'),
+      spark: buckets.map((bucket) => bucket.requests),
+      color: '#60a5fa',
     },
     {
       label: t('usage.tokens'),
@@ -309,65 +335,22 @@ const kpis = computed(() => {
       spark: buckets.map((bucket) => bucket.requests),
       color: '#f59e0b',
     },
-    {
-      label: t('usage.cost'),
-      icon: 'cost' as const,
-      value: value.cost === 0 && value.unpriced_models.length > 0 ? '—' : usd(value.cost),
-      raw: value.cost === 0 && value.unpriced_models.length > 0 ? null : value.cost,
-      help:
-        value.unpriced_models.length > 0
-          ? `${t('usage.costHelp')} · ${t('usage.unpriced')} ${value.unpriced_models.join(', ')}`
-          : t('usage.costHelp'),
-      details: [
-        {
-          label: t('usage.cacheHitRate'),
-          value:
-            totals.input_tokens > 0 ? percent(totals.cached_tokens / totals.input_tokens) : '—',
-        },
-        ...(value.cost === 0 && value.unpriced_models.length > 0
-          ? [
-              {
-                label: t('usage.unpriced'),
-                value: value.unpriced_models.join(', '),
-                tone: 'text-amber-300',
-              },
-            ]
-          : []),
-      ],
-      delta: delta(relative(value.cost, value.previous_cost), (item) => percent(item), 'none'),
-      spark: buckets.map((bucket) => bucket.cost),
-      color: '#34d399',
-    },
-    {
-      label: `${t('usage.firstEvent')} P50`,
-      icon: 'firstEvent' as const,
-      value: duration(first.p50_ms),
-      raw: first.p50_ms > 0 ? first.p50_ms : null,
-      help: t('usage.firstEventHelp'),
-      details: [{ label: 'P95', value: duration(first.p95_ms) }],
-      delta: delta(
-        relative(first.p50_ms, previous.first_event.p50_ms),
-        (item) => percent(item),
-        'down',
-      ),
-      spark: series((bucket) => (bucket.first_event.p50_ms > 0 ? bucket.first_event.p50_ms : null)),
-      color: '#a78bfa',
-    },
   ]
 })
 
 const statusOptions = computed(() =>
   (report.value?.groups.status ?? []).map((group) => group.key).sort(),
 )
+
+function showStatusRecords(value: string): void {
+  state.status = value
+  view.value = 'records'
+}
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-auto">
-    <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-4 md:px-8">
-      <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('usage.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('usage.description') }}</p>
-      </div>
+  <section class="page-panel flex min-h-0 flex-1 flex-col overflow-auto">
+    <PageHeader :title="t('usage.title')" :description="t('usage.description')">
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500">
         <span v-tooltip="t('usage.latestHelp')" class="flex items-center gap-1.5">
           <span class="h-2 w-2 rounded-full" :class="freshness.tone" aria-hidden="true"></span>
@@ -397,8 +380,63 @@ const statusOptions = computed(() =>
         >
           <UiIcon name="refresh" :size="14" :class="{ 'animate-spin': loading }" />
         </button>
+        <button
+          type="button"
+          class="flex items-center gap-1.5 rounded-md border border-red-500/30 px-2.5 py-1.5 text-red-300 transition hover:bg-red-500/10 disabled:opacity-50"
+          :disabled="clearing"
+          @click="showClearConfirmation"
+        >
+          <UiIcon name="trash" :size="14" />
+          {{ t('usage.clear') }}
+        </button>
       </div>
-    </header>
+    </PageHeader>
+
+    <nav
+      class="filter-tabs border-b border-line bg-panel px-4 py-2 md:px-8"
+      :aria-label="t('usage.title')"
+    >
+      <button
+        v-for="item in [
+          { id: 'overview', label: 'ui.overview' },
+          { id: 'records', label: 'usage.records' },
+          { id: 'ranking', label: 'usage.ranking' },
+        ] as const"
+        :key="item.id"
+        type="button"
+        :aria-pressed="view === item.id"
+        @click="view = item.id"
+      >
+        {{ t(item.label) }}
+      </button>
+    </nav>
+
+    <div
+      v-if="confirmClear"
+      role="alert"
+      class="mx-4 my-3 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200 md:mx-8"
+    >
+      <p>{{ t('usage.clearConfirm') }}</p>
+      <p v-if="clearError" class="mt-2" role="alert">{{ clearError }}</p>
+      <div class="mt-3 flex gap-2">
+        <button
+          type="button"
+          class="rounded-md bg-red-600 px-3 py-1.5 text-white hover:bg-red-500 disabled:opacity-50"
+          :disabled="clearing"
+          @click="clearUsage"
+        >
+          {{ clearing ? t('common.loading') : t('usage.clearAction') }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-line px-3 py-1.5 hover:bg-raised disabled:opacity-50"
+          :disabled="clearing"
+          @click="confirmClear = false"
+        >
+          {{ t('common.cancel') }}
+        </button>
+      </div>
+    </div>
 
     <div
       class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-canvas/95 px-4 py-2.5 backdrop-blur md:px-8"
@@ -471,11 +509,8 @@ const statusOptions = computed(() =>
       </div>
 
       <template v-if="status === 'loading'">
-        <div
-          class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
-          aria-hidden="true"
-        >
-          <div v-for="index in 6" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
+        <div class="grid grid-cols-2 gap-3 xl:grid-cols-4" aria-hidden="true">
+          <div v-for="index in 4" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
         </div>
         <div class="h-80 animate-pulse rounded-lg bg-panel" aria-hidden="true"></div>
         <p class="sr-only" role="status">{{ t('common.loading') }}</p>
@@ -520,10 +555,11 @@ const statusOptions = computed(() =>
             </button>
           </div>
           <template v-else>
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <div v-if="view === 'overview'" class="grid grid-cols-2 gap-3 xl:grid-cols-4">
               <KpiCard
-                v-for="kpi in kpis"
+                v-for="(kpi, index) in kpis"
                 :key="kpi.label"
+                :class="index === 0 ? 'border-green-500/30 bg-green-500/5 [&>data]:text-3xl' : ''"
                 :label="kpi.label"
                 :icon="kpi.icon"
                 :value="kpi.value"
@@ -537,17 +573,20 @@ const statusOptions = computed(() =>
               />
             </div>
             <UsageCharts
+              v-if="view === 'overview'"
               :report="report"
               :stack="state.stack"
               @update:stack="state.stack = $event"
             />
             <RankingTable
+              v-if="view === 'ranking'"
               :report="report"
               :now="now"
               @filter="addFilter"
-              @status="state.status = $event"
+              @status="showStatusRecords"
             />
             <RecordsTable
+              v-if="view === 'records'"
               :scope="scope"
               :base-query="baseQuery"
               :status="state.status"

@@ -5,6 +5,32 @@ export const label = '한국어'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.menu': '메뉴',
+  'ui.more': '더 보기',
+  'ui.overview': '개요',
+  'ui.advanced': '고급 정보',
+  'ui.attention': '확인 필요',
+  'ui.searchAccounts': '계정 이메일 검색',
+  'ui.noMatches': '검색 결과가 없습니다',
+  'ui.cooldowns': '{count}개 대기 중',
+  'ui.all': '전체',
+  'ui.logsHelp': '요청 및 실행 문제를 확인하고 필요한 경우 기술 정보를 펼쳐 보세요.',
+  'ui.cooldownScope': '아래 모델과 경로만 영향을 받으며, 다른 기능은 계정 상태에 따라 달라집니다.',
+  'usage.clear': '기록 지우기',
+  'usage.clearAction': '삭제 확인',
+  'usage.clearConfirm':
+    '필터와 관계없이 모든 사용 기록, 통계 및 저장된 요청/응답 본문을 삭제합니다. 계정, 설정 및 진행 중인 요청에는 영향을 주지 않습니다. 되돌릴 수 없습니다.',
+  'accounts.importFiles': '계정 가져오기',
+  'accounts.exportSelected': '선택 항목 내보내기',
+  'accounts.exportAll': '모두 내보내기',
+  'accounts.dropHint':
+    'JSON / ZIP 파일을 여기에 놓거나 여러 파일을 선택하세요. 기존 계정은 덮어쓰지 않고 건너뜁니다.',
+  'accounts.backupWarning':
+    '내보낸 파일에는 로그인 정보가 포함됩니다. 공유하거나 공개 저장소에 업로드하지 마세요.',
+  'accounts.importLimit': 'JSON / ZIP 파일만 지원하며 총 크기는 32 MiB 이하여야 합니다.',
+  'accounts.imported': '가져옴',
+  'accounts.skipped': '건너뜀',
+  'accounts.failed': '실패',
   'auth.username': '사용자 이름',
   'auth.password': '비밀번호',
   'auth.login': '로그인',

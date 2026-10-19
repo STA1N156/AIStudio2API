@@ -73,20 +73,11 @@ const validTabs: TabID[] = [
   'playground',
   'version',
 ]
-const { tab: currentTab, select: selectTab } = useTabParam(validTabs, 'logs')
-const navigationBar = ref<HTMLElement | null>(null)
-
-// revealCurrentTab 把窄屏横向导航的当前项横向滚入视野
-function revealCurrentTab(): void {
-  const bar = navigationBar.value
-  const item = bar?.querySelector<HTMLElement>('[aria-current="page"]')
-  if (!bar || !item) return
-  const barRect = bar.getBoundingClientRect()
-  const itemRect = item.getBoundingClientRect()
-  if (itemRect.left < barRect.left) bar.scrollLeft -= barRect.left - itemRect.left
-  else if (itemRect.right > barRect.right) bar.scrollLeft += itemRect.right - barRect.right
-}
-watch(currentTab, revealCurrentTab, { flush: 'post' })
+const { tab: currentTab, select: selectTab } = useTabParam(validTabs, 'accounts')
+const mobileNavigation = ref(false)
+watch(currentTab, () => {
+  mobileNavigation.value = false
+})
 const status = ref<ServiceStatus | null>(null)
 const logs = shallowRef<AdminLog[]>([])
 const accounts = ref<Account[]>([])
@@ -120,13 +111,13 @@ const visibleAccounts = computed(() =>
 )
 
 const navigation: { id: TabID; label: TranslationKey; icon: IconName }[] = [
-  { id: 'logs', label: 'nav.logs', icon: 'logs' },
   { id: 'accounts', label: 'nav.accounts', icon: 'accounts' },
+  { id: 'usage', label: 'nav.usage', icon: 'usage' },
   { id: 'models', label: 'nav.models', icon: 'models' },
   { id: 'requests', label: 'nav.requests', icon: 'requests' },
-  { id: 'usage', label: 'nav.usage', icon: 'usage' },
-  { id: 'settings', label: 'nav.settings', icon: 'settings' },
   { id: 'playground', label: 'nav.playground', icon: 'playground' },
+  { id: 'settings', label: 'nav.settings', icon: 'settings' },
+  { id: 'logs', label: 'nav.logs', icon: 'logs' },
   { id: 'version', label: 'nav.version', icon: 'version' },
 ]
 
@@ -228,7 +219,7 @@ async function loadAccounts(): Promise<void> {
 }
 
 async function loadAccountData(): Promise<void> {
-  await Promise.all([loadAccounts(), loadModels(), loadStatus()])
+  await Promise.all([loadAccounts(), loadCooldowns(), loadModels(), loadStatus()])
 }
 
 async function loadModels(): Promise<void> {
@@ -402,7 +393,6 @@ onMounted(async () => {
   mounted = true
   window.addEventListener('pagehide', flushDelete)
   document.title = t('app.title')
-  revealCurrentTab()
   await refreshAll()
   if (!mounted) return
   api.updateStatus().then(
@@ -435,25 +425,44 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-full w-full flex-col md:flex-row">
+  <div class="app-shell flex w-full flex-col md:flex-row" @keydown.esc="mobileNavigation = false">
+    <button
+      v-if="mobileNavigation"
+      type="button"
+      class="fixed inset-x-0 bottom-0 top-[60px] z-40 bg-black/30 md:hidden"
+      :aria-label="t('common.close')"
+      @click="mobileNavigation = false"
+    />
     <aside
-      class="flex min-w-0 w-full shrink-0 flex-col border-b border-line bg-panel md:w-64 md:border-r md:border-b-0"
+      class="app-sidebar flex min-w-0 shrink-0 flex-col border-b border-line bg-panel md:border-r md:border-b-0"
     >
-      <div class="flex h-14 items-center justify-between gap-2 border-b border-line px-4">
+      <div class="app-brand flex items-center justify-between gap-2 border-b border-line px-4">
         <div class="flex min-w-0 items-center gap-2.5">
           <span
             v-tooltip="`${t('app.status')}: ${serviceState.toUpperCase()}`"
             class="relative shrink-0"
           >
-            <img src="/favicon.png" alt="" class="h-6 w-6" />
+            <span
+              class="flex size-9 items-center justify-center rounded-xl bg-blue-500/15 text-blue-400"
+              ><UiIcon name="models" :size="20"
+            /></span>
             <span
               class="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-panel"
               :class="statusColor"
             ></span>
           </span>
-          <h1 class="whitespace-nowrap text-base font-bold text-white">AI Studio Proxy</h1>
+          <h1 class="whitespace-nowrap text-base font-semibold text-white">AI Studio</h1>
         </div>
         <div class="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            class="ui-button !px-2 md:hidden"
+            :aria-label="t('ui.menu')"
+            :aria-expanded="mobileNavigation"
+            @click="mobileNavigation = !mobileNavigation"
+          >
+            <UiIcon :name="mobileNavigation ? 'close' : 'menu'" :size="19" />
+          </button>
           <button
             v-if="adminUsername"
             v-tooltip="`${adminUsername} · ${t('auth.logout')}`"
@@ -495,16 +504,17 @@ onUnmounted(() => {
       </div>
 
       <nav
-        ref="navigationBar"
-        class="flex w-full min-w-0 flex-none gap-1 overflow-x-auto p-2 md:flex-1 md:flex-col md:space-y-1"
+        class="app-navigation min-w-0 grid-cols-2 gap-1 md:flex md:flex-1 md:flex-col"
+        :class="mobileNavigation ? 'grid' : 'hidden'"
+        :aria-label="t('ui.menu')"
       >
         <button
           v-for="item in navigation"
           :key="item.id"
           :class="[
-            'flex w-auto shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left whitespace-nowrap transition md:w-full',
+            'flex w-full shrink-0 items-center gap-3 px-3 py-2.5 text-left transition',
             currentTab === item.id
-              ? 'bg-blue-600 text-white'
+              ? 'text-blue-400'
               : 'text-gray-400 hover:bg-raised hover:text-white',
           ]"
           type="button"
@@ -512,9 +522,14 @@ onUnmounted(() => {
           @click="selectTab(item.id)"
         >
           <UiIcon :name="item.icon" :size="16" />
-          {{ t(item.label) }}
+          <span class="flex-1">{{ t(item.label) }}</span>
           <span
-            v-if="item.id === 'version' && update?.available"
+            v-if="item.id === 'requests' && cooldowns.length"
+            class="rounded-full bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-400"
+            >{{ cooldowns.length }}</span
+          >
+          <span
+            v-if="item.id === 'version' && update?.available && update.mode !== 'development'"
             class="size-2 shrink-0 rounded-full bg-amber-400 md:ml-auto"
             aria-hidden="true"
             :title="t('version.available').replace('{version}', update.latest ?? '')"
@@ -532,19 +547,27 @@ onUnmounted(() => {
       </button>
 
       <div
-        class="relative min-w-0 overflow-hidden border-t border-line p-2 md:p-4"
+        class="relative min-w-0 border-t border-line px-4 py-2.5 md:p-4"
         :class="serviceState === 'launching' ? 'launching-shell' : ''"
       >
         <div v-if="serviceState === 'launching'" class="launching-scan" aria-hidden="true"></div>
         <div class="mb-2 hidden text-xs text-gray-500 md:block">{{ t('app.status') }}</div>
         <div class="flex items-center justify-between gap-2 md:mb-4">
           <div class="flex min-w-0 items-center gap-2 md:contents">
-            <span class="font-mono font-bold" :class="statusTextColor">
-              {{ serviceState.toUpperCase() }}
+            <span class="text-xs font-medium" :class="statusTextColor">
+              {{
+                t(
+                  serviceState === 'running'
+                    ? 'app.online'
+                    : serviceState === 'launching'
+                      ? 'common.loading'
+                      : 'app.offline',
+                )
+              }}
             </span>
             <span
               v-tooltip="status?.version || ''"
-              class="max-w-[65%] truncate font-mono text-xs text-gray-500"
+              class="hidden max-w-[65%] truncate font-mono text-[10px] text-gray-500 md:block"
             >
               {{ status?.version || '—' }}
             </span>
@@ -561,7 +584,7 @@ onUnmounted(() => {
           </button>
           <button
             v-else-if="serviceState === 'launching' || serviceState === 'running'"
-            class="flex shrink-0 items-center gap-1.5 rounded bg-red-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50 md:hidden"
+            class="ui-button ui-button-danger !min-h-9 !py-1 md:hidden"
             type="button"
             :disabled="stopPending"
             @click="stopService"
@@ -582,7 +605,7 @@ onUnmounted(() => {
         </button>
         <button
           v-else-if="serviceState === 'launching' || serviceState === 'running'"
-          class="hidden w-full items-center justify-center gap-2 rounded bg-red-600 py-2 font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50 md:flex"
+          class="ui-button ui-button-danger hidden w-full md:flex"
           type="button"
           :disabled="stopPending"
           @click="stopService"
@@ -600,6 +623,7 @@ onUnmounted(() => {
           <AccountsPanel
             v-else-if="currentTab === 'accounts'"
             :accounts="visibleAccounts"
+            :cooldowns="cooldowns"
             :loading="loading.accounts"
             :error="errors.accounts"
             @refresh="loadAccountData"

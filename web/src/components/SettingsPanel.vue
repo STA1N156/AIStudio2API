@@ -8,6 +8,7 @@ import type { ServiceConfig, UpstreamChannel } from '@/types'
 import { useQueryParam } from '@/url'
 import SettingRow from './SettingRow.vue'
 import UiIcon from './UiIcon.vue'
+import PageHeader from './PageHeader.vue'
 import UiSelect from './UiSelect.vue'
 import UiSwitch from './UiSwitch.vue'
 
@@ -47,8 +48,8 @@ const form = reactive<ServiceConfig>({
   proxy_pool: [],
   init_timeout: '2m',
   request_timeout: '30m',
-  warm_worker_limit: 5,
-  max_active_workers: 10,
+  warm_worker_limit: 20,
+  max_active_workers: 50,
   warm_startup_concurrency: 5,
   per_account_concurrency: 2,
   routing_strategy: 'round-robin',
@@ -132,8 +133,7 @@ const section = useQueryParam<SectionID>(
 const current = computed(() => sections.find((item) => item.id === section.value) ?? sections[0]!)
 
 const upstreamChannelOptions: UpstreamChannel[] = ['playground', 'build']
-const inputClass =
-  'w-full rounded-md border border-line bg-canvas px-3 py-2 text-sm text-white transition focus:border-blue-500 focus:outline-none'
+const inputClass = 'ui-input'
 
 // changedFields 返回表单中与已保存配置不同的字段
 const changedFields = computed(() => {
@@ -210,11 +210,11 @@ async function saveConfig(): Promise<void> {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col">
-    <header class="border-b border-line px-4 py-4 md:px-8">
-      <h2 class="text-xl font-semibold text-white">{{ t('section.settings.title') }}</h2>
-      <p class="mt-1 text-sm text-gray-500">{{ t('section.settings.description') }}</p>
-    </header>
+  <section class="page-panel flex min-h-0 flex-1 flex-col">
+    <PageHeader
+      :title="t('section.settings.title')"
+      :description="t('section.settings.description')"
+    />
 
     <div
       v-if="error"
@@ -226,14 +226,9 @@ async function saveConfig(): Promise<void> {
       <UiIcon name="spinner" :size="18" class="mx-auto mb-2" />
       {{ t('common.loading') }}
     </div>
-    <form
-      v-else
-      class="flex min-h-0 flex-1 flex-col md:flex-row"
-      novalidate
-      @submit.prevent="saveConfig"
-    >
+    <form v-else class="flex min-h-0 flex-1 flex-col" novalidate @submit.prevent="saveConfig">
       <nav
-        class="flex shrink-0 gap-1 overflow-x-auto border-b border-line p-2 md:w-56 md:flex-col md:border-r md:border-b-0 md:p-4"
+        class="filter-tabs shrink-0 border-b border-line bg-panel px-4 py-3 md:px-8"
         :aria-label="t('section.settings.title')"
       >
         <button
@@ -247,6 +242,7 @@ async function saveConfig(): Promise<void> {
               : 'text-gray-400 hover:bg-raised/60 hover:text-gray-200'
           "
           :aria-current="section === item.id ? 'page' : undefined"
+          :aria-pressed="section === item.id"
           @click="section = item.id"
         >
           <UiIcon :name="item.icon" :size="15" />
@@ -676,7 +672,7 @@ async function saveConfig(): Promise<void> {
       <Transition name="notice">
         <div
           v-if="changedCount > 0"
-          class="fixed right-4 bottom-4 left-4 z-40 flex items-center gap-3 rounded-lg border border-line bg-overlay px-4 py-3 shadow-2xl shadow-black/50 md:left-auto md:min-w-[26rem]"
+          class="fixed right-4 bottom-4 left-4 z-40 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-overlay px-4 py-3 shadow-2xl shadow-black/30 md:left-auto md:min-w-[26rem]"
           role="region"
           :aria-label="t('settings.unsavedBar')"
         >
@@ -689,19 +685,10 @@ async function saveConfig(): Promise<void> {
               )
             }}
           </span>
-          <button
-            type="button"
-            class="rounded-md px-3 py-1.5 text-sm text-gray-400 transition hover:bg-raised hover:text-white"
-            :disabled="saving"
-            @click="resetForm(config)"
-          >
+          <button type="button" class="ui-button" :disabled="saving" @click="resetForm(config)">
             {{ t('settings.discard') }}
           </button>
-          <button
-            class="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-blue-500 disabled:opacity-50"
-            type="submit"
-            :disabled="saving"
-          >
+          <button class="ui-button ui-button-primary" type="submit" :disabled="saving">
             <UiIcon v-if="saving" name="spinner" :size="14" />
             {{ t('common.save') }}
           </button>

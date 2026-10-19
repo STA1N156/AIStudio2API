@@ -295,9 +295,13 @@ func (admin *runtimeAdmin) ImportChromeAccounts(ctx context.Context, input api.C
 	return accounts, nil
 }
 
-// ImportAccountState 导入远程配对上传的认证状态与 Camoufox 指纹
+// ImportAccountState 导入账号文件或远程配对上传的认证状态与 Camoufox 指纹
 func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.AccountStateInput) (api.AdminAccount, error) {
 	accountConfig := aistudio.DefaultAccountConfig(strings.TrimSpace(input.Label))
+	accountConfig.Proxy = strings.TrimSpace(input.Proxy)
+	if input.Enabled != nil {
+		accountConfig.Enabled = *input.Enabled
+	}
 	if locale := strings.TrimSpace(input.Locale); locale != "" {
 		accountConfig.Locale = locale
 	}
@@ -342,7 +346,7 @@ func (admin *runtimeAdmin) ImportAccountState(ctx context.Context, input api.Acc
 	if err != nil {
 		return api.AdminAccount{}, err
 	}
-	admin.requests.log("auth", "INFO", "远程配对账户已导入 | 账户="+account.Label)
+	admin.requests.log("auth", "INFO", "账户文件已导入 | 账户="+account.Label)
 	return account, nil
 }
 

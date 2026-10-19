@@ -302,13 +302,24 @@ func normalizedReasoningEffort(value string) string {
 	return effort
 }
 
-// ApplyModelSuffix 把模型名末尾的 (思考设置) 写入生成参数并返回去掉后缀的模型 ID，后缀优先于请求体中的思考参数
+// ApplyModelSuffix 解析 (思考设置) 或 -low/-medium/-high，后缀优先于请求体中的思考参数。
 func ApplyModelSuffix(model string, config GenerationConfig) (string, GenerationConfig, error) {
 	open := strings.LastIndex(model, "(")
-	if open < 0 || !strings.HasSuffix(model, ")") {
-		return model, config, nil
+	var value string
+	if open >= 0 && strings.HasSuffix(model, ")") {
+		value = strings.ToLower(strings.TrimSpace(model[open+1 : len(model)-1]))
+	} else {
+		open = strings.LastIndex(model, "-")
+		if open < 0 {
+			return model, config, nil
+		}
+		value = strings.ToLower(model[open+1:])
+		switch value {
+		case "low", "medium", "high":
+		default:
+			return model, config, nil
+		}
 	}
-	value := strings.ToLower(strings.TrimSpace(model[open+1 : len(model)-1]))
 	model = strings.TrimSpace(model[:open])
 	switch value {
 	case "auto", "-1":

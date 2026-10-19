@@ -5,6 +5,31 @@ export const label = '繁體中文'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.menu': '選單',
+  'ui.more': '更多操作',
+  'ui.overview': '概覽',
+  'ui.advanced': '進階資訊',
+  'ui.attention': '需要處理',
+  'ui.searchAccounts': '搜尋帳戶信箱',
+  'ui.noMatches': '沒有符合條件的結果',
+  'ui.cooldowns': '{count} 項冷卻',
+  'ui.all': '全部',
+  'ui.logsHelp': '查看請求與執行問題，可按需展開技術詳情。',
+  'ui.cooldownScope': '僅影響下列模型與通道，其餘能力以帳戶實際可用狀態為準。',
+  'usage.clear': '清空紀錄',
+  'usage.clearAction': '確認清空',
+  'usage.clearConfirm':
+    '將刪除全部用量歷史、統計彙總及已儲存的請求／回應正文，不限目前篩選範圍。帳戶、設定和進行中的請求不受影響。此操作無法復原。',
+  'accounts.importFiles': '匯入帳號',
+  'accounts.exportSelected': '匯出已選',
+  'accounts.exportAll': '匯出全部',
+  'accounts.dropHint':
+    '將 JSON / ZIP 拖曳到此處，或按匯入，可一次選擇多個檔案。重複帳號會略過，不覆蓋現有帳號。',
+  'accounts.backupWarning': '匯出檔案包含登入憑證，請妥善保管，勿分享或上傳至公開儲存庫。',
+  'accounts.importLimit': '僅支援 JSON / ZIP，總大小不得超過 32 MiB。',
+  'accounts.imported': '已匯入',
+  'accounts.skipped': '已略過',
+  'accounts.failed': '失敗',
   'auth.username': '使用者名稱',
   'auth.password': '密碼',
   'auth.login': '登入',

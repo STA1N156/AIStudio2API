@@ -174,6 +174,8 @@ docker compose up -d
 
 账户操作随状态显示：
 
+账户页支持拖拽或多选 JSON / ZIP 批量导入，以及单个、勾选或全部导出。单个账号导出为 JSON，批量导出为 ZIP；导出文件保留认证状态、指纹和账号设置，可直接重新导入。已有账号自动跳过，不会覆盖。也可导入以邮箱命名的原始 `storage-state` JSON。每个 JSON 最大 1 MiB，每批最多 1000 个文件、上传及解压后总量不超过 32 MiB。导出包含登录凭据，请勿公开分享。
+
 | 账户状态 | 可用操作 |
 | --- | --- |
 | `ready` | 编辑、停用、验证、删除 |
@@ -204,6 +206,14 @@ docker compose up -d
 `start.bat setup --remote https://<远程实例>`：向远程实例添加账户。先在远程实例的账户页点击“远程添加”取得配对令牌，再在能登录 Google 的电脑上运行该命令并粘贴令牌；可与 `--login` 等参数组合。
 
 ## API 使用
+
+### 抗截断模式
+
+支持函数调用的聊天模型提供 `抗截断/` 前缀，例如 `抗截断/gemini-3.8-flash`、`抗截断/gemini-4-argon`。OpenAI Chat、Responses、Anthropic Messages 和 Gemini 接口的流式与非流式请求均可使用，模型列表会同时列出这些入口。
+
+该模式要求模型通过内部 `output_reply` 工具的 `content` 字段提交完整回复，再还原为普通正文返回；最新一条用户文本会包装成标明 `source: user_input` 的 `read_user_input` 工具结果，历史与附件不变。真实思考及时转发，不注入等待提示，也不额外重试。只有内部回复工具的 Gemini 3/4 流式请求在 Build 通道携带 `streamFunctionCallArguments`，收到 `partialArgs` 后立即转成正文增量，并避免完整参数再次返回时重复输出。Playground 或不支持分片的上游仍在完整工具正文到达后返回，不伪造分片，也不改变现有通道路由；实际能否逐段收到取决于上游，不能突破模型的输出上限。
+
+普通模型不受影响。客户端自行声明 `output_reply` 或显式指定禁用、强制、指定工具时，保留客户端工具协议，不接管输出。未识别出内部工具正文时，保留模型直接输出的普通内容；确认结束后仍无有效输出则返回 400，上游其他错误保持原样。
 
 ### OpenAI 兼容接口
 
@@ -434,7 +444,7 @@ curl http://127.0.0.1:2048/v1/videos \
 
 公开端点实现标准 `generateContent`、`countTokens`、`embedContent`、`batchEmbedContents` 和 `predictLongRunning`；`bidiGenerateContent` 与 `bidiGenerateMusic` 模型经 `/v1/live` 调用。`/v1/models` 与 `/v1beta/models` 原样汇总各账户实时上游目录；调度按目录明确提供的模型 ID、方法、能力字段和账户当前运行状态选择账户。
 
-启用账户的订阅都不满足的模型（如只对 Google AI Ultra 开放的模型）同样列在目录中、不含 `channels`，调用时返回 403 并写明所需订阅。能力含 `output_continuation` 的模型（如 Gemini 4 Argon）与官网一样接受到 `input_token_limit` 的输出上限，超过 32768 时分轮自动续写，各轮输出合并为一个响应。模型名可以带思考后缀，例如 `gemini-4-argon(low)`：括号内为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`auto` 或思考预算 token 数，后缀优先于请求体中的思考参数。客户端写死的模型名可用 `MODEL_MAPPING` 映射到目录中的模型，例如 `MODEL_MAPPING=claude-haiku-5-5:gemini-3.8-flash`，别名以目标模型的字段列在模型目录中。
+启用账户的订阅都不满足的模型（如只对 Google AI Ultra 开放的模型）同样列在目录中、不含 `channels`，调用时返回 403 并写明所需订阅。能力含 `output_continuation` 的模型（如 Gemini 4 Argon）与官网一样接受到 `input_token_limit` 的输出上限，超过 32768 时分轮自动续写，各轮输出合并为一个响应。模型名可以带思考后缀，例如 `gemini-4-argon(low)`：括号内为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`auto` 或思考预算 token 数，也支持 `-low`、`-medium`、`-high` 写法，例如 `gemini-3.8-flash-high`、`抗截断/gemini-3.8-flash-high`。所有协议接口统一解析，后缀优先于请求体中的思考参数。客户端写死的模型名可用 `MODEL_MAPPING` 映射到目录中的模型，例如 `MODEL_MAPPING=claude-haiku-5-5:gemini-3.8-flash`，别名以目标模型的字段列在模型目录中。
 
 ## 项目架构
 
@@ -478,8 +488,8 @@ cp .env.example .env
 | `PROXY` | 空 | Chrome 导入、登录和账户默认使用的 HTTP、HTTPS 或 SOCKS5 代理，多个代理用逗号分隔组成代理池；留空时使用系统代理 |
 | `INIT_TIMEOUT` | `2m` | 单账户 WAA 初始化超时 |
 | `REQUEST_TIMEOUT` | `30m` | 单次请求最大执行时间，自动续写请求按续写轮数倍增 |
-| `WARM_WORKER_LIMIT` | `5` | 常驻预热账户数 |
-| `MAX_ACTIVE_WORKERS` | `10` | 高峰期最多同时运行的 Worker 数 |
+| `WARM_WORKER_LIMIT` | `20` | 常驻预热账户数 |
+| `MAX_ACTIVE_WORKERS` | `50` | 高峰期最多同时运行的 Worker 数 |
 | `WARM_STARTUP_CONCURRENCY` | `5` | 同时冷启动的 Camoufox Worker 数，预热与按需扩容共用；`WAA_BACKEND=go` 时不限制 |
 | `PER_ACCOUNT_CONCURRENCY` | `2` | 单账号同时执行的请求数 |
 | `ROUTING_STRATEGY` | `round-robin` | `round-robin` 轮询；`fill-first` 账号粘性优先 |
@@ -528,6 +538,8 @@ cp .env.example .env
 账户邮箱同时作为目录名、管理页面标识和日志来源，统一使用小写形式。`.leases` 协调账户目录读写，用户缓存中的 runtime lease 保证同一邮箱在当前电脑上只有一个 WAA Worker。
 
 账户页支持 Chrome 批量导入和隔离 Camoufox 登录。`ready` 账户可以编辑、停用、立即刷新和删除，`auth_required` 账户可以重新登录；“刷新全部”立即读取全部启用账户的权益与模型目录，后台每 10 分钟也会读取一次。从未读取成功的账户权益显示为未知，并显示最近一次失败原因。
+
+用量页的“清空记录”需要二次确认，会删除全部用量历史、汇总和保存的请求/响应正文，不限当前筛选范围；不删除账号、设置或运行日志，不中断进行中的请求，新完成的请求仍会正常记录。
 
 ## 详细文档
 

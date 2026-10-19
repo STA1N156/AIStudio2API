@@ -5,6 +5,34 @@ export const label = 'Français'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.menu': 'Menu',
+  'ui.more': 'Autres actions',
+  'ui.overview': 'Vue d’ensemble',
+  'ui.advanced': 'Détails avancés',
+  'ui.attention': 'À vérifier',
+  'ui.searchAccounts': 'Rechercher un compte',
+  'ui.noMatches': 'Aucun résultat',
+  'ui.cooldowns': '{count} délais',
+  'ui.all': 'Tous',
+  'ui.logsHelp':
+    'Consultez les requêtes et les problèmes. Dépliez les détails techniques si nécessaire.',
+  'ui.cooldownScope':
+    'Seuls les modèles et canaux ci-dessous sont concernés ; les autres fonctions dépendent du compte.',
+  'usage.clear': 'Effacer les données',
+  'usage.clearAction': 'Confirmer',
+  'usage.clearConfirm':
+    'Supprimer tout l’historique, les statistiques et les corps de requêtes/réponses enregistrés, quels que soient les filtres. Les comptes, réglages et requêtes en cours sont conservés. Cette action est irréversible.',
+  'accounts.importFiles': 'Importer des comptes',
+  'accounts.exportSelected': 'Exporter la sélection',
+  'accounts.exportAll': 'Tout exporter',
+  'accounts.dropHint':
+    'Déposez des fichiers JSON / ZIP ici ou sélectionnez plusieurs fichiers. Les comptes existants sont ignorés, jamais remplacés.',
+  'accounts.backupWarning':
+    'Les exports contiennent des identifiants de connexion. Ne les partagez pas et ne les publiez pas.',
+  'accounts.importLimit': 'Fichiers JSON / ZIP uniquement, 32 Mio au total maximum.',
+  'accounts.imported': 'Importé',
+  'accounts.skipped': 'Ignoré',
+  'accounts.failed': 'Échec',
   'auth.username': 'Nom d’utilisateur',
   'auth.password': 'Mot de passe',
   'auth.login': 'Se connecter',

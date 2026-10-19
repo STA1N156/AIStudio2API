@@ -60,7 +60,6 @@ const summary = computed(() => {
     { label: t('usage.path'), value: record.path },
     { label: t('usage.dimension.status'), value: String(record.status) },
     { label: t('usage.duration'), value: duration(record.duration_ms) },
-    { label: t('usage.firstEvent'), value: duration(record.first_event_ms) },
     { label: t('usage.queue'), value: duration(record.queue_ms) },
     { label: t('usage.toolCalls'), value: integer(record.tool_calls) },
     { label: t('usage.input'), value: integer(record.input_tokens) },

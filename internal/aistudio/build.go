@@ -71,6 +71,9 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 		if mode == "required" && len(request.Tools.ToolConfig.AllowedFunctionNames) > 0 {
 			calling["allowedFunctionNames"] = request.Tools.ToolConfig.AllowedFunctionNames
 		}
+		if request.Tools.StreamReplyArguments && !unary {
+			calling["streamFunctionCallArguments"] = true
+		}
 		if mode != "" && mode != "auto" || calling["mode"] != "AUTO" || len(request.Tools.ToolConfig.AllowedFunctionNames) > 0 {
 			toolConfig["functionCallingConfig"] = calling
 		}
@@ -475,9 +478,14 @@ type buildResponsePart struct {
 		Output  string `json:"output"`
 	} `json:"codeExecutionResult"`
 	FunctionCall *struct {
-		ID   string          `json:"id"`
-		Name string          `json:"name"`
-		Args json.RawMessage `json:"args"`
+		ID          string          `json:"id"`
+		Name        string          `json:"name"`
+		Args        json.RawMessage `json:"args"`
+		PartialArgs []struct {
+			JSONPath    string  `json:"jsonPath"`
+			StringValue *string `json:"stringValue"`
+		} `json:"partialArgs"`
+		WillContinue bool `json:"willContinue"`
 	} `json:"functionCall"`
 }
 
@@ -506,8 +514,11 @@ var buildChunkSources = map[string]string{"web": "web", "retrievedContext": "ret
 
 // BuildStreamDecoder 把 Build 代理返回的 Gemini API 响应块转换为规范事件
 type BuildStreamDecoder struct {
-	usage    *Usage
-	finished bool
+	usage      *Usage
+	finished   bool
+	replyCall  *FunctionCall
+	replyText  strings.Builder
+	replyIndex int
 }
 
 // Decode 解码一个 Gemini API GenerateContentResponse JSON
@@ -542,7 +553,13 @@ func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
 	var events []Event
 	if candidate.Content != nil {
 		for index, part := range candidate.Content.Parts {
-			partEvents, err := decodeBuildPart(part, index, raw)
+			var partEvents []Event
+			var err error
+			if call := part.FunctionCall; call != nil && (call.PartialArgs != nil || call.WillContinue || d.replyCall != nil) {
+				partEvents, err = d.decodeReplyArguments(part, raw)
+			} else {
+				partEvents, err = decodeBuildPart(part, index, raw)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -562,6 +579,9 @@ func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
 		events = append(events, Event{Kind: EventGrounding, Grounding: decodeBuildGrounding(*grounding)})
 	}
 	if candidate.FinishReason != "" && !d.finished {
+		if d.replyCall != nil {
+			return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$chunk.functionCall", Detail: "回复工具参数分片未完成", Raw: cloneRaw(raw)}
+		}
 		if d.usage != nil {
 			usage := *d.usage
 			events = append(events, Event{Kind: EventUsage, Usage: &usage})
