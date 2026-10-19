@@ -17,7 +17,6 @@ require (
 	github.com/mewkiz/flac v1.0.14
 	github.com/minio/selfupdate v0.6.0
 	github.com/oov/audio v0.0.0-20171004131523-88a2be6dbe38
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/thesyncim/gopus v0.1.2
 	github.com/tphakala/go-aac v0.7.0
 	github.com/tphakala/go-mp3 v0.1.0

@@ -3,7 +3,25 @@ package aistudio
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
+
+// HasOutput 区分实际回复与纯思考、用量等元数据，供空回判断共用。
+func (event Event) HasOutput() bool {
+	switch event.Kind {
+	case EventText:
+		return strings.TrimSpace(event.Text) != ""
+	case EventToolCall:
+		return event.ToolCall != nil
+	case EventMedia:
+		return event.Media != nil && (len(event.Media.Data) > 0 || event.Media.URL != "")
+	case EventExecutableCode:
+		return event.ExecutableCode != nil
+	case EventCodeExecutionResult:
+		return event.CodeExecutionResult != nil
+	}
+	return false
+}
 
 // FrameDecoder 将 field 1 repeated 帧转换为规范事件
 type FrameDecoder struct {

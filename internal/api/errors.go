@@ -27,6 +27,11 @@ type errorCodeProvider interface {
 	ErrorCode() string
 }
 
+type emptyOutputError struct{}
+
+func (emptyOutputError) Error() string   { return "输出为空" }
+func (emptyOutputError) HTTPStatus() int { return http.StatusBadRequest }
+
 func decodeJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(target); err != nil {

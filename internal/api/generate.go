@@ -33,6 +33,7 @@ type generationResult struct {
 	stopSequence  string
 	providerModel string
 	finished      bool
+	hasOutput     bool
 }
 
 func (result *generationResult) apply(event aistudio.Event) error {
@@ -49,6 +50,7 @@ func (result *generationResult) apply(event aistudio.Event) error {
 		}
 		return errUpstreamStream
 	}
+	result.hasOutput = result.hasOutput || event.HasOutput()
 	switch event.Kind {
 	case aistudio.EventText:
 		result.text.WriteString(event.Text)
@@ -95,6 +97,9 @@ func (result *generationResult) apply(event aistudio.Event) error {
 			result.media = append(result.media, media)
 		}
 	case aistudio.EventFinish:
+		if !result.hasOutput {
+			return emptyOutputError{}
+		}
 		result.finishReason = event.FinishReason
 		result.finishMessage = event.FinishMessage
 		result.stopSequence = event.StopSequence
@@ -104,36 +109,57 @@ func (result *generationResult) apply(event aistudio.Event) error {
 	return nil
 }
 
-// awaitStreamStart 在写出流式响应头前等待首个事件，首个事件为错误时返回该错误，心跳间隔内没有事件时直接返回原事件流
+// awaitStreamStart 等待实际内容或结束事件再写响应头，此前的错误保留原 HTTP 状态码。
 func awaitStreamStart(ctx context.Context, events <-chan aistudio.Event) (<-chan aistudio.Event, error) {
-	timer := time.NewTimer(streamHeartbeatInterval)
-	defer timer.Stop()
-	var first aistudio.Event
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-timer.C:
-		return events, nil
-	case event, ok := <-events:
-		if !ok {
-			return nil, errIncompleteStream
-		}
-		if event.Kind == aistudio.EventError {
-			if event.Err != nil {
-				return nil, event.Err
+	var pending []aistudio.Event
+wait:
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case event, ok := <-events:
+			if !ok {
+				return nil, errIncompleteStream
 			}
-			return nil, errUpstreamStream
+			if event.Kind == aistudio.EventError {
+				if event.Err != nil {
+					return nil, event.Err
+				}
+				return nil, errUpstreamStream
+			}
+			if event.Kind == aistudio.EventFinish {
+				return nil, emptyOutputError{}
+			}
+			pending = append(pending, event)
+			if !event.HasOutput() && !(event.Kind == aistudio.EventReasoning && strings.TrimSpace(event.Text) != "") {
+				continue
+			}
+			break wait
 		}
-		first = event
 	}
 	replay := make(chan aistudio.Event)
 	go func() {
 		defer close(replay)
-		for event, ok := first, true; ok; event, ok = <-events {
+		for _, event := range pending {
 			select {
 			case replay <- event:
 			case <-ctx.Done():
 				return
+			}
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				select {
+				case replay <- event:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()

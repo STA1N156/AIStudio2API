@@ -473,7 +473,7 @@ generation config 字段：
 
 `reasoning_effort` / `thinkingLevel` / Anthropic `output_config.effort` 接受 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，`xhigh` 与 `max` 按 `high` 处理，`THINKING_LEVEL_UNSPECIFIED` 视为未设置。`none` 在只支持 thinking budget 的模型使用预算 0，支持 thinking level 的模型使用最低可用 level。模型只有 thinking level 能力时，显式 budget 按 0、1024、8192 以内与更大预算分别退化为 minimal、low、medium、high；没有 thinking level 能力的模型忽略其余 effort，两类能力都缺少时同时忽略 budget。
 
-生成与计数请求的模型名可以带思考后缀 `<模型 ID>(<值>)`，例如 `gemini-4-argon(low)`、`gemini-2.5-pro(16384)`。值不区分大小写：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 作为思考强度，非负整数作为思考预算，`auto` 与 `-1` 使用模型默认思考设置；后缀覆盖请求体中的思考强度与预算，去掉后缀的模型 ID 用于调度、请求日志与用量统计。其他值返回 400。
+生成与计数请求的模型名可以带思考后缀 `<模型 ID>(<值>)`，例如 `gemini-4-argon(low)`、`gemini-2.5-pro(16384)`。值不区分大小写：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max` 作为思考强度，非负整数作为思考预算，`auto` 与 `-1` 使用模型默认思考设置；客户端显式传入的思考强度或预算优先，未设置时才采用后缀，去掉后缀的模型 ID 用于调度、请求日志与用量统计。其他值返回 400。
 
 同样支持 `-low`、`-medium`、`-high`，例如 `gemini-3.8-flash-high` 与 `gemini-3.8-flash(high)` 等价；普通模型、`抗截断/` 模型与模型别名均适用，OpenAI Chat、Responses、Anthropic Messages 和 Gemini 接口共用此规则。其他连字符结尾不当作思考后缀。
 
@@ -863,7 +863,7 @@ Playground 的函数参数载体和结构化输出 Schema 使用以下 protobuf 
 
 结构化输出以客户端的 JSON Schema 为输出契约：无法直接编码的 Schema（如数值 `const`、单独的 `null` 类型）按层级与类型编码，根说明附完整 Schema，两个通道使用同一结果。含开放节点的结构化输出在启用 Build 时使用 Build 通道并原样发送开放节点，没有账户能经 Build 服务时使用 Playground；Playground 将开放节点补为 string，根说明附完整 Schema。非对象 Schema 返回参数错误。
 
-函数声明以客户端的 JSON Schema 为参数契约。Playground 对开放节点、混合联合、引用、数值枚举与常量生成可发送的参数载体，将完整 Schema 放入工具说明；普通可表达声明保持原编码，历史调用与工具结果保持原值。Build 使用 `parametersJsonSchema`，保留组合分支与约束。`strict:true` 和 Gemini `VALIDATED` 在完整工具事件返回前校验原始参数契约；不符合契约的上游调用返回协议错误。本地无法编译的 Schema（如外部 URL 引用）只随声明发送，不做本地校验。
+函数声明以客户端的 JSON Schema 为参数契约。Playground 对开放节点、混合联合、引用、数值枚举与常量生成可发送的参数载体，将完整 Schema 放入工具说明；普通可表达声明保持原编码，历史调用与工具结果保持原值。Build 使用 `parametersJsonSchema`，保留组合分支与约束。`strict:true` 和 Gemini `VALIDATED` 的约束随请求发送，不再因上游未遵守参数、工具名称或调用次数约束而丢弃有效输出；客户端仍可自行校验返回的工具参数。
 
 `auto` 由模型决定调用，`none` 省略 tools。指定函数使用声明子集；Playground 将调用要求写入生成指令并核对实际返回，Build 使用原生 `functionCallingConfig`。客户端工具选择映射如下：
 
@@ -1525,7 +1525,7 @@ message 字段为 `role`、`content`、可选 `name`、`tool_call_id`、`tool_ca
 
 OpenAI `image_url` / `input_image` 值为 data URL 时形成 inline data，值为 YouTube URL 时形成 external media，Gemini Files API 文件 URI 保持文件引用，其他 http(s) URL 由服务端下载后作为内联媒体发送，其他非 data 字符串按已上传 file ID 解析。data URL 接受 Base64 与百分号编码数据，省略 MIME 时按内容判断类型，MIME 参数不发送。同一请求内相同 URL 只下载一次；下载随请求取消，大小上限与内联媒体相同（512 MiB），MIME 取响应 `Content-Type`，缺失、无法解析或为 octet-stream 时按内容判断；URL 主机或任一重定向目标解析到本机、私网、链路本地、组播或未指定地址时不连接，按下载失败处理；下载失败返回 400，错误信息包含 URL 与原因。`video_url` / `input_video` 只接受 YouTube URL。`file_data` 接受 data URL 或 Base64 文件内容，没有声明 MIME 时按 `/v1/files` 的规则依次按文件内容与 `filename` 扩展名判断。
 
-function tool 使用 `{"type":"function","function":{"name","description","parameters","strict"}}`。`strict:true` 启用参数契约校验。Google tool type 为 `web_search`、`web_search_preview`、`image_search`、`url_context`、`code_interpreter`、`google_maps`。custom tool `{"type":"custom","custom":{name,description,format}}` 声明为只有字符串参数 `input` 的函数，grammar 格式的语法与定义写入函数描述；调用以 `{"type":"custom","custom":{name,input}}` 返回，历史中的 custom 调用以 `{"input":<INPUT>}` 发送。历史函数调用的 `arguments` 不是 JSON object 时以 `{"_raw":"<原文>"}` 发送。
+function tool 使用 `{"type":"function","function":{"name","description","parameters","strict"}}`。`strict:true` 声明参数约束，不做本地返回值强校验。Google tool type 为 `web_search`、`web_search_preview`、`image_search`、`url_context`、`code_interpreter`、`google_maps`。custom tool `{"type":"custom","custom":{name,description,format}}` 声明为只有字符串参数 `input` 的函数，grammar 格式的语法与定义写入函数描述；调用以 `{"type":"custom","custom":{name,input}}` 返回，历史中的 custom 调用以 `{"input":<INPUT>}` 发送。历史函数调用的 `arguments` 不是 JSON object 时以 `{"_raw":"<原文>"}` 发送。
 
 非流式响应：
 
@@ -1809,7 +1809,7 @@ custom tool 为 `{name,description,input_schema}`，可选 `type:"custom"`。ser
 
 `web_search_*` 的 `allowed_domains` 与 `user_location` 写入搜索偏好，调用次数由上游决定；其余选项不改变上游请求。`bash_*`、`text_editor_*`、`memory_*` 以请求中的 `name` 声明为函数，描述与参数由服务固定，参数分别为 `{command,restart}`、`{command,path,file_text,old_str,new_str,insert_line,insert_text,view_range}`（`text_editor_20241022` 与 `text_editor_20250124` 的 command 另含 `undo_edit`）与再加 `old_path`、`new_path` 的 memory 命令，模型调用以 `tool_use` 返回由客户端执行；`tool_search_tool_*` 与类型名含 `toolset` 的工具（如 `mcp_toolset`）不声明到上游。
 
-server tool 接受对应 `type`、`name` 与 Anthropic 工具定义中的选项 `allowed_callers`、`allowed_domains`、`blocked_domains`、`cache_control`、`citations`、`defer_loading`、`max_content_tokens`、`max_uses`、`response_inclusion`、`strict`、`url_sources`、`use_cache`、`user_location`；其他选项、`description` 或 `input_schema` 返回 `400 invalid_request_error`。tool choice 接受省略、`{"type":"auto"}`、`{"type":"none"}`、`{"type":"any"}` 与 `{"type":"tool","name":"FUNCTION_NAME"}`。custom tool 的 `cache_control` 等客户端提示保留生成能力，`strict:true` 校验完整返回参数。
+server tool 接受对应 `type`、`name` 与 Anthropic 工具定义中的选项 `allowed_callers`、`allowed_domains`、`blocked_domains`、`cache_control`、`citations`、`defer_loading`、`max_content_tokens`、`max_uses`、`response_inclusion`、`strict`、`url_sources`、`use_cache`、`user_location`；其他选项、`description` 或 `input_schema` 返回 `400 invalid_request_error`。tool choice 接受省略、`{"type":"auto"}`、`{"type":"none"}`、`{"type":"any"}` 与 `{"type":"tool","name":"FUNCTION_NAME"}`。custom tool 的 `cache_control` 等客户端提示保留生成能力，`strict:true` 声明参数约束，不做本地返回值强校验。
 
 非流式响应：
 

@@ -3599,11 +3599,9 @@ func (service *trackedService) generateWithRetry(
 		localWorkerFailure := (workerFailed || workerReplaced) && requestCtx.Err() == nil
 		retryable := retryableGenerateAccountError(requestCtx, err) || localWorkerFailure
 		recoverWorker := false
-		if aistudio.DefinitiveAuthenticationFailure(err) {
-			if stateErr := lease.MarkAuthenticationRequired(err.Error()); stateErr != nil {
-				err = errors.Join(err, stateErr)
-				retryable = false
-			}
+		if stateErr := lease.MarkRequestFailure(err); stateErr != nil {
+			err = errors.Join(err, stateErr)
+			retryable = false
 		}
 		if cooldown, ok := aistudio.QuotaCooldownForError(err, time.Now()); ok {
 			modelAccessScope := lease.CooldownScope(modelID)
@@ -4003,11 +4001,9 @@ func (service *trackedService) forwardEvents(
 		}
 		if event.Kind == aistudio.EventError {
 			requestErr = event.Err
-			if aistudio.DefinitiveAuthenticationFailure(event.Err) {
-				if stateErr := lease.MarkAuthenticationRequired(event.Err.Error()); stateErr != nil {
-					requestErr = errors.Join(requestErr, stateErr)
-					event.Err = requestErr
-				}
+			if stateErr := lease.MarkRequestFailure(event.Err); stateErr != nil {
+				requestErr = errors.Join(requestErr, stateErr)
+				event.Err = requestErr
 			}
 			state = finalRequestState(event.Err)
 			terminal = true

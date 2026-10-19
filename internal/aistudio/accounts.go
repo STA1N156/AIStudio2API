@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"os"
@@ -1610,6 +1611,29 @@ func (l *AccountLease) SaveConfig(value AccountConfig) error {
 	}
 	l.pool.notifyLocked()
 	l.pool.mu.Unlock()
+	return nil
+}
+
+// Disable 保存禁用状态，保留账号凭证、代理及其他设置。
+func (l *AccountLease) Disable(reason string) error {
+	if l == nil || l.account == nil || l.pool == nil {
+		return fmt.Errorf("账户租约未初始化")
+	}
+	l.pool.mu.Lock()
+	config := l.account.Config
+	l.pool.mu.Unlock()
+	if !config.Enabled {
+		return nil
+	}
+	config.Enabled = false
+	if err := l.SaveConfig(config); err != nil {
+		return err
+	}
+	l.pool.mu.Lock()
+	l.account.stateMessage = reason
+	l.pool.notifyLocked()
+	l.pool.mu.Unlock()
+	slog.Warn("账号已自动禁用", "account", l.account.ID, "reason", reason)
 	return nil
 }
 

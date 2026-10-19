@@ -228,16 +228,15 @@ func (manager *runtimeManager) CountTokens(ctx context.Context, request aistudio
 func (manager *runtimeManager) Generate(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	if !prepareAntiTruncation(&request) {
-		return manager.current.service.Generate(ctx, request)
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	events, err := manager.current.service.Generate(ctx, request)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	return antiTruncationEvents(ctx, cancel, events), nil
+	convertReply := prepareAntiTruncation(&request)
+	service := manager.current.service
+	return generateWithEmptyRetry(ctx, request, func(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
+		events, err := service.Generate(ctx, request)
+		if err == nil && convertReply {
+			events = antiTruncationEvents(ctx, events)
+		}
+		return events, err
+	})
 }
 
 // GenerateVideo 由当前生成服务创建视频任务

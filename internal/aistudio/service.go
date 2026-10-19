@@ -486,6 +486,22 @@ func DefinitiveAuthenticationFailure(err error) bool {
 		(rpcError.StatusCode == http.StatusUnauthorized || rpcError.Code == 16)
 }
 
+func definitiveForbiddenFailure(err error) bool {
+	var rpcError *RPCError
+	return errors.As(err, &rpcError) && rpcError.StatusCode == http.StatusForbidden
+}
+
+// MarkRequestFailure 403 持久禁用，认证失效仍保留原来的重新登录处理。
+func (l *AccountLease) MarkRequestFailure(err error) error {
+	if definitiveForbiddenFailure(err) {
+		return l.Disable("上游返回 403：" + err.Error())
+	}
+	if DefinitiveAuthenticationFailure(err) {
+		return l.MarkAuthenticationRequired(err.Error())
+	}
+	return nil
+}
+
 // DefinitiveWAARuntimeFailure 判断上游是否明确拒绝当前 WAA 运行态
 func DefinitiveWAARuntimeFailure(err error) bool {
 	var rpcError *RPCError
@@ -505,8 +521,8 @@ func modelBoundRPCMethod(method string) bool {
 
 func (s *PooledService) markRetryableFailure(lease *AccountLease, modelAccessScope string, err error) error {
 	accountID := lease.Account().ID
-	if DefinitiveAuthenticationFailure(err) {
-		return lease.MarkAuthenticationRequired(err.Error())
+	if definitiveForbiddenFailure(err) || DefinitiveAuthenticationFailure(err) {
+		return lease.MarkRequestFailure(err)
 	}
 	now := time.Now()
 	cooldown, ok := QuotaCooldownForError(err, now)
@@ -527,6 +543,12 @@ func (s *PooledService) modelsForLease(ctx context.Context, lease *AccountLease)
 	tier, err := s.client.BenefitTierForAccount(ContextWithAccountLease(ctx, lease), account.ID)
 	if err != nil {
 		return nil, s.catalogFailure(lease, err)
+	}
+	if tier == BenefitTierFree {
+		return nil, errors.Join(
+			s.pool.SetCatalog(account.ID, tier, nil),
+			lease.Disable("权益查询确认账号为 Free"),
+		)
 	}
 	models, err := s.client.ModelsForAccount(ContextWithAccountLease(ctx, lease), account.ID)
 	if err != nil {
@@ -555,10 +577,10 @@ func (s *PooledService) modelsForLease(ctx context.Context, lease *AccountLease)
 	return models, nil
 }
 
-// catalogFailure 把认证失效的账户标为需要登录，其余失败记为该账户最近一次目录读取错误
+// catalogFailure 禁用 403 账户，认证失效标为需要登录，其余失败只记录原因。
 func (s *PooledService) catalogFailure(lease *AccountLease, err error) error {
-	if DefinitiveAuthenticationFailure(err) {
-		return errors.Join(err, lease.MarkAuthenticationRequired(err.Error()))
+	if definitiveForbiddenFailure(err) || DefinitiveAuthenticationFailure(err) {
+		return errors.Join(err, lease.MarkRequestFailure(err))
 	}
 	s.pool.recordCatalogFailure(lease.Account().ID, err)
 	return err
@@ -629,7 +651,7 @@ func (s *PooledService) ValidateGenerateRequest(request GenerateRequest) error {
 	if len(request.Contents) == 0 {
 		return fmt.Errorf("%w: 请求没有系统提示或对话内容", ErrInvalidArgument)
 	}
-	request, _, err := prepareToolRequest(request)
+	request, err := prepareToolRequest(request)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
@@ -771,8 +793,8 @@ func forwardEventsWithLease(
 		}
 		if event.Kind == EventError {
 			terminal = true
-			if DefinitiveAuthenticationFailure(event.Err) {
-				if err := lease.MarkAuthenticationRequired(event.Err.Error()); err != nil {
+			if definitiveForbiddenFailure(event.Err) || DefinitiveAuthenticationFailure(event.Err) {
+				if err := lease.MarkRequestFailure(event.Err); err != nil {
 					event.Err = errors.Join(event.Err, err)
 				}
 			} else if cooldown, ok := QuotaCooldownForError(event.Err, time.Now()); ok {

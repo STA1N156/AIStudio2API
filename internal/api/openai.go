@@ -948,15 +948,15 @@ func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	var writing sync.Mutex
+	started := make([]bool, len(choices.events))
 	write := func(index int, delta map[string]any, finish *string) error {
 		writing.Lock()
 		defer writing.Unlock()
-		return writeChatChunk(w, id, created, request.Model, index, delta, finish, request.StreamOptions.IncludeUsage)
-	}
-	for index := range choices.events {
-		if err := write(index, map[string]any{"role": "assistant", "content": ""}, nil); err != nil {
-			return
+		if !started[index] {
+			delta["role"] = "assistant"
+			started[index] = true
 		}
+		return writeChatChunk(w, id, created, request.Model, index, delta, finish, request.StreamOptions.IncludeUsage)
 	}
 	heartbeat := func() error {
 		writing.Lock()
@@ -1026,10 +1026,16 @@ type chatStreamChoice struct {
 func (choice *chatStreamChoice) emit(event aistudio.Event) error {
 	switch event.Kind {
 	case aistudio.EventText:
-		choice.hasContent = choice.hasContent || event.Text != ""
+		if event.Text == "" {
+			return nil
+		}
+		choice.hasContent = true
 		choice.contentEndsWithNewline = strings.HasSuffix(event.Text, "\n")
 		return choice.write(choice.index, map[string]any{"content": event.Text}, nil)
 	case aistudio.EventReasoning:
+		if event.Text == "" {
+			return nil
+		}
 		return choice.write(choice.index, map[string]any{"reasoning_content": event.Text}, nil)
 	case aistudio.EventToolCall:
 		if event.ToolCall == nil {

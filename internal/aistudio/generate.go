@@ -302,7 +302,7 @@ func normalizedReasoningEffort(value string) string {
 	return effort
 }
 
-// ApplyModelSuffix 解析 (思考设置) 或 -low/-medium/-high，后缀优先于请求体中的思考参数。
+// ApplyModelSuffix 解析 (思考设置) 或 -low/-medium/-high，客户端思考参数优先，后缀仅提供默认值。
 func ApplyModelSuffix(model string, config GenerationConfig) (string, GenerationConfig, error) {
 	open := strings.LastIndex(model, "(")
 	var value string
@@ -321,6 +321,7 @@ func ApplyModelSuffix(model string, config GenerationConfig) (string, Generation
 		}
 	}
 	model = strings.TrimSpace(model[:open])
+	clientEffort, clientBudget := config.ReasoningEffort, config.ThinkingBudget
 	switch value {
 	case "auto", "-1":
 		config.ReasoningEffort, config.ThinkingBudget = "", nil
@@ -332,6 +333,9 @@ func ApplyModelSuffix(model string, config GenerationConfig) (string, Generation
 			return model, config, fmt.Errorf("%w: 模型名后缀 (%s) 必须是 none、auto、minimal、low、medium、high、xhigh、max 或非负整数思考预算", ErrInvalidArgument, value)
 		}
 		config.ReasoningEffort, config.ThinkingBudget = "", &budget
+	}
+	if normalizedReasoningEffort(clientEffort) != "" || clientBudget != nil {
+		config.ReasoningEffort, config.ThinkingBudget = clientEffort, clientBudget
 	}
 	return model, config, nil
 }
@@ -701,7 +705,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	if interaction {
 		request.Tools = Tools{}
 	}
-	request, contract, err := prepareToolRequest(request)
+	request, err = prepareToolRequest(request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
@@ -825,7 +829,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 			_ = send(*finish)
 		}
 	}()
-	return contract.forward(ctx, events), nil
+	return events, nil
 }
 
 // countStopInput 并发计数请求输入，供本地命中 stop sequence 后补全用量
