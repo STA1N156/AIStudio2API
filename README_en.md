@@ -480,7 +480,7 @@ cp .env.example .env
 | `REQUEST_TIMEOUT` | `30m` | Maximum request execution time, multiplied by the number of rounds for auto-continued requests |
 | `WARM_WORKER_LIMIT` | `5` | Number of resident prewarmed accounts |
 | `MAX_ACTIVE_WORKERS` | `10` | Maximum workers active during peak load |
-| `WARM_STARTUP_CONCURRENCY` | `5` | Camoufox workers cold-started concurrently, shared by prewarming and on-demand scaling; unlimited with `WAA_BACKEND=go` |
+| `WARM_STARTUP_CONCURRENCY` | `5` | Concurrent cold starts, shared by prewarming and on-demand scaling; applies to both Camoufox and Go |
 | `PER_ACCOUNT_CONCURRENCY` | `2` | Concurrent requests allowed per account |
 | `ROUTING_STRATEGY` | `round-robin` | `round-robin` rotates accounts; `fill-first` reuses the first available account |
 | `UPSTREAM_CHANNELS` | `playground,build` | Upstream channels for generation requests; either one can be used alone |

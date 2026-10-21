@@ -148,6 +148,7 @@ func runServer(ctx context.Context, cfg config.Config, options commandOptions, m
 	apiHandler := api.NewHandler(manager, api.Config{
 		APIKey: cfg.ProxyAPIKey, Admin: manager, Ledger: manager.ledger, Updates: updater,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword,
+		RequestLimits: manager.RequestLimits,
 	})
 	server := &http.Server{
 		Handler:           rootHandler(apiHandler),

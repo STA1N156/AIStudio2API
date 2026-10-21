@@ -231,6 +231,7 @@ export interface UsageStats {
   succeeded: number
   failed: number
   canceled: number
+  rate_excluded?: number
   rate_limited: number
   input_tokens: number
   cached_tokens: number

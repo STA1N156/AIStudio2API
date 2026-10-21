@@ -32,6 +32,7 @@ type entry struct {
 	state           string
 	status          int
 	requests        int64
+	rateExcluded    int64
 	inputTokens     int64
 	cachedTokens    int64
 	reasoningTokens int64
@@ -70,6 +71,7 @@ func (value *entry) clone() *entry {
 // combine 把同一汇总键的另一条目累加到当前条目
 func (value *entry) combine(other *entry) {
 	value.requests += other.requests
+	value.rateExcluded += other.rateExcluded
 	value.inputTokens += other.inputTokens
 	value.cachedTokens += other.cachedTokens
 	value.reasoningTokens += other.reasoningTokens
@@ -109,6 +111,7 @@ type aggregate struct {
 	succeeded       int64
 	failed          int64
 	canceled        int64
+	rateExcluded    int64
 	rateLimited     int64
 	inputTokens     int64
 	cachedTokens    int64
@@ -127,6 +130,7 @@ type aggregate struct {
 // add 累计一个条目
 func (total *aggregate) add(value *entry) {
 	total.requests += value.requests
+	total.rateExcluded += value.rateExcluded
 	switch value.state {
 	case "failed":
 		total.failed += value.requests
@@ -156,7 +160,8 @@ func (total *aggregate) add(value *entry) {
 func (total *aggregate) stats() api.UsageStats {
 	stats := api.UsageStats{
 		Requests: total.requests, Succeeded: total.succeeded, Failed: total.failed, Canceled: total.canceled,
-		RateLimited: total.rateLimited, InputTokens: total.inputTokens, CachedTokens: total.cachedTokens, ReasoningTokens: total.reasoningTokens,
+		RateExcluded: total.rateExcluded,
+		RateLimited:  total.rateLimited, InputTokens: total.inputTokens, CachedTokens: total.cachedTokens, ReasoningTokens: total.reasoningTokens,
 		ReplyTokens: total.replyTokens, TotalTokens: total.totalTokens,
 	}
 	if total.succeeded > 0 {
@@ -362,6 +367,28 @@ func (store *Store) scan(ctx context.Context, part segment, filters api.UsageFil
 	return errors.Join(rows.Err(), rows.Close())
 }
 
+// scanRateExclusions 补充原始 400 的分类，旧记录及小时/日汇总无需重写。
+func (store *Store) scanRateExclusions(ctx context.Context, from, to int64, filters api.UsageFilters, visit func(*entry)) error {
+	clause, filterArgs := filterSQL(filters)
+	rows, err := store.db.QueryContext(ctx, `SELECT time, model, account, channel, protocol, error
+ FROM requests WHERE time >= ? AND time < ? AND state = 'failed' AND status = 400`+clause,
+		append([]any{from, to}, filterArgs...)...)
+	if err != nil {
+		return err
+	}
+	value := &entry{state: "failed", status: 400, rateExcluded: 1}
+	var message string
+	for rows.Next() {
+		if err := rows.Scan(&value.time, &value.model, &value.account, &value.channel, &value.protocol, &message); err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		if api.ExcludeFromFailureRate(value.status, message) {
+			visit(value)
+		}
+	}
+	return errors.Join(rows.Err(), rows.Close())
+}
+
 // cost 是一段时间内按 API 单价估算的美元费用、各分桶费用与有 token 但没有单价的模型
 type cost struct {
 	total    float64
@@ -450,11 +477,17 @@ func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageR
 			return api.UsageReport{}, err
 		}
 	}
+	if err := store.scanRateExclusions(ctx, from, to, query.Filters, visit); err != nil {
+		return api.UsageReport{}, err
+	}
 	previous := &aggregate{}
 	for _, part := range plan(from-(to-from), from, nil) {
 		if err := store.scan(ctx, part, query.Filters, previous.add); err != nil {
 			return api.UsageReport{}, err
 		}
+	}
+	if err := store.scanRateExclusions(ctx, from-(to-from), from, query.Filters, previous.add); err != nil {
+		return api.UsageReport{}, err
 	}
 	recent := &aggregate{}
 	if err := store.scan(ctx, segment{from: now.Add(-recentWindow).UnixMilli(), to: now.UnixMilli() + 1}, query.Filters, recent.add); err != nil {

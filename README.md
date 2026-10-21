@@ -490,7 +490,7 @@ cp .env.example .env
 | `REQUEST_TIMEOUT` | `30m` | 单次请求最大执行时间，自动续写请求按续写轮数倍增 |
 | `WARM_WORKER_LIMIT` | `20` | 常驻预热账户数 |
 | `MAX_ACTIVE_WORKERS` | `50` | 高峰期最多同时运行的 Worker 数 |
-| `WARM_STARTUP_CONCURRENCY` | `5` | 同时冷启动的 Camoufox Worker 数，预热与按需扩容共用；`WAA_BACKEND=go` 时不限制 |
+| `WARM_STARTUP_CONCURRENCY` | `5` | 同时冷启动的 Worker 数，预热与按需扩容共用，Camoufox 与 Go 后端均生效 |
 | `PER_ACCOUNT_CONCURRENCY` | `2` | 单账号同时执行的请求数 |
 | `ROUTING_STRATEGY` | `round-robin` | `round-robin` 轮询；`fill-first` 账号粘性优先 |
 | `UPSTREAM_CHANNELS` | `playground,build` | 生成请求使用的上游通道，可只保留其一 |

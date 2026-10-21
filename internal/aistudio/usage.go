@@ -2,19 +2,23 @@ package aistudio
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 type generatedOutputParts struct {
 	visible   []Part
 	reasoning []Part
+	// 指针避免按值传递 output 时复制正在使用的 Builder。
+	visibleText   *strings.Builder
+	reasoningText *strings.Builder
 }
 
 func (output *generatedOutputParts) observe(event Event) {
 	switch event.Kind {
 	case EventText:
-		output.appendText(&output.visible, event.Text, false, event.ThoughtSignature)
+		output.appendText(&output.visible, &output.visibleText, event.Text, false, event.ThoughtSignature)
 	case EventReasoning:
-		output.appendText(&output.reasoning, event.Text, true, event.ThoughtSignature)
+		output.appendText(&output.reasoning, &output.reasoningText, event.Text, true, event.ThoughtSignature)
 	case EventToolCall:
 		if event.ToolCall != nil {
 			call := *event.ToolCall
@@ -36,17 +40,24 @@ func (output *generatedOutputParts) observe(event Event) {
 	}
 }
 
-func (output *generatedOutputParts) appendText(parts *[]Part, text string, thought bool, signature string) {
+func (output *generatedOutputParts) appendText(parts *[]Part, buffer **strings.Builder, text string, thought bool, signature string) {
 	if text == "" {
 		return
 	}
 	if len(*parts) > 0 {
 		last := &(*parts)[len(*parts)-1]
 		if last.Text != "" && last.Thought == thought && last.ThoughtSignature == signature {
-			last.Text += text
+			if *buffer == nil {
+				*buffer = new(strings.Builder)
+				(*buffer).Grow(len(last.Text) + len(text))
+				(*buffer).WriteString(last.Text)
+			}
+			(*buffer).WriteString(text)
+			last.Text = (*buffer).String()
 			return
 		}
 	}
+	*buffer = nil
 	*parts = append(*parts, Part{Text: text, Thought: thought, ThoughtSignature: signature})
 }
 

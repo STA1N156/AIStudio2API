@@ -154,9 +154,9 @@ export function liveRange(range: RangePreset): boolean {
   return range !== 'yesterday' && range !== 'lastMonth' && range !== 'custom'
 }
 
-// successRate 返回排除客户端取消后的成功比例
+// successRate 排除客户端取消及指定的空回/提示词拦截 400，不把它们视为成功。
 export function successRate(stats: UsageStats): number | null {
-  const counted = stats.requests - stats.canceled
+  const counted = stats.requests - stats.canceled - (stats.rate_excluded ?? 0)
   return counted > 0 ? stats.succeeded / counted : null
 }
 

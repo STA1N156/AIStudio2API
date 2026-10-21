@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -74,6 +75,8 @@ type runtimeManager struct {
 	startCancel      context.CancelFunc
 	ledger           *requestdb.Store
 	logs             *logOutput
+	requestCapacity  atomic.Int64
+	requestTimeout   atomic.Int64
 }
 
 // newRuntimeManager 创建进程级管理器与初始生成服务
@@ -93,7 +96,14 @@ func newRuntimeManager(
 		return nil, err
 	}
 	manager.current = generation
+	manager.requestCapacity.Store(int64(cfg.MaxActiveWorkers * cfg.PerAccountConcurrency))
+	manager.requestTimeout.Store(int64(cfg.RequestTimeout))
 	return manager, nil
+}
+
+// RequestLimits 同步账号池容量与最长排队时间，生成阶段单独控制超时。
+func (manager *runtimeManager) RequestLimits() (int, time.Duration) {
+	return int(manager.requestCapacity.Load()), time.Duration(manager.requestTimeout.Load())
 }
 
 // buildRuntimeGeneration 从配置快照创建账户池、Worker 与协议运行时
@@ -160,6 +170,8 @@ func (manager *runtimeManager) StartService(ctx context.Context) (api.AdminStatu
 	manager.mu.Lock()
 	current = manager.current
 	manager.current = next
+	manager.requestCapacity.Store(int64(cfg.MaxActiveWorkers * cfg.PerAccountConcurrency))
+	manager.requestTimeout.Store(int64(cfg.RequestTimeout))
 	manager.mu.Unlock()
 
 	current.cancelLifecycle()
@@ -466,6 +478,7 @@ func (manager *runtimeManager) UpdateRuntimeConfig(ctx context.Context, value ap
 		manager.current.service.ApplyCapacity(
 			updated.WarmWorkerLimit, updated.MaxActiveWorkers, updated.WarmStartupConcurrency, updated.PerAccountConcurrency,
 		)
+		manager.requestCapacity.Store(int64(updated.MaxActiveWorkers * updated.PerAccountConcurrency))
 		updated = manager.decorateRuntimeConfig(updated, manager.current.config)
 		manager.ledger.SetBodyCapture(updated.RequestBodyLog)
 		err = manager.logs.set(updated.LogFile, updated.LogMaxTotalMB)

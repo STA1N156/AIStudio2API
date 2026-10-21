@@ -677,5 +677,7 @@ func (runtime *goWAARuntime) Close() error {
 		runtime.vm.Close()
 		runtime.vm = nil
 	}
+	runtime.client.CloseIdleConnections()
+	runtime.interpreter = ""
 	return nil
 }

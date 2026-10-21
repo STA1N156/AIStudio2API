@@ -151,17 +151,21 @@ func encodeGenerationConfig(config GenerationConfig, defaults GenerationDefaults
 		}
 		thinkingBudget = nil
 	}
-	includeMaxOutput := config.SpeechConfig == nil || config.MaxOutputTokens != nil
 	maxOutput := defaults.MaxOutputTokens
 	if config.MaxOutputTokens != nil {
-		maxOutput = *config.MaxOutputTokens
+		if *config.MaxOutputTokens < 0 {
+			return nil, fmt.Errorf("max_output_tokens 不能为负数")
+		}
+		// 部分客户端用 0 表示自动，保留目录默认值。
+		if *config.MaxOutputTokens > 0 {
+			maxOutput = *config.MaxOutputTokens
+		}
 	}
-	if includeMaxOutput && maxOutput > max(defaults.MaxOutputTokens, defaults.ContinuedOutputTokens) {
-		maxOutput = max(defaults.MaxOutputTokens, defaults.ContinuedOutputTokens)
+	if limit := max(defaults.MaxOutputTokens, defaults.ContinuedOutputTokens); limit > 0 && maxOutput > limit {
+		maxOutput = limit
 	}
-	if includeMaxOutput && maxOutput <= 0 {
-		return nil, fmt.Errorf("模型目录缺少有效 output token limit")
-	}
+	// 目录缺值且客户端未指定时省略该字段，交由上游应用默认值。
+	includeMaxOutput := maxOutput > 0 && (config.SpeechConfig == nil || config.MaxOutputTokens != nil && *config.MaxOutputTokens > 0)
 	temperature := defaults.Temperature
 	if config.Temperature != nil {
 		temperature = config.Temperature

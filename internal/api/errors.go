@@ -29,10 +29,22 @@ type errorCodeProvider interface {
 
 type emptyOutputError struct{}
 
+const (
+	emptyOutputMessage   = "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容"
+	blockedPromptMessage = "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
+)
+
 func (emptyOutputError) Error() string {
-	return "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容"
+	return emptyOutputMessage
 }
 func (emptyOutputError) HTTPStatus() int { return http.StatusBadRequest }
+
+// ExcludeFromFailureRate 仅排除指定的空回与提示词拦截 400，兼容旧记录中的上游原文。
+func ExcludeFromFailureRate(status int, message string) bool {
+	return status == http.StatusBadRequest && (strings.Contains(message, emptyOutputMessage) ||
+		strings.Contains(message, blockedPromptMessage) ||
+		strings.Contains(message, "The input token count exceeds the maximum number of tokens allowed 131072."))
+}
 
 func decodeJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(r.Body)
@@ -180,7 +192,7 @@ func publicErrorMessage(err error) string {
 	var rpc *aistudio.RPCError
 	if errors.As(err, &rpc) && rpc.Message != "" {
 		if rpc.StatusCode == http.StatusBadRequest && strings.Contains(rpc.Message, "131072") {
-			return "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
+			return blockedPromptMessage
 		}
 		return rpc.Message
 	}

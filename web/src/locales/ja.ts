@@ -389,9 +389,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.warmWorkerLimitHelp':
     '生成サービスの起動後にウォームアップしたまま常駐させるアカウントの数。',
   'settings.maxActiveWorkersHelp':
-    'ピーク時に同時に実行できる Worker の最大数。常駐数を超えた Worker は 5 分間アイドル状態が続くと終了します。',
+    'ピーク時に同時に実行できる Worker の最大数。常駐数を超えた Worker は 1 分間アイドル状態が続くと終了します。',
   'settings.warmStartupConcurrencyHelp':
-    '同時にコールド スタートする Camoufox Worker の数です。ウォームアップと必要に応じた増設で共用します。Pure Go バックエンドには適用されません。',
+    '同時に起動するアカウント数。ウォームアップと増設で共用し、Camoufox と Pure Go の両方に適用します。',
   'settings.perAccountConcurrencyHelp': '1 つのアカウントで同時に実行するリクエストの数。',
   'settings.buildNativeHelp':
     'ストリーミング以外のリクエストでは、アカウントの Build のネイティブな単発呼び出しを優先します。そのアカウントの Build がクールダウン中か対象モデルに対応していない場合は、同じアカウントの Playground を使用します。',
@@ -478,8 +478,9 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': 'レート制限',
   'usage.otherErrors': 'その他のエラー',
   'usage.successRate': '成功率',
+  'usage.rateExcluded': '成功率の集計対象外',
   'usage.successRateHelp':
-    '成功 ÷（リクエスト − クライアントによるキャンセル）。ツール呼び出し、出力上限への到達、上流での停止は成功として数えます',
+    '成功 ÷（リクエスト − クライアントのキャンセル − 空出力・プロンプト遮断の400）。これらの400はエラー記録に残りますが成功率の対象外です。ツール呼び出し、出力上限、上流停止は成功に含みます',
   'usage.tokens': 'トークン',
   'usage.throughput': '現在のスループット',
   'usage.throughputHelp': '直近 {minutes} 分間に 1 分あたり平均で完了したリクエスト数とトークン数',

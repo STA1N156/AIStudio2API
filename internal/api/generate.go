@@ -20,6 +20,7 @@ var errUpstreamStream = errors.New("upstream stream error")
 const streamHeartbeatInterval = 10 * time.Second
 
 type generationResult struct {
+	compactStream bool
 	events        []aistudio.Event
 	text          strings.Builder
 	reasoning     strings.Builder
@@ -53,9 +54,13 @@ func (result *generationResult) apply(event aistudio.Event) error {
 	result.hasOutput = result.hasOutput || event.HasOutput()
 	switch event.Kind {
 	case aistudio.EventText:
-		result.text.WriteString(event.Text)
+		if !result.compactStream {
+			result.text.WriteString(event.Text)
+		}
 	case aistudio.EventReasoning:
-		result.reasoning.WriteString(event.Text)
+		if !result.compactStream {
+			result.reasoning.WriteString(event.Text)
+		}
 	case aistudio.EventToolCall:
 		if event.ToolCall != nil {
 			call := *event.ToolCall
@@ -105,7 +110,9 @@ func (result *generationResult) apply(event aistudio.Event) error {
 		result.stopSequence = event.StopSequence
 		result.finished = true
 	}
-	result.events = append(result.events, event)
+	if !result.compactStream || event.Kind != aistudio.EventReasoning && event.Kind != aistudio.EventUsage {
+		result.events = append(result.events, event)
+	}
 	return nil
 }
 
@@ -185,6 +192,15 @@ func consumeEventsWithHeartbeat(
 	emit func(aistudio.Event) error,
 	heartbeat func() error,
 ) (result generationResult, resultErr error) {
+	return consumeEventsInto(ctx, events, emit, heartbeat, generationResult{})
+}
+
+// consumeChatStreamEvents 已转发的思考不再累积，正文只保留一份供引用定位。
+func consumeChatStreamEvents(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error, heartbeat func() error) (generationResult, error) {
+	return consumeEventsInto(ctx, events, emit, heartbeat, generationResult{compactStream: true})
+}
+
+func consumeEventsInto(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error, heartbeat func() error, result generationResult) (_ generationResult, resultErr error) {
 	defer func() {
 		SetAccessLogError(ctx, resultErr)
 	}()

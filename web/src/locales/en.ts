@@ -382,9 +382,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.authPathHelp': 'Account file, directory or several comma-separated paths.',
   'settings.warmWorkerLimitHelp': 'Accounts kept warm after the generation service starts.',
   'settings.maxActiveWorkersHelp':
-    'Maximum workers running at peak; workers above the warm count close after 5 idle minutes.',
+    'Maximum workers running at peak; workers above the warm count close after 1 idle minute.',
   'settings.warmStartupConcurrencyHelp':
-    'Camoufox workers cold-starting at once, shared by prewarming and scale-up; the pure Go backend has no such limit.',
+    'Accounts starting at once, shared by prewarming and scale-up; applies to both Camoufox and pure Go.',
   'settings.perAccountConcurrencyHelp': 'Requests one account runs at the same time.',
   'settings.buildNativeHelp':
     "Non-streaming requests prefer the account's native Build call; when that account's Build is cooling down or lacks the model, the same account's Playground is used.",
@@ -472,8 +472,9 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': 'Rate limited',
   'usage.otherErrors': 'Other errors',
   'usage.successRate': 'Success rate',
+  'usage.rateExcluded': 'Excluded from rate',
   'usage.successRateHelp':
-    'Succeeded ÷ (requests − client cancellations). Tool calls, output limits and upstream stops count as succeeded',
+    'Succeeded ÷ (requests − client cancellations − empty-output/prompt-blocked 400s). These 400s remain in error records but count as neither success nor rate failures. Tool calls, output limits and upstream stops count as succeeded',
   'usage.tokens': 'Tokens',
   'usage.throughput': 'Current throughput',
   'usage.throughputHelp':

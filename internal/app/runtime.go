@@ -339,11 +339,8 @@ func (manager *accountWorkerManager) SetCapacity(warmTarget int, maxActive int, 
 	}()
 }
 
-// setLimits 保存 Worker 数量上限，纯 Go 后端同时启动的 Worker 数只受峰值上限约束
+// setLimits 保存 Worker 数量和启动并发上限，两种后端都遵循同一限制。
 func (manager *accountWorkerManager) setLimits(warmTarget int, maxActive int, startupConcurrency int) {
-	if manager.camoufox == "" {
-		startupConcurrency = maxActive
-	}
 	manager.warmTarget.Store(int64(warmTarget))
 	manager.maxActive.Store(int64(maxActive))
 	manager.startup.setLimit(max(startupConcurrency, 1))
@@ -456,7 +453,7 @@ func (manager *accountWorkerManager) runtimeAvailable(accountIDs []string) ([]st
 }
 
 // workerIdleTimeout 为超出热池目标的 Worker 空闲多久后关闭
-const workerIdleTimeout = 5 * time.Minute
+const workerIdleTimeout = time.Minute
 
 // reapIdleWorkers 定期关闭超出热池目标且空闲超时的 Worker
 func (manager *accountWorkerManager) reapIdleWorkers() {

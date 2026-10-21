@@ -212,6 +212,8 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	// 已转换为统一请求，避免整段原始 JSON 在流式输出期间继续占用内存。
+	request.Messages = nil
 	if err := inlineRemoteMedia(r.Context(), generateRequest.Contents); err != nil {
 		if shouldWriteRequestError(r, err) {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -965,7 +967,7 @@ func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 	}
 	results, err := choices.run(func(index int, events <-chan aistudio.Event) (generationResult, error) {
 		choice := &chatStreamChoice{server: s, tools: request.Tools, index: index, write: write}
-		result, err := consumeStreamEvents(choices.ctx, events, choice.emit, heartbeat)
+		result, err := consumeChatStreamEvents(choices.ctx, events, choice.emit, heartbeat)
 		if err != nil {
 			return result, err
 		}

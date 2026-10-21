@@ -2,6 +2,7 @@ package waa
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +55,39 @@ const promptScript = `((prompt, submit) => {
 // promptProgram 是预编译的 promptScript，各 Runtime 共享
 var promptProgram = goja.MustCompile(hostScriptName, promptScript, false)
 
+type compiledInterpreter struct {
+	name    string
+	hash    [32]byte
+	program *goja.Program
+}
+
+// interpreterPrograms 最多保留四个版本，编译串行去重，避免冷启动时重复分配大批 AST。
+var interpreterPrograms struct {
+	sync.Mutex
+	entries []compiledInterpreter
+}
+
+func interpreterProgram(name, source string) (*goja.Program, error) {
+	hash := sha256.Sum256([]byte(source))
+	interpreterPrograms.Lock()
+	defer interpreterPrograms.Unlock()
+	for _, entry := range interpreterPrograms.entries {
+		if entry.name == name && entry.hash == hash {
+			return entry.program, nil
+		}
+	}
+	program, err := goja.Compile(name, source, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(interpreterPrograms.entries) == 4 {
+		copy(interpreterPrograms.entries, interpreterPrograms.entries[1:])
+		interpreterPrograms.entries = interpreterPrograms.entries[:3]
+	}
+	interpreterPrograms.entries = append(interpreterPrograms.entries, compiledInterpreter{name, hash, program})
+	return program, nil
+}
+
 // NewRuntime 在 Firefox 宿主中加载解释器并初始化 challenge program
 func NewRuntime(ctx context.Context, options Options) (*Runtime, error) {
 	if options.Interpreter == "" {
@@ -65,6 +99,10 @@ func NewRuntime(ctx context.Context, options Options) (*Runtime, error) {
 	sourceName := options.Challenge.InterpreterURL
 	if sourceName == "" {
 		sourceName = "https://www.google.com/js/bg/" + options.Challenge.InterpreterHash + ".js"
+	}
+	program, err := interpreterProgram(sourceName, options.Interpreter)
+	if err != nil {
+		return nil, fmt.Errorf("编译 WAA 解释器: %w", err)
 	}
 	location, zoneName, err := timeZoneOf(options.Profile)
 	if err != nil {
@@ -100,7 +138,7 @@ func NewRuntime(ctx context.Context, options Options) (*Runtime, error) {
 		}
 		state.topAPI = api
 		vm.SetEvalTransformer(state.registry.evalTransformer(vm, false))
-		if _, err := vm.RunScript(sourceName, options.Interpreter); err != nil {
+		if _, err := vm.RunProgram(program); err != nil {
 			complete(fmt.Errorf("执行 WAA 解释器: %w", err))
 			return
 		}

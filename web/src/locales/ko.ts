@@ -381,9 +381,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.authPathHelp': '계정 파일, 디렉터리 또는 쉼표로 구분한 여러 경로입니다.',
   'settings.warmWorkerLimitHelp': '생성 서비스 시작 후 예열 상태로 상주시킬 계정 수입니다.',
   'settings.maxActiveWorkersHelp':
-    '사용량이 많을 때 동시에 실행할 수 있는 최대 Worker 수입니다. 상주 수를 넘는 Worker는 5분 동안 유휴 상태이면 종료됩니다.',
+    '사용량이 많을 때 동시에 실행할 수 있는 최대 Worker 수입니다. 상주 수를 넘는 Worker는 1분 동안 유휴 상태이면 종료됩니다.',
   'settings.warmStartupConcurrencyHelp':
-    '동시에 콜드 스타트하는 Camoufox Worker 수로, 예열과 필요 시 확장에 함께 적용됩니다. Pure Go 백엔드에는 적용되지 않습니다.',
+    '동시에 시작하는 계정 수로, 예열과 확장에 함께 적용됩니다. Camoufox와 Pure Go 모두에 적용됩니다.',
   'settings.perAccountConcurrencyHelp': '계정 하나가 동시에 처리하는 요청 수입니다.',
   'settings.buildNativeHelp':
     '스트리밍이 아닌 요청은 계정의 Build 기본 단일 호출을 우선 사용합니다. 해당 계정의 Build가 쿨다운 중이거나 모델을 지원하지 않으면 같은 계정의 Playground를 사용합니다.',
@@ -471,8 +471,9 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': '속도 제한',
   'usage.otherErrors': '기타 오류',
   'usage.successRate': '성공률',
+  'usage.rateExcluded': '성공률 집계 제외',
   'usage.successRateHelp':
-    '성공 ÷ (요청 − 클라이언트 취소). 도구 호출, 출력 한도 도달, 업스트림 중단은 성공으로 계산합니다',
+    '성공 ÷ (요청 − 클라이언트 취소 − 빈 출력·프롬프트 차단 400). 해당 400은 오류 기록에 남지만 성공률에서 제외합니다. 도구 호출, 출력 한도, 업스트림 중단은 성공으로 계산합니다',
   'usage.tokens': '토큰',
   'usage.throughput': '현재 처리량',
   'usage.throughputHelp': '최근 {minutes}분 동안 분당 평균으로 완료된 요청 수와 토큰 수',

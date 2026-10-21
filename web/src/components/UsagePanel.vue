@@ -252,7 +252,7 @@ const kpis = computed(() => {
   const previousRate = successRate(previous)
   const series = (pick: (bucket: UsageStats) => number | null) =>
     buckets.map(pick).filter((item): item is number => item !== null)
-  const otherErrors = totals.failed - totals.rate_limited
+  const otherErrors = totals.failed - totals.rate_limited - (totals.rate_excluded ?? 0)
   return [
     {
       label: t('usage.successRate'),
@@ -271,6 +271,7 @@ const kpis = computed(() => {
           value: integer(otherErrors),
           tone: otherErrors > 0 ? 'text-red-400' : undefined,
         },
+        { label: t('usage.rateExcluded'), value: integer(totals.rate_excluded ?? 0) },
       ],
       delta: delta(
         rate === null || previousRate === null ? null : rate - previousRate,

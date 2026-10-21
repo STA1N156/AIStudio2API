@@ -393,9 +393,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.warmWorkerLimitHelp':
     'Anzahl der Konten, die nach dem Start des Generierungsdienstes vorgewärmt bereitstehen.',
   'settings.maxActiveWorkersHelp':
-    'Höchstzahl gleichzeitig laufender Worker bei Spitzenlast; Worker über der vorgewärmten Anzahl werden nach 5 Minuten Leerlauf beendet.',
+    'Höchstzahl gleichzeitig laufender Worker bei Spitzenlast; Worker über der vorgewärmten Anzahl werden nach 1 Minute Leerlauf beendet.',
   'settings.warmStartupConcurrencyHelp':
-    'Anzahl gleichzeitig kalt gestarteter Camoufox-Worker, gemeinsam für Vorwärmen und bedarfsgesteuertes Hochskalieren; für das reine Go-Backend gilt dieses Limit nicht.',
+    'Anzahl gleichzeitig startender Konten, gemeinsam für Vorwärmen und Hochskalieren; gilt für Camoufox und das reine Go-Backend.',
   'settings.perAccountConcurrencyHelp':
     'Anzahl der Anfragen, die ein Konto gleichzeitig bearbeitet.',
   'settings.buildNativeHelp':
@@ -485,8 +485,9 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': 'Ratenbegrenzt',
   'usage.otherErrors': 'Andere Fehler',
   'usage.successRate': 'Erfolgsquote',
+  'usage.rateExcluded': 'Von Quote ausgenommen',
   'usage.successRateHelp':
-    'Erfolgreich ÷ (Anfragen − Abbrüche durch den Client). Toolaufrufe, erreichte Ausgabelimits und Abbrüche im Upstream zählen als erfolgreich',
+    'Erfolgreich ÷ (Anfragen − Client-Abbrüche − 400 bei leerer Ausgabe oder blockiertem Prompt). Diese 400 bleiben im Fehlerprotokoll, zählen aber nicht zur Quote. Toolaufrufe, Ausgabelimits und Upstream-Stopps zählen als erfolgreich',
   'usage.tokens': 'Tokens',
   'usage.throughput': 'Aktueller Durchsatz',
   'usage.throughputHelp':

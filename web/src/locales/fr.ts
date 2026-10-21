@@ -395,9 +395,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.warmWorkerLimitHelp':
     'Nombre de comptes maintenus préchauffés après le démarrage du service de génération.',
   'settings.maxActiveWorkersHelp':
-    'Nombre maximal de workers en exécution aux heures de pointe ; ceux au-delà du nombre préchauffé s’arrêtent après 5 minutes d’inactivité.',
+    'Nombre maximal de workers en exécution aux heures de pointe ; ceux au-delà du nombre préchauffé s’arrêtent après 1 minute d’inactivité.',
   'settings.warmStartupConcurrencyHelp':
-    'Nombre de workers Camoufox démarrés à froid en même temps, partagé entre le préchauffage et l’extension à la demande ; le moteur Go pur n’est pas concerné.',
+    'Nombre de comptes démarrés en même temps, partagé entre le préchauffage et l’extension ; appliqué à Camoufox et au moteur Go pur.',
   'settings.perAccountConcurrencyHelp': 'Nombre de requêtes qu’un compte traite en même temps.',
   'settings.buildNativeHelp':
     'Les requêtes sans streaming privilégient l’appel natif unique de Build du compte ; si le Build de ce compte est en refroidissement ou ne prend pas en charge le modèle, le Playground du même compte est utilisé.',
@@ -485,8 +485,9 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': 'Limitées',
   'usage.otherErrors': 'Autres erreurs',
   'usage.successRate': 'Taux de réussite',
+  'usage.rateExcluded': 'Exclues du taux',
   'usage.successRateHelp':
-    'Réussies ÷ (requêtes − annulations client). Les appels d’outils, les limites de sortie atteintes et les arrêts en amont comptent comme des réussites',
+    'Réussies ÷ (requêtes − annulations client − erreurs 400 pour sortie vide ou prompt bloqué). Ces 400 restent dans les journaux mais sont exclues du taux. Les appels d’outils, limites de sortie et arrêts en amont comptent comme des réussites',
   'usage.tokens': 'Jetons',
   'usage.throughput': 'Débit actuel',
   'usage.throughputHelp':

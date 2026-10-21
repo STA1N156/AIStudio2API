@@ -368,9 +368,9 @@ export const messages = {
   'settings.warmWorkerLimitHelp':
     '提前启动并保持就绪的账号数，减少请求进来后的等待。数量越多，占用的内存也越多。',
   'settings.maxActiveWorkersHelp':
-    '请求较多时最多启用多少个账号。临时启动的账号空闲 5 分钟后会自动释放。',
+    '请求较多时最多启用多少个账号。临时启动的账号空闲 1 分钟后会自动释放。',
   'settings.warmStartupConcurrencyHelp':
-    '同时冷启动的 Camoufox Worker 数，预热与按需扩容共用；纯 Go 后端不受此限制。',
+    '同时启动的账号数，预热与按需扩容共用；Camoufox 与纯 Go 后端均生效。',
   'settings.perAccountConcurrencyHelp': '单个账户同时执行的请求数。',
   'settings.buildNativeHelp':
     '非流式请求优先使用账户的 Build 原生单次调用；该账户 Build 冷却或不支持模型时，使用同一账户的 Playground。',
@@ -457,8 +457,9 @@ export const messages = {
   'usage.rateLimitedShort': '限流',
   'usage.otherErrors': '其他错误',
   'usage.successRate': '成功率',
+  'usage.rateExcluded': '不计失败率',
   'usage.successRateHelp':
-    '成功 ÷（请求 − 客户端取消）。工具调用、达到输出上限与上游终止都计为成功',
+    '成功 ÷（请求 − 客户端取消 − 空回及预设拦截 400）。这两类 400 保留错误记录，不计成功或失败率；工具调用、达到输出上限与上游终止计为成功',
   'usage.tokens': 'Token',
   'usage.throughput': '当前吞吐',
   'usage.throughputHelp': '最近 {minutes} 分钟内平均每分钟完成的请求数与 token 数',

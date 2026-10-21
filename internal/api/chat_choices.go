@@ -36,7 +36,7 @@ func (s *server) startChatChoices(ctx context.Context, request aistudio.Generate
 				choice.Config.Seed = &seed
 			}
 		}
-		events := make(chan aistudio.Event)
+		events := make(chan aistudio.Event, 16)
 		choices.events[index] = events
 		choices.running.Add(1)
 		go func() {
@@ -73,29 +73,27 @@ func (s *server) startChatChoices(ctx context.Context, request aistudio.Generate
 	return choices
 }
 
-// relayEvents 经内存队列把 source 的事件转发到 out
+// relayEvents 通过有界通道转发事件，下游慢时反压上游，不丢失内容。
 func relayEvents(ctx context.Context, source <-chan aistudio.Event, out chan<- aistudio.Event) {
-	var queue []aistudio.Event
-	for source != nil || len(queue) > 0 {
-		var send chan<- aistudio.Event
-		var next aistudio.Event
-		if len(queue) > 0 {
-			send, next = out, queue[0]
-		}
+	defer close(out)
+	if source == nil {
+		return
+	}
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case send <- next:
-			queue = queue[1:]
 		case event, ok := <-source:
 			if !ok {
-				source = nil
-				continue
+				return
 			}
-			queue = append(queue, event)
+			select {
+			case out <- event:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
-	close(out)
 }
 
 // fail 记录首个错误并取消其余生成

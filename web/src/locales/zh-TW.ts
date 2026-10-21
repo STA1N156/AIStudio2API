@@ -374,9 +374,9 @@ export const messages: Record<TranslationKey, string> = {
   'settings.authPathHelp': '帳號檔案、目錄，或以逗號分隔的多個路徑。',
   'settings.warmWorkerLimitHelp': '生成服務啟動後常駐預熱的帳號數。',
   'settings.maxActiveWorkersHelp':
-    '尖峰時最多同時執行的 Worker 數；超出常駐數的 Worker 閒置 5 分鐘後關閉。',
+    '尖峰時最多同時執行的 Worker 數；超出常駐數的 Worker 閒置 1 分鐘後關閉。',
   'settings.warmStartupConcurrencyHelp':
-    '同時冷啟動的 Camoufox Worker 數，預熱與依需求擴充共用；純 Go 後端不受此限制。',
+    '同時啟動的帳號數，預熱與依需求擴充共用；Camoufox 與純 Go 後端均生效。',
   'settings.perAccountConcurrencyHelp': '單一帳號同時執行的請求數。',
   'settings.buildNativeHelp':
     '非串流請求優先使用帳號的 Build 原生單次呼叫；該帳號的 Build 冷卻中或不支援該模型時，改用同一帳號的 Playground。',
@@ -459,7 +459,9 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': '限流',
   'usage.otherErrors': '其他錯誤',
   'usage.successRate': '成功率',
-  'usage.successRateHelp': '成功 ÷（請求 − 用戶端取消）。工具呼叫、達到輸出上限與上游終止都算成功',
+  'usage.rateExcluded': '不計失敗率',
+  'usage.successRateHelp':
+    '成功 ÷（請求 − 用戶端取消 − 空回及預設攔截 400）。這兩類 400 保留錯誤記錄，不計成功或失敗率；工具呼叫、達到輸出上限與上游終止計為成功',
   'usage.tokens': 'Token',
   'usage.throughput': '目前處理量',
   'usage.throughputHelp': '最近 {minutes} 分鐘內平均每分鐘完成的請求數與 Token 數',

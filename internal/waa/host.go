@@ -18,6 +18,15 @@ import (
 //go:embed dom.js
 var domJavaScript string
 
+// 只共享不可变字节码，DOM 对象、Cookie 与账号运行状态仍由各 VM 独立持有。
+var domProgram = sync.OnceValues(func() (*goja.Program, error) {
+	return goja.Compile(hostScriptName, domJavaScript, false)
+})
+
+var hostProgram = sync.OnceValues(func() (*goja.Program, error) {
+	return goja.Compile(hostScriptName, hostJavaScript, false)
+})
+
 //go:embed firefox152.json.gz
 var firefoxShapeGzip []byte
 
@@ -136,11 +145,19 @@ func (state *hostState) installRealmHost(vm *goja.Runtime, realm string, createI
 	if err := installQueueMicrotask(vm); err != nil {
 		return nil, err
 	}
-	installDOM, err := vm.RunScript(hostScriptName, domJavaScript)
+	dom, err := domProgram()
 	if err != nil {
 		return nil, fmt.Errorf("编译 WAA DOM 宿主: %w", err)
 	}
-	hostFunction, err := vm.RunScript(hostScriptName, hostJavaScript)
+	installDOM, err := vm.RunProgram(dom)
+	if err != nil {
+		return nil, fmt.Errorf("编译 WAA DOM 宿主: %w", err)
+	}
+	host, err := hostProgram()
+	if err != nil {
+		return nil, fmt.Errorf("编译 WAA Realm 宿主: %w", err)
+	}
+	hostFunction, err := vm.RunProgram(host)
 	if err != nil {
 		return nil, fmt.Errorf("编译 WAA Realm 宿主: %w", err)
 	}

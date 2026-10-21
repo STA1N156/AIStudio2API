@@ -67,6 +67,7 @@ type UsageStats struct {
 	Succeeded       int64        `json:"succeeded"`
 	Failed          int64        `json:"failed"`
 	Canceled        int64        `json:"canceled"`
+	RateExcluded    int64        `json:"rate_excluded"`
 	RateLimited     int64        `json:"rate_limited"`
 	InputTokens     int64        `json:"input_tokens"`
 	CachedTokens    int64        `json:"cached_tokens"`
