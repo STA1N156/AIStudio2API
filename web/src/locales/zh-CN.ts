@@ -16,6 +16,7 @@ export const messages = {
   'ui.cooldownScope': '冷却标记会到期解除，仅影响下面列出的模型和通道。',
   'accounts.importFiles': '导入账号',
   'accounts.exportSelected': '导出已选',
+  'accounts.deleteSelected': '删除已选 ({count})',
   'accounts.exportAll': '导出全部',
   'accounts.dropHint':
     '拖拽 JSON / ZIP 到这里，或点击导入，可一次选择多个文件。重复账号会跳过，不覆盖已有账号。',
@@ -335,6 +336,7 @@ export const messages = {
   'nav.usage': '用量',
   'common.undo': '撤销',
   'accounts.deletedNamed': '已删除账户 {name}',
+  'accounts.deletedCount': '已删除 {count} 个账户',
   'logs.body': '请求与响应正文',
   'logs.requestBody': '请求正文',
   'logs.responseBody': '响应正文',

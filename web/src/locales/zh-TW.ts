@@ -22,6 +22,7 @@ export const messages: Record<TranslationKey, string> = {
     '將刪除全部用量歷史、統計彙總及已儲存的請求／回應正文，不限目前篩選範圍。帳戶、設定和進行中的請求不受影響。此操作無法復原。',
   'accounts.importFiles': '匯入帳號',
   'accounts.exportSelected': '匯出已選',
+  'accounts.deleteSelected': '刪除已選 ({count})',
   'accounts.exportAll': '匯出全部',
   'accounts.dropHint':
     '將 JSON / ZIP 拖曳到此處，或按匯入，可一次選擇多個檔案。重複帳號會略過，不覆蓋現有帳號。',
@@ -342,6 +343,7 @@ export const messages: Record<TranslationKey, string> = {
   'nav.usage': '用量',
   'common.undo': '復原',
   'accounts.deletedNamed': '已刪除帳號 {name}',
+  'accounts.deletedCount': '已刪除 {count} 個帳號',
   'logs.body': '請求與回應內文',
   'logs.requestBody': '請求內文',
   'logs.responseBody': '回應內文',

@@ -28,7 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   refresh: []
   notice: [message: string, tone: 'success' | 'error']
-  delete: [account: Account]
+  delete: [accounts: Account[]]
 }>()
 
 const { t, locale, errorText } = useI18n()
@@ -445,6 +445,12 @@ async function refreshAllAccounts(): Promise<void> {
       <AccountTransfer
         v-model:selected="selectedAccounts"
         :accounts="accounts"
+        @delete="
+          emit(
+            'delete',
+            accounts.filter((account) => selectedAccounts.includes(account.id)),
+          )
+        "
         @refresh="emit('refresh')"
         @notice="(message, tone) => emit('notice', message, tone)"
       />
@@ -647,7 +653,7 @@ async function refreshAllAccounts(): Promise<void> {
                   class="ui-button ui-button-danger"
                   type="button"
                   :disabled="pendingAction !== '' || refreshing.has(account.id)"
-                  @click="emit('delete', account)"
+                  @click="emit('delete', [account])"
                 >
                   {{ t('common.delete') }}
                 </button>

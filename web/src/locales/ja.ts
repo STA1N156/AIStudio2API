@@ -23,6 +23,7 @@ export const messages: Record<TranslationKey, string> = {
     'フィルターに関係なく、使用履歴、集計、保存済みのリクエスト・応答本文をすべて削除します。アカウント、設定、実行中のリクエストには影響しません。元に戻せません。',
   'accounts.importFiles': 'アカウントをインポート',
   'accounts.exportSelected': '選択項目をエクスポート',
+  'accounts.deleteSelected': '選択項目を削除 ({count})',
   'accounts.exportAll': 'すべてエクスポート',
   'accounts.dropHint':
     'JSON / ZIP をここにドロップするか、複数のファイルを選択してください。既存のアカウントは上書きせずスキップします。',
@@ -354,6 +355,7 @@ export const messages: Record<TranslationKey, string> = {
   'nav.usage': '使用量',
   'common.undo': '元に戻す',
   'accounts.deletedNamed': 'アカウント {name} を削除しました',
+  'accounts.deletedCount': '{count} 件のアカウントを削除しました',
   'logs.body': 'リクエストとレスポンスの本文',
   'logs.requestBody': 'リクエスト本文',
   'logs.responseBody': 'レスポンス本文',

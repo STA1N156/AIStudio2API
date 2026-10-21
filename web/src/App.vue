@@ -101,14 +101,22 @@ const errors = reactive({ accounts: '', models: '', requests: '', cooldowns: '',
 let eventConnection: EventConnection | undefined
 let mounted = false
 let noticeTimer: number | undefined
-const pendingDelete = shallowRef<{ account: Account; timer: number } | null>(null)
+const pendingDelete = shallowRef<{ accounts: Account[]; timer: number } | null>(null)
 const deletingAccounts = ref(new Set<string>())
 const visibleAccounts = computed(() =>
   accounts.value.filter(
     (account) =>
-      account.id !== pendingDelete.value?.account.id && !deletingAccounts.value.has(account.id),
+      !pendingDelete.value?.accounts.some((pending) => pending.id === account.id) &&
+      !deletingAccounts.value.has(account.id),
   ),
 )
+// deleteNotice 是撤销提示文案，单个账户显示名称，多个显示数量
+const deleteNotice = computed(() => {
+  const pending = pendingDelete.value?.accounts ?? []
+  return pending.length === 1
+    ? t('accounts.deletedNamed').replace('{name}', pending[0]?.label ?? '')
+    : t('accounts.deletedCount').replace('{count}', String(pending.length))
+})
 
 const navigation: { id: TabID; label: TranslationKey; icon: IconName }[] = [
   { id: 'accounts', label: 'nav.accounts', icon: 'accounts' },
@@ -154,10 +162,13 @@ function showNotice(message: string, tone: 'success' | 'error'): void {
   }, 3200)
 }
 
-// deleteAccount 隐藏账户并在撤销时限结束后删除，新的删除会先提交上一项
-function deleteAccount(account: Account): void {
+// deleteAccounts 隐藏账户并在撤销时限结束后删除，新的删除会先提交上一批
+function deleteAccounts(targets: Account[]): void {
   void commitDelete()
-  pendingDelete.value = { account, timer: window.setTimeout(() => void commitDelete(), 6000) }
+  pendingDelete.value = {
+    accounts: targets,
+    timer: window.setTimeout(() => void commitDelete(), 6000),
+  }
 }
 
 // undoDelete 撤销尚未提交的账户删除
@@ -167,24 +178,26 @@ function undoDelete(): void {
   pendingDelete.value = null
 }
 
-// commitDelete 立即提交等待中的账户删除，页面关闭时使用 keepalive 请求
+// commitDelete 逐个提交等待中的账户删除，页面关闭时用 keepalive 请求一次全部发出
 async function commitDelete(keepalive = false): Promise<void> {
   const pending = pendingDelete.value
   if (pending === null) return
   window.clearTimeout(pending.timer)
   pendingDelete.value = null
-  const id = pending.account.id
-  deletingAccounts.value = new Set(deletingAccounts.value).add(id)
-  try {
-    await api.deleteAccount(id, keepalive)
-    await loadAccountData()
-  } catch (error) {
-    showNotice(messageOf(error), 'error')
-  } finally {
-    const deleting = new Set(deletingAccounts.value)
-    deleting.delete(id)
-    deletingAccounts.value = deleting
+  const ids = pending.accounts.map((account) => account.id)
+  deletingAccounts.value = new Set([...deletingAccounts.value, ...ids])
+  let failure: unknown
+  for (const id of ids) {
+    const request = api.deleteAccount(id, keepalive).catch((error: unknown) => {
+      failure ??= error
+    })
+    if (!keepalive) await request
   }
+  if (failure !== undefined) showNotice(messageOf(failure), 'error')
+  await loadAccountData()
+  const deleting = new Set(deletingAccounts.value)
+  ids.forEach((id) => deleting.delete(id))
+  deletingAccounts.value = deleting
 }
 
 // flushDelete 在页面隐藏时提交等待中的删除
@@ -443,8 +456,8 @@ onUnmounted(() => {
             class="relative shrink-0"
           >
             <span
-              class="flex size-9 items-center justify-center rounded-xl bg-blue-500/15 text-blue-400"
-              ><UiIcon name="models" :size="20"
+              class="flex size-9 items-center justify-center rounded-xl bg-linear-to-br from-blue-500 to-blue-700 text-[#fff] shadow-[inset_0_1px_0_rgb(255_255_255/20%),0_4px_12px_-4px_rgb(37_99_235/70%)]"
+              ><UiIcon name="models" :size="19"
             /></span>
             <span
               class="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-panel"
@@ -468,30 +481,30 @@ onUnmounted(() => {
             v-tooltip="`${adminUsername} · ${t('auth.logout')}`"
             type="button"
             :aria-label="`${adminUsername} · ${t('auth.logout')}`"
-            class="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white md:hidden"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 transition hover:bg-raised hover:text-white md:hidden"
             @click="logout"
           >
-            <UiIcon name="login" :size="13" />
+            <UiIcon name="login" :size="16" />
           </button>
           <ThemeToggle />
           <DropdownMenuRoot :modal="false">
             <DropdownMenuTrigger
               v-tooltip="t('app.language')"
               :aria-label="t('app.language')"
-              class="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white data-[state=open]:text-white"
+              class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 transition hover:bg-raised hover:text-white data-[state=open]:bg-raised data-[state=open]:text-white"
             >
-              <UiIcon name="language" :size="13" />
+              <UiIcon name="language" :size="16" />
             </DropdownMenuTrigger>
             <DropdownMenuPortal>
               <DropdownMenuContent
                 align="end"
                 :side-offset="4"
-                class="z-[60] overflow-hidden rounded border border-line bg-panel shadow-xl"
+                class="z-[60] min-w-36 overflow-hidden rounded-lg border border-line bg-overlay p-1 shadow-xl"
               >
                 <DropdownMenuItem
                   v-for="item in availableLocales"
                   :key="item.code"
-                  class="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-2 text-left text-xs whitespace-nowrap text-gray-300 outline-none data-[highlighted]:bg-blue-600 data-[highlighted]:text-white"
+                  class="flex w-full cursor-pointer items-center justify-between gap-4 rounded-md px-3 py-2 text-left text-xs whitespace-nowrap text-gray-300 outline-none data-[highlighted]:bg-raised data-[highlighted]:text-white"
                   @select="setLocale(item.code)"
                 >
                   {{ item.label }}
@@ -540,10 +553,11 @@ onUnmounted(() => {
       <button
         v-if="adminUsername"
         type="button"
-        class="mx-4 mb-3 hidden rounded border border-line px-3 py-2 text-gray-400 hover:bg-raised hover:text-white md:block"
+        class="mx-3 mb-3 hidden items-center gap-3 rounded-lg px-3 py-2 text-left text-gray-400 transition hover:bg-raised hover:text-white md:flex"
         @click="logout"
       >
-        {{ adminUsername }} · {{ t('auth.logout') }}
+        <UiIcon name="login" :size="16" />
+        <span class="min-w-0 truncate">{{ adminUsername }} · {{ t('auth.logout') }}</span>
       </button>
 
       <div
@@ -554,7 +568,12 @@ onUnmounted(() => {
         <div class="mb-2 hidden text-xs text-gray-500 md:block">{{ t('app.status') }}</div>
         <div class="flex items-center justify-between gap-2 md:mb-4">
           <div class="flex min-w-0 items-center gap-2 md:contents">
-            <span class="text-xs font-medium" :class="statusTextColor">
+            <span class="flex items-center gap-1.5 text-xs font-medium" :class="statusTextColor">
+              <span
+                class="size-1.5 shrink-0 rounded-full"
+                :class="statusColor"
+                aria-hidden="true"
+              />
               {{
                 t(
                   serviceState === 'running'
@@ -574,7 +593,7 @@ onUnmounted(() => {
           </div>
           <button
             v-if="serviceState === 'stopped'"
-            class="flex shrink-0 items-center gap-1.5 rounded bg-green-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50 md:hidden"
+            class="flex shrink-0 items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white shadow transition hover:bg-green-500 disabled:opacity-50 md:hidden"
             type="button"
             :disabled="startPending || stopPending"
             @click="startService"
@@ -595,7 +614,7 @@ onUnmounted(() => {
         </div>
         <button
           v-if="serviceState === 'stopped'"
-          class="hidden w-full items-center justify-center gap-2 rounded bg-green-600 py-2 font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50 md:flex"
+          class="hidden w-full items-center justify-center gap-2 rounded-lg bg-green-600 py-2.5 font-semibold text-white shadow-[inset_0_1px_0_rgb(255_255_255/15%),0_4px_14px_-6px_rgb(22_163_74/70%)] transition hover:bg-green-500 disabled:opacity-50 md:flex"
           type="button"
           :disabled="startPending || stopPending"
           @click="startService"
@@ -616,7 +635,7 @@ onUnmounted(() => {
       </div>
     </aside>
 
-    <main class="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
+    <main class="app-main flex min-h-0 min-w-0 flex-1 flex-col">
       <Transition name="page">
         <KeepAlive include="SettingsPanel,VersionPanel">
           <LogsPanel v-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
@@ -628,7 +647,7 @@ onUnmounted(() => {
             :error="errors.accounts"
             @refresh="loadAccountData"
             @notice="showNotice"
-            @delete="deleteAccount"
+            @delete="deleteAccounts"
           />
           <ModelsTable
             v-else-if="currentTab === 'models'"
@@ -679,7 +698,7 @@ onUnmounted(() => {
         <div
           v-if="notice.message"
           role="status"
-          class="pointer-events-auto max-w-full rounded border bg-panel px-4 py-3 text-sm break-words shadow-xl"
+          class="pointer-events-auto max-w-full rounded-lg border bg-overlay px-4 py-3 text-sm break-words shadow-xl"
           :class="
             notice.tone === 'error'
               ? 'border-red-500/50 text-red-300'
@@ -692,16 +711,10 @@ onUnmounted(() => {
       <Transition name="notice">
         <div
           v-if="pendingDelete"
-          class="pointer-events-auto flex max-w-full items-center gap-4 rounded border border-line-strong bg-panel px-4 py-3 text-sm text-gray-200 shadow-xl"
+          class="pointer-events-auto flex max-w-full items-center gap-4 rounded-lg border border-line-strong bg-overlay px-4 py-3 text-sm text-gray-200 shadow-xl"
           role="status"
         >
-          <span
-            v-tooltip.overflow="
-              t('accounts.deletedNamed').replace('{name}', pendingDelete.account.label)
-            "
-            class="min-w-0 truncate"
-            >{{ t('accounts.deletedNamed').replace('{name}', pendingDelete.account.label) }}</span
-          >
+          <span v-tooltip.overflow="deleteNotice" class="min-w-0 truncate">{{ deleteNotice }}</span>
           <button
             type="button"
             class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1 font-medium text-blue-400 hover:bg-raised"

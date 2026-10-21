@@ -23,6 +23,7 @@ export const messages: Record<TranslationKey, string> = {
     'Delete all usage history, summaries and saved request/response bodies, regardless of current filters. Accounts, settings and ongoing requests are not affected. This cannot be undone.',
   'accounts.importFiles': 'Import accounts',
   'accounts.exportSelected': 'Export selected',
+  'accounts.deleteSelected': 'Delete selected ({count})',
   'accounts.exportAll': 'Export all',
   'accounts.dropHint':
     'Drop JSON / ZIP files here, or choose multiple files to import. Existing accounts are skipped, never overwritten.',
@@ -349,6 +350,7 @@ export const messages: Record<TranslationKey, string> = {
   'nav.usage': 'Usage',
   'common.undo': 'Undo',
   'accounts.deletedNamed': 'Deleted account {name}',
+  'accounts.deletedCount': 'Deleted {count} accounts',
   'logs.body': 'Request and response body',
   'logs.requestBody': 'Request body',
   'logs.responseBody': 'Response body',

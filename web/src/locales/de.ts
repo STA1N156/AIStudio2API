@@ -23,6 +23,7 @@ export const messages: Record<TranslationKey, string> = {
     'Alle Nutzungsdaten, Statistiken und gespeicherten Anfrage-/Antwortinhalte werden unabhängig von den Filtern gelöscht. Konten, Einstellungen und laufende Anfragen bleiben unverändert. Dies kann nicht rückgängig gemacht werden.',
   'accounts.importFiles': 'Konten importieren',
   'accounts.exportSelected': 'Auswahl exportieren',
+  'accounts.deleteSelected': 'Auswahl löschen ({count})',
   'accounts.exportAll': 'Alle exportieren',
   'accounts.dropHint':
     'JSON / ZIP-Dateien hier ablegen oder mehrere Dateien auswählen. Vorhandene Konten werden übersprungen, nicht überschrieben.',
@@ -356,6 +357,7 @@ export const messages: Record<TranslationKey, string> = {
   'nav.usage': 'Nutzung',
   'common.undo': 'Rückgängig',
   'accounts.deletedNamed': 'Konto {name} gelöscht',
+  'accounts.deletedCount': '{count} Konten gelöscht',
   'logs.body': 'Anfrage- und Antwortinhalt',
   'logs.requestBody': 'Anfrageinhalt',
   'logs.responseBody': 'Antwortinhalt',

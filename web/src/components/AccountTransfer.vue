@@ -8,6 +8,7 @@ import UiIcon from './UiIcon.vue'
 const props = defineProps<{ accounts: Account[]; selected: string[] }>()
 const emit = defineEmits<{
   'update:selected': [ids: string[]]
+  delete: []
   refresh: []
   notice: [message: string, tone: 'success' | 'error']
 }>()
@@ -116,6 +117,16 @@ async function exportAccounts(): Promise<void> {
         >
           <UiIcon name="download" :size="15" />
           {{ t(selected.length ? 'accounts.exportSelected' : 'accounts.exportAll') }}
+        </button>
+        <button
+          v-if="selected.length"
+          type="button"
+          class="ui-button ui-button-danger w-full sm:w-auto"
+          :disabled="busy"
+          @click="emit('delete')"
+        >
+          <UiIcon name="trash" :size="15" />
+          {{ t('accounts.deleteSelected').replace('{count}', String(selected.length)) }}
         </button>
       </div>
     </div>

@@ -24,6 +24,7 @@ export const messages: Record<TranslationKey, string> = {
     'Supprimer tout l’historique, les statistiques et les corps de requêtes/réponses enregistrés, quels que soient les filtres. Les comptes, réglages et requêtes en cours sont conservés. Cette action est irréversible.',
   'accounts.importFiles': 'Importer des comptes',
   'accounts.exportSelected': 'Exporter la sélection',
+  'accounts.deleteSelected': 'Supprimer la sélection ({count})',
   'accounts.exportAll': 'Tout exporter',
   'accounts.dropHint':
     'Déposez des fichiers JSON / ZIP ici ou sélectionnez plusieurs fichiers. Les comptes existants sont ignorés, jamais remplacés.',
@@ -356,6 +357,7 @@ export const messages: Record<TranslationKey, string> = {
   'nav.usage': 'Utilisation',
   'common.undo': 'Annuler',
   'accounts.deletedNamed': 'Compte {name} supprimé',
+  'accounts.deletedCount': '{count} comptes supprimés',
   'logs.body': 'Corps de la requête et de la réponse',
   'logs.requestBody': 'Corps de la requête',
   'logs.responseBody': 'Corps de la réponse',

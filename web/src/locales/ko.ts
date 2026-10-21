@@ -22,6 +22,7 @@ export const messages: Record<TranslationKey, string> = {
     '필터와 관계없이 모든 사용 기록, 통계 및 저장된 요청/응답 본문을 삭제합니다. 계정, 설정 및 진행 중인 요청에는 영향을 주지 않습니다. 되돌릴 수 없습니다.',
   'accounts.importFiles': '계정 가져오기',
   'accounts.exportSelected': '선택 항목 내보내기',
+  'accounts.deleteSelected': '선택 항목 삭제 ({count})',
   'accounts.exportAll': '모두 내보내기',
   'accounts.dropHint':
     'JSON / ZIP 파일을 여기에 놓거나 여러 파일을 선택하세요. 기존 계정은 덮어쓰지 않고 건너뜁니다.',
@@ -349,6 +350,7 @@ export const messages: Record<TranslationKey, string> = {
   'nav.usage': '사용량',
   'common.undo': '실행취소',
   'accounts.deletedNamed': '{name} 계정을 삭제했습니다',
+  'accounts.deletedCount': '계정 {count}개를 삭제했습니다',
   'logs.body': '요청 및 응답 본문',
   'logs.requestBody': '요청 본문',
   'logs.responseBody': '응답 본문',

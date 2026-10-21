@@ -22,8 +22,8 @@ function toggle(event: MouseEvent): void {
     :data-current="theme"
     @click="toggle"
   >
-    <UiIcon name="sun" :size="13" class="theme-icon theme-sun" />
-    <UiIcon name="moon" :size="13" class="theme-icon theme-moon" />
+    <UiIcon name="sun" :size="16" class="theme-icon theme-sun" />
+    <UiIcon name="moon" :size="16" class="theme-icon theme-moon" />
   </button>
 </template>
 
