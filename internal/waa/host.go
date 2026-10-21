@@ -45,6 +45,15 @@ var firefoxShapeJSON = sync.OnceValues(func() (string, error) {
 	return string(data), err
 })
 
+// firefoxGlobalOrderShape 解析形状表中的全局键顺序，解析结果只读，各 VM 共享
+var firefoxGlobalOrderShape = sync.OnceValues(func() (*globalOrderShape, error) {
+	shapeJSON, err := firefoxShapeJSON()
+	if err != nil {
+		return nil, err
+	}
+	return parseGlobalOrderShape(shapeJSON)
+})
+
 // Profile 保存账户指纹与页面状态决定的宿主现场值
 type Profile struct {
 	PageURL      string
@@ -175,7 +184,7 @@ func (state *hostState) installRealmHost(vm *goja.Runtime, realm string, createI
 		if err != nil {
 			return nil, fmt.Errorf("解析 Firefox 形状表: %w", err)
 		}
-		state.order, err = parseGlobalOrderShape(shapeJSON)
+		state.order, err = firefoxGlobalOrderShape()
 		if err != nil {
 			return nil, fmt.Errorf("解析 Firefox 全局键顺序: %w", err)
 		}
