@@ -185,6 +185,8 @@ export interface RequestSummary {
 export interface ServiceConfig {
   auto_start: boolean
   request_body_log: boolean
+  empty_output_error: boolean
+  log_console: boolean
   log_file: boolean
   log_max_total_mb: number
   admin_auth_enabled: boolean

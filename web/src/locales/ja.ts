@@ -413,6 +413,12 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestBodyLogHelp':
     '公開 API のリクエストとレスポンスの本文を、それぞれ 64 KiB までに切り詰めて直近 1000 件保存します。ログの詳細で確認できます。',
   'settings.logFile': 'ログファイルに書き込む',
+  'settings.emptyOutputError': '空の応答を 400 にする',
+  'settings.emptyOutputErrorHelp':
+    '既定で有効。空の応答は再試行後も空なら 400 を返します。無効時は再試行せず 200 で空の結果を返します。他のエラーは変更しません。コンソールログも無効にすると、新しい使用量とリクエスト履歴の記録を停止します。過去の記録、クールダウン、実行中のタスクは影響を受けません。',
+  'settings.logConsole': 'コンソールログを出力',
+  'settings.logConsoleHelp':
+    '既定では無効です。空応答の 400 エラーも無効にすると、新しい使用量とリクエスト履歴の記録を停止します。どちらかを有効にすると再開します。クールダウン、実行中のタスク、画面のリアルタイムログ、ファイルログは独立しています。',
   'settings.logFileHelp':
     'サービスのログを作業ディレクトリの runtime/logs/ に書き込み、ファイルが 10 MB に達するとローテーションします。',
   'settings.logMaxTotal': 'ログの合計サイズ上限（MB）',

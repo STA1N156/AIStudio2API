@@ -204,6 +204,8 @@ type ChromeImportInput struct {
 type RuntimeConfig struct {
 	AutoStart                 bool         `json:"auto_start"`
 	RequestBodyLog            bool         `json:"request_body_log"`
+	EmptyOutputError          bool         `json:"empty_output_error"`
+	LogConsole                bool         `json:"log_console"`
 	AdminAuthEnabled          bool         `json:"admin_auth_enabled"`
 	AdminUsername             string       `json:"admin_username"`
 	AdminPassword             *string      `json:"admin_password,omitempty"`
@@ -438,7 +440,7 @@ func (s *server) handleRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleUpdateRuntimeConfig(w http.ResponseWriter, r *http.Request) {
-	var config RuntimeConfig
+	config := RuntimeConfig{EmptyOutputError: true}
 	if err := decodeJSON(r, &config); err != nil {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return

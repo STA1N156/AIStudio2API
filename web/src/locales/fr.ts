@@ -419,6 +419,12 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestBodyLogHelp':
     'Enregistre les corps des requêtes et réponses de l’API publique, tronqués chacun à 64 Kio, en conservant les 1 000 derniers. Consultables dans les détails des journaux.',
   'settings.logFile': 'Écrire les fichiers journaux',
+  'settings.emptyOutputError': 'Réponse vide : erreur 400',
+  'settings.emptyOutputErrorHelp':
+    'Activé par défaut : une réponse encore vide après un nouvel essai renvoie 400. Désactivé : aucun nouvel essai, résultat vide avec le statut 200. Désactiver aussi les journaux console suspend les nouveaux enregistrements de consommation et de requêtes. Historique, délais de réessai et tâches actives sont conservés.',
+  'settings.logConsole': 'Afficher les journaux console',
+  'settings.logConsoleHelp':
+    'Désactivé par défaut. Si les erreurs de réponse vide sont aussi désactivées, les nouveaux enregistrements de consommation et de requêtes sont suspendus. Réactiver l’un des deux les reprend. Les délais de réessai, tâches actives, journaux en direct et fichiers restent indépendants.',
   'settings.logFileHelp':
     'Écrit les journaux du service dans runtime/logs/ du répertoire de travail et change de fichier tous les 10 Mo.',
   'settings.logMaxTotal': 'Taille maximale des journaux (Mo)',

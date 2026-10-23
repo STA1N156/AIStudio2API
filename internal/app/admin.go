@@ -804,9 +804,11 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		return api.RuntimeConfig{}, invalidConfigError(fmt.Errorf("REQUEST_TIMEOUT 无效: %w", err))
 	}
 	cfg := config.Config{
-		AutoStart:      value.AutoStart,
-		RequestBodyLog: value.RequestBodyLog,
-		LogFile:        value.LogFile, LogMaxTotalMB: value.LogMaxTotalMB,
+		AutoStart:        value.AutoStart,
+		RequestBodyLog:   value.RequestBodyLog,
+		EmptyOutputError: value.EmptyOutputError,
+		LogConsole:       value.LogConsole,
+		LogFile:          value.LogFile, LogMaxTotalMB: value.LogMaxTotalMB,
 		AdminAuthEnabled: value.AdminAuthEnabled, AdminUsername: strings.TrimSpace(value.AdminUsername), AdminPassword: password,
 		BuildNativeNonstream: value.BuildNativeNonstream,
 		AuthStates:           value.AuthStates, ListenAddr: value.ListenAddr, ProxyAPIKey: value.APIKey,
@@ -1166,6 +1168,9 @@ func (registry *requestRegistry) recordLog(entry api.AdminLog) {
 	}
 	registry.publishLocked(api.AdminEvent{Type: "log", Data: entry})
 	registry.mu.Unlock()
+	if !slog.Default().Enabled(context.Background(), slog.LevelError) {
+		return
+	}
 	select {
 	case registry.console <- entry:
 	default:
@@ -1182,6 +1187,9 @@ func (registry *requestRegistry) writeConsole(ctx context.Context) {
 				level = slog.LevelError
 			case "WARN":
 				level = slog.LevelWarn
+			}
+			if !slog.Default().Enabled(ctx, level) {
+				continue
 			}
 			record := slog.NewRecord(entry.Time, level, entry.Message, 0)
 			record.AddAttrs(slog.String("event", entry.Event), slog.String("source", entry.Source))
@@ -1404,9 +1412,11 @@ func buildVersion() string {
 
 func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 	return api.RuntimeConfig{
-		AutoStart:      cfg.AutoStart,
-		RequestBodyLog: cfg.RequestBodyLog,
-		LogFile:        cfg.LogFile, LogMaxTotalMB: cfg.LogMaxTotalMB,
+		AutoStart:        cfg.AutoStart,
+		RequestBodyLog:   cfg.RequestBodyLog,
+		EmptyOutputError: cfg.EmptyOutputError,
+		LogConsole:       cfg.LogConsole,
+		LogFile:          cfg.LogFile, LogMaxTotalMB: cfg.LogMaxTotalMB,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername,
 		AdminPasswordSet: cfg.AdminPassword != "", SavedAdminPassword: cfg.AdminPassword,
 		BuildNativeNonstream: cfg.BuildNativeNonstream,

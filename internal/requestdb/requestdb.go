@@ -96,14 +96,15 @@ type Logger func(level string, message string)
 
 // Store 串行批量写入请求账本与汇总，并提供聚合与明细查询
 type Store struct {
-	db      *sql.DB
-	writes  chan write
-	done    chan struct{}
-	log     Logger
-	capture atomic.Bool
-	dropped atomic.Int64
-	mu      sync.RWMutex
-	closed  bool
+	db        *sql.DB
+	writes    chan write
+	done      chan struct{}
+	log       Logger
+	capture   atomic.Bool
+	recording atomic.Bool
+	dropped   atomic.Int64
+	mu        sync.RWMutex
+	closed    bool
 }
 
 // Open 打开或创建账本数据库并启动写入协程
@@ -124,6 +125,7 @@ func Open(path string, log Logger) (*Store, error) {
 		return nil, errors.Join(fmt.Errorf("初始化请求账本: %w", err), db.Close())
 	}
 	store := &Store{db: db, writes: make(chan write, queueLimit), done: make(chan struct{}), log: log}
+	store.recording.Store(true)
 	if err := store.alignDays(); err != nil {
 		return nil, errors.Join(fmt.Errorf("重建本地日汇总: %w", err), db.Close())
 	}
@@ -164,6 +166,18 @@ func (store *Store) Close() error {
 	return store.db.Close()
 }
 
+// SetRecording 暂停或恢复新增记录，不清除已有历史。
+func (store *Store) SetRecording(enabled bool) {
+	if store != nil {
+		store.recording.Store(enabled)
+	}
+}
+
+// Recording 返回是否记录新增用量与请求历史。
+func (store *Store) Recording() bool {
+	return store != nil && store.recording.Load()
+}
+
 // SetBodyCapture 设置是否保存请求与响应正文
 func (store *Store) SetBodyCapture(enabled bool) {
 	if store != nil {
@@ -173,17 +187,19 @@ func (store *Store) SetBodyCapture(enabled bool) {
 
 // BodyCapture 返回是否保存请求与响应正文
 func (store *Store) BodyCapture() bool {
-	return store != nil && store.capture.Load()
+	return store.Recording() && store.capture.Load()
 }
 
 // Record 排队写入一条用量记录，不等待落盘
 func (store *Store) Record(row Row) {
-	store.enqueue(write{row: &row})
+	if store.Recording() {
+		store.enqueue(write{row: &row})
+	}
 }
 
 // SaveBody 排队写入一条截断正文，不等待落盘
 func (store *Store) SaveBody(body api.RequestBody) {
-	if body.ID != "" {
+	if body.ID != "" && store.Recording() {
 		store.enqueue(write{body: &body})
 	}
 }

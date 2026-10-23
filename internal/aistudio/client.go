@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -279,12 +280,43 @@ func DecodeRPCError(method string, statusCode int, raw []byte) *RPCError {
 	return rpcError
 }
 
-// messageRetryDelay 读取错误消息中 retry in 之后的等待时长
+var retryTimePrefix = regexp.MustCompile(`(?i)\b(?:retry|resets?)\s+in\s+`)
+var retryTimePart = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*(milliseconds?|seconds?|minutes?|hours?|days?|ms|s|m|h|d)\b`)
+
+// messageRetryDelay 支持 retry in 1.5s 和 resets in 18 hours, 8 minutes 等相对等待时间。
 func messageRetryDelay(message string) time.Duration {
-	_, rest, _ := strings.Cut(strings.ToLower(message), "retry in ")
-	value, _, _ := strings.Cut(rest, " ")
-	delay, _ := time.ParseDuration(strings.TrimRight(value, "."))
-	return delay
+	message = strings.ToLower(message)
+	for _, prefix := range retryTimePrefix.FindAllStringIndex(message, -1) {
+		rest := message[prefix[1]:]
+		value, _, _ := strings.Cut(rest, " ")
+		if delay, err := time.ParseDuration(strings.TrimRight(value, ".,;)")); err == nil && delay > 0 {
+			return delay
+		}
+		var delay time.Duration
+		for {
+			part := retryTimePart.FindStringSubmatch(rest)
+			if part == nil {
+				break
+			}
+			unit, scale := part[2][:1], time.Duration(1)
+			if strings.HasPrefix(part[2], "millisecond") || part[2] == "ms" {
+				unit = "ms"
+			} else if unit == "d" {
+				unit, scale = "h", 24
+			}
+			component, err := time.ParseDuration(part[1] + unit)
+			if err != nil || component > (1<<63-1)/scale || delay > (1<<63-1)-component*scale {
+				return 0
+			}
+			delay += component * scale
+			rest = strings.TrimLeft(rest[len(part[0]):], ", \t\r\n")
+			rest = strings.TrimPrefix(rest, "and ")
+		}
+		if delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func decodeRPCErrorMetadata(rpcError *RPCError, raw json.RawMessage) {

@@ -480,6 +480,8 @@ cp .env.example .env
 | `PROXY_API_KEY` | 空 | 公开 API key |
 | `AUTO_START` | `false` | 管理程序启动后自动启动生成服务 |
 | `REQUEST_BODY_LOG` | `false` | 保存公开 API 请求与响应正文，各截断到 64 KiB，保留最近 1000 条 |
+| `EMPTY_OUTPUT_ERROR` | `true` | 空回重试后仍为空则报 400；关闭后不重试，以 200 返回空结果，保存后立即生效 |
+| `LOG_CONSOLE` | `false` | 打印控制台日志，保存后立即生效。它与 `EMPTY_OUTPUT_ERROR` 均关闭时暂停新增用量和请求历史，保留已有记录；任意一个开启即恢复。文件日志开关不参与此判断 |
 | `LOG_FILE` | `true` | 同时把服务日志写入 `runtime/logs/`，单文件 10 MB 轮转 |
 | `LOG_MAX_TOTAL_MB` | `500` | 日志目录总量上限，超出时删除最旧的文件，不小于 20 |
 | `ADMIN_AUTH_ENABLED` | `false` | 管理控制台账号密码登录开关 |

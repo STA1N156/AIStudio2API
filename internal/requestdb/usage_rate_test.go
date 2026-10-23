@@ -118,3 +118,49 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordingCanPauseAndResumeWithoutLosingHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.db")
+	store, err := Open(path, func(string, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	store.SetBodyCapture(true)
+	record := func(id string) {
+		now := time.Now().UTC()
+		store.Record(Row{ID: id, Time: now, Status: 200, State: "completed", TotalTokens: 10})
+		store.SaveBody(api.RequestBody{ID: id, Time: now, Request: "hello", Response: "OK"})
+	}
+	record("before")
+	store.SetRecording(false)
+	if store.Recording() || store.BodyCapture() {
+		t.Fatal("recording did not stop")
+	}
+	record("paused")
+	store.SetRecording(true)
+	if !store.Recording() || !store.BodyCapture() {
+		t.Fatal("recording did not resume")
+	}
+	record("after")
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path, func(string, string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var count, paused int
+	if err := store.db.QueryRow("SELECT COUNT(*), COUNT(CASE WHEN id='paused' THEN 1 END) FROM requests").Scan(&count, &paused); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || paused != 0 {
+		t.Fatalf("unexpected request history: count=%d paused=%d", count, paused)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM bodies").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("unexpected saved bodies: %d", count)
+	}
+}

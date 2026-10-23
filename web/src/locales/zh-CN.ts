@@ -392,6 +392,12 @@ export const messages = {
   'settings.requestBodyLogHelp':
     '保存公开 API 请求与响应正文，各截断到 64 KiB，保留最近 1000 条，在日志详情中查看。',
   'settings.logFile': '写入日志文件',
+  'settings.emptyOutputError': '空回复报 400',
+  'settings.emptyOutputErrorHelp':
+    '默认开启：空回重试后仍为空则报 400。关闭后不再空回重试，按 200 返回空结果；其他错误不变。与控制台日志同时关闭时暂停新增用量和请求历史，旧记录、冷却和进行中的任务不受影响。',
+  'settings.logConsole': '打印控制台日志',
+  'settings.logConsoleHelp':
+    '默认关闭。与“空回复报 400”同时关闭时暂停新增用量和请求历史；任意一个开启即恢复。冷却、进行中的任务、面板实时日志和文件日志保持独立。',
   'settings.logFileHelp': '把服务日志写入运行目录的 runtime/logs/，单个文件 10 MB 后轮转。',
   'settings.logMaxTotal': '日志总量上限（MB）',
   'settings.logMaxTotalHelp': '日志目录超过该大小时删除最旧的文件，最小 20。',

@@ -419,6 +419,12 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestBodyLogHelp':
     'Speichert Anfrage- und Antwortinhalte der öffentlichen API, jeweils auf 64 KiB gekürzt, und behält die letzten 1.000. Einsehbar in den Protokolldetails.',
   'settings.logFile': 'Protokolldateien schreiben',
+  'settings.emptyOutputError': 'Bei leerer Antwort 400 zurückgeben',
+  'settings.emptyOutputErrorHelp':
+    'Standardmäßig aktiv: Nach einem erfolglosen Wiederholungsversuch wird 400 zurückgegeben. Deaktiviert: keine Wiederholung, leeres Ergebnis mit Status 200. Sind auch Konsolenprotokolle deaktiviert, pausieren neue Nutzungs- und Anfrageeinträge. Bestehende Einträge, Abkühlzeiten und laufende Aufgaben bleiben erhalten.',
+  'settings.logConsole': 'Konsolenprotokolle ausgeben',
+  'settings.logConsoleHelp':
+    'Standardmäßig deaktiviert. Sind auch Fehler bei leeren Antworten deaktiviert, pausieren neue Nutzungs- und Anfrageeinträge. Einer der beiden Schalter setzt die Aufzeichnung fort. Abkühlzeiten, laufende Aufgaben, Live-Panel- und Dateiprotokolle bleiben unabhängig.',
   'settings.logFileHelp':
     'Schreibt die Dienstprotokolle nach runtime/logs/ im Arbeitsverzeichnis und beginnt alle 10 MB eine neue Datei.',
   'settings.logMaxTotal': 'Höchstgröße der Protokolle (MB)',

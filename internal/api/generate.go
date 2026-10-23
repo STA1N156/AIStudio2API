@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -35,6 +36,23 @@ type generationResult struct {
 	providerModel string
 	finished      bool
 	hasOutput     bool
+	allowEmpty    bool
+}
+
+type allowEmptyOutputKey struct{}
+
+func allowEmptyOutput(ctx context.Context) bool {
+	allowed, _ := ctx.Value(allowEmptyOutputKey{}).(bool)
+	return allowed
+}
+
+func emptyOutputPolicyMiddleware(next http.Handler, allow func() bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allow != nil && allow() {
+			r = r.WithContext(context.WithValue(r.Context(), allowEmptyOutputKey{}, true))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (result *generationResult) apply(event aistudio.Event) error {
@@ -102,7 +120,7 @@ func (result *generationResult) apply(event aistudio.Event) error {
 			result.media = append(result.media, media)
 		}
 	case aistudio.EventFinish:
-		if !result.hasOutput {
+		if !result.hasOutput && !result.allowEmpty {
 			return emptyOutputError{}
 		}
 		result.finishReason = event.FinishReason
@@ -134,11 +152,11 @@ wait:
 				}
 				return nil, errUpstreamStream
 			}
-			if event.Kind == aistudio.EventFinish {
+			if event.Kind == aistudio.EventFinish && !allowEmptyOutput(ctx) {
 				return nil, emptyOutputError{}
 			}
 			pending = append(pending, event)
-			if !event.HasOutput() && !(event.Kind == aistudio.EventReasoning && strings.TrimSpace(event.Text) != "") {
+			if event.Kind != aistudio.EventFinish && !event.HasOutput() && !(event.Kind == aistudio.EventReasoning && strings.TrimSpace(event.Text) != "") {
 				continue
 			}
 			break wait
@@ -201,6 +219,7 @@ func consumeChatStreamEvents(ctx context.Context, events <-chan aistudio.Event, 
 }
 
 func consumeEventsInto(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error, heartbeat func() error, result generationResult) (_ generationResult, resultErr error) {
+	result.allowEmpty = allowEmptyOutput(ctx)
 	defer func() {
 		SetAccessLogError(ctx, resultErr)
 	}()

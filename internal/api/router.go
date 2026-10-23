@@ -20,6 +20,7 @@ type Config struct {
 	Ledger           RequestLedger
 	Updates          UpdateService
 	RequestLimits    func() (int, time.Duration)
+	AllowEmptyOutput func() bool
 }
 
 type server struct {
@@ -105,7 +106,7 @@ func NewHandler(service aistudio.Service, config Config) http.Handler {
 	root := http.NewServeMux()
 	root.Handle("GET /health", corsMiddleware(http.HandlerFunc(s.handleHealth)))
 	publicHandler := bodyLimitMiddleware(browserOriginMiddleware(config.APIKey, authMiddleware(config.APIKey,
-		requestAdmissionMiddleware(config.RequestLimits, requestBodyMiddleware(config.Ledger, public)))))
+		requestAdmissionMiddleware(config.RequestLimits, requestBodyMiddleware(config.Ledger, emptyOutputPolicyMiddleware(public, config.AllowEmptyOutput))))))
 	loggedHandler := requestLoggingMiddleware(config.Admin, corsMiddleware(publicHandler))
 	root.Handle("/v1/", loggedHandler)
 	root.Handle("/v1beta/", loggedHandler)

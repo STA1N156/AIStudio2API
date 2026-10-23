@@ -405,6 +405,12 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestBodyLogHelp':
     '공개 API 요청과 응답의 본문을 각각 64KiB까지 잘라 최근 1000건을 보관합니다. 로그 세부정보에서 확인할 수 있습니다.',
   'settings.logFile': '로그 파일에 기록',
+  'settings.emptyOutputError': '빈 응답에 400 반환',
+  'settings.emptyOutputErrorHelp':
+    '기본으로 켜져 있으며 재시도 후에도 응답이 비어 있으면 400을 반환합니다. 끄면 재시도 없이 200과 빈 결과를 반환합니다. 콘솔 로그도 끄면 새 사용량 및 요청 기록을 중지합니다. 기존 기록, 쿨다운 및 진행 중인 작업은 유지됩니다.',
+  'settings.logConsole': '콘솔 로그 출력',
+  'settings.logConsoleHelp':
+    '기본으로 꺼져 있습니다. 빈 응답 400 오류도 끄면 새 사용량 및 요청 기록을 중지합니다. 둘 중 하나를 켜면 기록을 재개합니다. 쿨다운, 진행 중인 작업, 실시간 패널 로그와 파일 로그는 독립적입니다.',
   'settings.logFileHelp':
     '서비스 로그를 작업 디렉터리의 runtime/logs/에 기록하며, 파일이 10MB에 도달하면 새 파일로 교체합니다.',
   'settings.logMaxTotal': '로그 총 용량 한도(MB)',

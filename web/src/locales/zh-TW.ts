@@ -398,6 +398,12 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestBodyLogHelp':
     '儲存公開 API 的請求與回應內文，各截斷至 64 KiB，保留最近 1000 筆，可在記錄詳細資料中查看。',
   'settings.logFile': '寫入記錄檔',
+  'settings.emptyOutputError': '空回覆報 400',
+  'settings.emptyOutputErrorHelp':
+    '預設開啟：空回覆重試後仍為空則報 400。關閉後不再重試，以 200 傳回空結果；其他錯誤不變。與主控台記錄同時關閉時暫停新增用量與請求歷史，舊記錄、冷卻及進行中的任務不受影響。',
+  'settings.logConsole': '輸出主控台記錄',
+  'settings.logConsoleHelp':
+    '預設關閉。與「空回覆報 400」同時關閉時暫停新增用量與請求歷史；任一開啟即恢復。冷卻、進行中的任務、面板即時記錄與記錄檔保持獨立。',
   'settings.logFileHelp': '將服務記錄寫入工作目錄下的 runtime/logs/，單一檔案達 10 MB 時輪替。',
   'settings.logMaxTotal': '記錄檔總量上限（MB）',
   'settings.logMaxTotalHelp': '記錄目錄超過此大小時刪除最舊的檔案，最小值為 20。',

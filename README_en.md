@@ -470,6 +470,8 @@ cp .env.example .env
 | `PROXY_API_KEY` | empty | Public API key |
 | `AUTO_START` | `false` | Start the generation service when the manager starts |
 | `REQUEST_BODY_LOG` | `false` | Store public API request and response bodies, each truncated to 64 KiB, keeping the latest 1000 |
+| `EMPTY_OUTPUT_ERROR` | `true` | Retry empty replies and return 400 if still empty; when disabled, skip retry and return an empty result with 200. Takes effect immediately |
+| `LOG_CONSOLE` | `false` | Print console logs. When both this and `EMPTY_OUTPUT_ERROR` are off, pause new usage and request-history records without deleting history. Either switch resumes recording immediately. File logging is independent |
 | `LOG_FILE` | `true` | Also write service logs to `runtime/logs/`, rotating at 10 MB per file |
 | `LOG_MAX_TOTAL_MB` | `500` | Total size limit of the log directory; the oldest files are removed beyond it; at least 20 |
 | `ADMIN_AUTH_ENABLED` | `false` | Enable username/password login for the console |

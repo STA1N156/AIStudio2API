@@ -30,6 +30,8 @@ const adminPassword = ref('')
 const form = reactive<ServiceConfig>({
   auto_start: false,
   request_body_log: false,
+  empty_output_error: true,
+  log_console: false,
   log_file: true,
   log_max_total_mb: 500,
   admin_auth_enabled: false,
@@ -102,6 +104,7 @@ const sections: {
       'temporary_chat',
       'init_timeout',
       'request_timeout',
+      'empty_output_error',
     ],
   },
   {
@@ -120,6 +123,7 @@ const sections: {
       'admin_auth_enabled',
       'admin_username',
       'request_body_log',
+      'log_console',
       'log_file',
       'log_max_total_mb',
     ],
@@ -539,6 +543,15 @@ async function saveConfig(): Promise<void> {
                 spellcheck="false"
               />
             </SettingRow>
+            <SettingRow
+              :label="t('settings.emptyOutputError')"
+              control-id="setting-empty-output-error"
+              :description="t('settings.emptyOutputErrorHelp')"
+              effect="immediate"
+              :changed="changedFields.has('empty_output_error')"
+            >
+              <UiSwitch id="setting-empty-output-error" v-model="form.empty_output_error" />
+            </SettingRow>
           </template>
 
           <template v-else-if="section === 'network'">
@@ -640,6 +653,15 @@ async function saveConfig(): Promise<void> {
               :changed="changedFields.has('request_body_log')"
             >
               <UiSwitch id="setting-body-log" v-model="form.request_body_log" />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.logConsole')"
+              control-id="setting-log-console"
+              :description="t('settings.logConsoleHelp')"
+              effect="immediate"
+              :changed="changedFields.has('log_console')"
+            >
+              <UiSwitch id="setting-log-console" v-model="form.log_console" />
             </SettingRow>
             <SettingRow
               :label="t('settings.logFile')"

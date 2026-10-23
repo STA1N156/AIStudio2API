@@ -44,6 +44,8 @@ var configKeys = [...]string{
 	"WAA_BACKEND",
 	"AUTO_START",
 	"REQUEST_BODY_LOG",
+	"EMPTY_OUTPUT_ERROR",
+	"LOG_CONSOLE",
 	"LOG_FILE",
 	"LOG_MAX_TOTAL_MB",
 	"ADMIN_AUTH_ENABLED",
@@ -68,6 +70,8 @@ const WAABackendGo = "go"
 type Config struct {
 	AutoStart              bool          `json:"auto_start"`
 	RequestBodyLog         bool          `json:"request_body_log"`
+	EmptyOutputError       bool          `json:"empty_output_error"`
+	LogConsole             bool          `json:"log_console"`
 	LogFile                bool          `json:"log_file"`
 	LogMaxTotalMB          int           `json:"log_max_total_mb"`
 	AdminAuthEnabled       bool          `json:"admin_auth_enabled"`
@@ -95,6 +99,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		AdminUsername:          "admin",
+		EmptyOutputError:       true,
 		LogFile:                true,
 		LogMaxTotalMB:          500,
 		BuildNativeNonstream:   true,
@@ -135,6 +140,18 @@ func Load(path string) (Config, error) {
 		cfg.RequestBodyLog, err = strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
 			return Config{}, fmt.Errorf("REQUEST_BODY_LOG 必须是 true 或 false")
+		}
+	}
+	if value, ok := values["EMPTY_OUTPUT_ERROR"]; ok {
+		cfg.EmptyOutputError, err = strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("EMPTY_OUTPUT_ERROR 必须是 true 或 false")
+		}
+	}
+	if value, ok := values["LOG_CONSOLE"]; ok {
+		cfg.LogConsole, err = strconv.ParseBool(strings.TrimSpace(value))
+		if err != nil {
+			return Config{}, fmt.Errorf("LOG_CONSOLE 必须是 true 或 false")
 		}
 	}
 	if value, ok := values["LOG_FILE"]; ok {
@@ -247,6 +264,8 @@ func (c Config) Save(path string) error {
 	values := map[string]string{
 		"AUTO_START":               strconv.FormatBool(c.AutoStart),
 		"REQUEST_BODY_LOG":         strconv.FormatBool(c.RequestBodyLog),
+		"EMPTY_OUTPUT_ERROR":       strconv.FormatBool(c.EmptyOutputError),
+		"LOG_CONSOLE":              strconv.FormatBool(c.LogConsole),
 		"LOG_FILE":                 strconv.FormatBool(c.LogFile),
 		"LOG_MAX_TOTAL_MB":         strconv.Itoa(c.LogMaxTotalMB),
 		"ADMIN_AUTH_ENABLED":       strconv.FormatBool(c.AdminAuthEnabled),
@@ -394,6 +413,8 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	type payload struct {
 		AutoStart              bool     `json:"auto_start"`
 		RequestBodyLog         bool     `json:"request_body_log"`
+		EmptyOutputError       bool     `json:"empty_output_error"`
+		LogConsole             bool     `json:"log_console"`
 		LogFile                bool     `json:"log_file"`
 		LogMaxTotalMB          int      `json:"log_max_total_mb"`
 		AdminAuthEnabled       bool     `json:"admin_auth_enabled"`
@@ -418,6 +439,8 @@ func (c Config) MarshalJSON() ([]byte, error) {
 	return json.Marshal(payload{
 		AutoStart:              c.AutoStart,
 		RequestBodyLog:         c.RequestBodyLog,
+		EmptyOutputError:       c.EmptyOutputError,
+		LogConsole:             c.LogConsole,
 		LogFile:                c.LogFile,
 		LogMaxTotalMB:          c.LogMaxTotalMB,
 		AdminAuthEnabled:       c.AdminAuthEnabled,
@@ -446,6 +469,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	type payload struct {
 		AutoStart              bool     `json:"auto_start"`
 		RequestBodyLog         bool     `json:"request_body_log"`
+		EmptyOutputError       bool     `json:"empty_output_error"`
+		LogConsole             bool     `json:"log_console"`
 		LogFile                bool     `json:"log_file"`
 		LogMaxTotalMB          int      `json:"log_max_total_mb"`
 		AdminAuthEnabled       bool     `json:"admin_auth_enabled"`
@@ -468,7 +493,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		TemporaryChat          bool     `json:"temporary_chat"`
 		WAABackend             string   `json:"waa_backend"`
 	}
-	var value payload
+	value := payload{EmptyOutputError: true}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
 	}
@@ -483,6 +508,8 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	parsed := Config{
 		AutoStart:              value.AutoStart,
 		RequestBodyLog:         value.RequestBodyLog,
+		EmptyOutputError:       value.EmptyOutputError,
+		LogConsole:             value.LogConsole,
 		LogFile:                value.LogFile,
 		LogMaxTotalMB:          value.LogMaxTotalMB,
 		AdminAuthEnabled:       value.AdminAuthEnabled,

@@ -34,7 +34,7 @@ type commandOptions struct {
 // Run 执行单二进制命令入口
 func Run(args []string) int {
 	logs := &logOutput{dir: filepath.Join("runtime", "logs")}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, nil)))
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: &logs.level})))
 	executable, executableErr := os.Executable()
 	restart, err := runCommand(args, logs, executable)
 	if errors.Is(err, flag.ErrHelp) {
@@ -59,10 +59,10 @@ func runCommand(args []string, logs *logOutput, executable string) (restart bool
 	if err != nil {
 		return false, err
 	}
-	if err := logs.set(cfg.LogFile, cfg.LogMaxTotalMB); err != nil {
+	if err := logs.set(cfg.LogConsole, cfg.LogFile, cfg.LogMaxTotalMB); err != nil {
 		return false, err
 	}
-	defer logs.set(false, 0)
+	defer logs.set(cfg.LogConsole, false, 0)
 	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancel(signals)
@@ -85,6 +85,7 @@ func runCommand(args []string, logs *logOutput, executable string) (restart bool
 	if err != nil {
 		return false, errors.Join(fmt.Errorf("打开请求账本: %w", err), manager.Close())
 	}
+	ledger.SetRecording(cfg.EmptyOutputError || cfg.LogConsole)
 	ledger.SetBodyCapture(cfg.RequestBodyLog)
 	manager.ledger = ledger
 	manager.logs = logs
@@ -148,7 +149,8 @@ func runServer(ctx context.Context, cfg config.Config, options commandOptions, m
 	apiHandler := api.NewHandler(manager, api.Config{
 		APIKey: cfg.ProxyAPIKey, Admin: manager, Ledger: manager.ledger, Updates: updater,
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword,
-		RequestLimits: manager.RequestLimits,
+		RequestLimits:    manager.RequestLimits,
+		AllowEmptyOutput: manager.AllowEmptyOutput,
 	})
 	server := &http.Server{
 		Handler:           rootHandler(apiHandler),

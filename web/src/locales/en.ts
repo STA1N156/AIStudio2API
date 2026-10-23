@@ -406,6 +406,12 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestBodyLogHelp':
     'Saves public API request and response bodies, each truncated to 64 KiB, keeping the latest 1000. View them in log details.',
   'settings.logFile': 'Write log files',
+  'settings.emptyOutputError': 'Return 400 for empty replies',
+  'settings.emptyOutputErrorHelp':
+    'On by default: retry empty replies, then return 400 if still empty. When off, skip the retry and return an empty result with 200. Other errors are unchanged. Turning off both this and console logging pauses new usage and request-history records. Existing records, cooldowns and running tasks are unaffected.',
+  'settings.logConsole': 'Print console logs',
+  'settings.logConsoleHelp':
+    'Off by default. When both this and empty-reply errors are off, pause new usage and request-history records. Either switch resumes recording. Cooldowns, running tasks, live panel logs and file logging remain independent.',
   'settings.logFileHelp':
     'Writes service logs to runtime/logs/ in the working directory and rotates each file at 10 MB.',
   'settings.logMaxTotal': 'Log size limit (MB)',

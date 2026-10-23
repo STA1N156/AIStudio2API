@@ -77,6 +77,7 @@ type runtimeManager struct {
 	logs             *logOutput
 	requestCapacity  atomic.Int64
 	requestTimeout   atomic.Int64
+	allowEmptyOutput atomic.Bool
 }
 
 // newRuntimeManager 创建进程级管理器与初始生成服务
@@ -98,12 +99,18 @@ func newRuntimeManager(
 	manager.current = generation
 	manager.requestCapacity.Store(int64(cfg.MaxActiveWorkers * cfg.PerAccountConcurrency))
 	manager.requestTimeout.Store(int64(cfg.RequestTimeout))
+	manager.allowEmptyOutput.Store(!cfg.EmptyOutputError)
 	return manager, nil
 }
 
 // RequestLimits 同步账号池容量与最长排队时间，生成阶段单独控制超时。
 func (manager *runtimeManager) RequestLimits() (int, time.Duration) {
 	return int(manager.requestCapacity.Load()), time.Duration(manager.requestTimeout.Load())
+}
+
+// AllowEmptyOutput 返回当前空回策略，设置保存后立即作用于新请求。
+func (manager *runtimeManager) AllowEmptyOutput() bool {
+	return manager.allowEmptyOutput.Load()
 }
 
 // buildRuntimeGeneration 从配置快照创建账户池、Worker 与协议运行时
@@ -172,6 +179,9 @@ func (manager *runtimeManager) StartService(ctx context.Context) (api.AdminStatu
 	manager.current = next
 	manager.requestCapacity.Store(int64(cfg.MaxActiveWorkers * cfg.PerAccountConcurrency))
 	manager.requestTimeout.Store(int64(cfg.RequestTimeout))
+	manager.allowEmptyOutput.Store(!cfg.EmptyOutputError)
+	manager.ledger.SetRecording(cfg.EmptyOutputError || cfg.LogConsole)
+	manager.ledger.SetBodyCapture(cfg.RequestBodyLog)
 	manager.mu.Unlock()
 
 	current.cancelLifecycle()
@@ -242,13 +252,17 @@ func (manager *runtimeManager) Generate(ctx context.Context, request aistudio.Ge
 	defer manager.mu.RUnlock()
 	convertReply := prepareAntiTruncation(&request)
 	service := manager.current.service
-	return generateWithEmptyRetry(ctx, request, func(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
+	generate := func(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 		events, err := service.Generate(ctx, request)
 		if err == nil && convertReply {
 			events = antiTruncationEvents(ctx, events)
 		}
 		return events, err
-	})
+	}
+	if manager.AllowEmptyOutput() {
+		return generate(ctx, request)
+	}
+	return generateWithEmptyRetry(ctx, request, generate)
 }
 
 // GenerateVideo 由当前生成服务创建视频任务
@@ -479,9 +493,11 @@ func (manager *runtimeManager) UpdateRuntimeConfig(ctx context.Context, value ap
 			updated.WarmWorkerLimit, updated.MaxActiveWorkers, updated.WarmStartupConcurrency, updated.PerAccountConcurrency,
 		)
 		manager.requestCapacity.Store(int64(updated.MaxActiveWorkers * updated.PerAccountConcurrency))
+		manager.allowEmptyOutput.Store(!updated.EmptyOutputError)
 		updated = manager.decorateRuntimeConfig(updated, manager.current.config)
+		manager.ledger.SetRecording(updated.EmptyOutputError || updated.LogConsole)
 		manager.ledger.SetBodyCapture(updated.RequestBodyLog)
-		err = manager.logs.set(updated.LogFile, updated.LogMaxTotalMB)
+		err = manager.logs.set(updated.LogConsole, updated.LogFile, updated.LogMaxTotalMB)
 	}
 	manager.mu.Unlock()
 	return updated, err
@@ -520,12 +536,12 @@ func (manager *runtimeManager) RecordAccessStart(entry api.AccessLog) {
 	manager.mu.RUnlock()
 }
 
-// RecordAccessLog 记录公开 API 请求结果，通过 API key 校验的 POST 请求同时写入用量账本
+// RecordAccessLog 保留实时日志；统计开启时将通过认证的 POST 请求写入用量账本。
 func (manager *runtimeManager) RecordAccessLog(entry api.AccessLog) {
 	manager.mu.RLock()
 	manager.current.admin.RecordAccessLog(entry)
 	manager.mu.RUnlock()
-	if entry.Method == http.MethodPost && entry.Authorized {
+	if entry.Method == http.MethodPost && entry.Authorized && manager.ledger.Recording() {
 		manager.ledger.Record(requestRow(entry, time.Now().UTC()))
 	}
 }

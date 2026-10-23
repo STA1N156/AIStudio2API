@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -153,6 +154,50 @@ func TestEmptyOutputDoesNotRejectToolsOrMedia(t *testing.T) {
 	err := result.apply(aistudio.Event{Kind: aistudio.EventFinish})
 	if err == nil || statusFromError(err) != 400 || err.Error() != "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容" {
 		t.Fatalf("reasoning-only output should fail with 400: %v", err)
+	}
+}
+
+func TestEmptyOutputSetting(t *testing.T) {
+	for _, protocol := range []string{"openai", "gemini", "anthropic", "responses"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", protocol, stream), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					var allow atomic.Bool
+					handler := NewHandler(delayedStreamService{event: aistudio.Event{Kind: aistudio.EventText}}, Config{AllowEmptyOutput: allow.Load})
+					path := "/v1/chat/completions"
+					body := fmt.Sprintf(`{"model":"test","stream":%t,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}`, stream)
+					switch protocol {
+					case "gemini":
+						path = "/v1beta/models/test:generateContent"
+						if stream {
+							path = "/v1beta/models/test:streamGenerateContent?alt=sse"
+						}
+						body = `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+					case "anthropic":
+						path = "/v1/messages"
+						body = fmt.Sprintf(`{"model":"test","stream":%t,"max_tokens":128,"messages":[{"role":"user","content":"hello"}]}`, stream)
+					case "responses":
+						path = "/v1/responses"
+						body = fmt.Sprintf(`{"model":"test","stream":%t,"input":"hello"}`, stream)
+					}
+					for _, enabled := range []bool{false, true, false} {
+						allow.Store(enabled)
+						w := httptest.NewRecorder()
+						handler.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(body)))
+						want := http.StatusBadRequest
+						if enabled {
+							want = http.StatusOK
+						}
+						if w.Code != want {
+							t.Fatalf("allow=%t: got %d: %s", enabled, w.Code, w.Body.String())
+						}
+						if enabled && strings.Contains(w.Body.String(), "EMPTY_MODEL_OUTPUT") {
+							t.Fatal("empty result was converted to an error")
+						}
+					}
+				})
+			})
+		}
 	}
 }
 

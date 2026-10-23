@@ -1,6 +1,7 @@
 package app
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,17 +14,24 @@ import (
 // logFileName 是日志目录中当前日志文件的名称
 const logFileName = "aistudio2api.log"
 
-// logOutput 把控制台日志写到标准错误与可开关的轮转日志文件
+// logOutput 独立控制标准错误与轮转日志文件输出。
 type logOutput struct {
-	dir  string
-	mu   sync.Mutex
-	file *lumberjack.Logger
+	dir     string
+	mu      sync.Mutex
+	file    *lumberjack.Logger
+	console bool
+	level   slog.LevelVar
 }
 
 // set 开启或关闭日志文件；单文件按 config.LogFileMB 轮转，目录总量超过 maxTotalMB 时删除最旧的文件
-func (output *logOutput) set(enabled bool, maxTotalMB int) error {
+func (output *logOutput) set(console, enabled bool, maxTotalMB int) error {
 	output.mu.Lock()
 	defer output.mu.Unlock()
+	output.console = console
+	output.level.Set(slog.LevelInfo)
+	if !console && !enabled {
+		output.level.Set(slog.LevelError + 1)
+	}
 	if output.file != nil {
 		if err := output.file.Close(); err != nil {
 			return err
@@ -44,9 +52,11 @@ func (output *logOutput) set(enabled bool, maxTotalMB int) error {
 
 // Write 把一条日志写到标准错误与日志文件
 func (output *logOutput) Write(data []byte) (int, error) {
-	os.Stderr.Write(data)
 	output.mu.Lock()
 	defer output.mu.Unlock()
+	if output.console {
+		_, _ = os.Stderr.Write(data)
+	}
 	if output.file != nil {
 		return output.file.Write(data)
 	}
