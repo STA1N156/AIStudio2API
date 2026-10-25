@@ -104,6 +104,7 @@ func (s *server) writeOpenAIImages(w http.ResponseWriter, r *http.Request, reque
 		return
 	}
 	created := time.Now().Unix()
+	publish := s.mediaPublisher(r)
 	data := make([]map[string]any, 0, len(results))
 	for _, result := range results {
 		images := 0
@@ -121,6 +122,8 @@ func (s *server) writeOpenAIImages(w http.ResponseWriter, r *http.Request, reque
 				item["size"], item["quality"], item["background"] = cmp.Or(request.Size, "auto"), cmp.Or(request.Quality, "auto"), "auto"
 			} else if request.ResponseFormat == "b64_json" {
 				item["b64_json"] = encoded
+			} else if hosted := publish.apply(media); hosted.URL != "" {
+				item["url"] = hosted.URL
 			} else {
 				item["url"] = "data:" + media.MIME + ";base64," + encoded
 			}

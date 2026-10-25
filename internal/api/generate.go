@@ -409,7 +409,7 @@ func renderMediaMarkdown(media aistudio.Media) string {
 	}
 	label := media.Name
 	if label == "" {
-		label = "media"
+		label, _, _ = strings.Cut(media.MIME, "/")
 	}
 	if strings.HasPrefix(media.MIME, "image/") {
 		return fmt.Sprintf("![%s](%s)", label, url)

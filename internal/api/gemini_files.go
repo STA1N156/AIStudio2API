@@ -468,9 +468,13 @@ func requestOrigin(r *http.Request) string {
 		scheme = "https"
 	}
 	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
-		scheme = forwarded
+		scheme, _, _ = strings.Cut(forwarded, ",")
 	}
-	return scheme + "://" + r.Host
+	host := r.Host
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		host, _, _ = strings.Cut(forwarded, ",")
+	}
+	return strings.TrimSpace(scheme) + "://" + strings.TrimSpace(host)
 }
 
 // handleGeminiFileGet 返回上传文件的 File 资源

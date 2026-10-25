@@ -132,7 +132,7 @@ func (s *server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writer := &anthropicStreamWriter{
 			w: w, id: messageID, model: request.Model,
 			inputTokens: aistudio.EstimatedInputTokens(generateRequest),
-			searchKey:   s.config.APIKey, omitted: request.thinkingOmitted(),
+			searchKey:   s.config.APIKey, omitted: request.thinkingOmitted(), publish: s.mediaPublisher(r),
 		}
 		if err := writer.start(); err != nil {
 			return
@@ -147,7 +147,7 @@ func (s *server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, buildAnthropicResponse(messageID, request.Model, result, s.config.APIKey, request.thinkingOmitted()))
+	writeJSON(w, http.StatusOK, buildAnthropicResponse(messageID, request.Model, result, s.config.APIKey, request.thinkingOmitted(), s.mediaPublisher(r)))
 }
 
 func (s *server) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
@@ -644,7 +644,7 @@ func anthropicToolChoice(raw json.RawMessage) (aistudio.ToolConfig, error) {
 }
 
 // buildAnthropicResponse 构造非流式 Message，omitted 时思考块不带正文
-func buildAnthropicResponse(id string, model string, result generationResult, searchKey string, omitted bool) map[string]any {
+func buildAnthropicResponse(id string, model string, result generationResult, searchKey string, omitted bool, publish mediaPublish) map[string]any {
 	stopReason, stopSequence := anthropicStop(result.finishReason, len(result.toolCalls) > 0, result.stopSequence)
 	searchBlocks, searchCount := anthropicSearchBlocks(result.events, searchKey)
 	if searchCount > 0 {
@@ -655,7 +655,7 @@ func buildAnthropicResponse(id string, model string, result generationResult, se
 		"type":          "message",
 		"role":          "assistant",
 		"model":         model,
-		"content":       append(anthropicBlocks(result, omitted), searchBlocks...),
+		"content":       append(anthropicBlocks(result, omitted, publish), searchBlocks...),
 		"stop_reason":   stopReason,
 		"stop_sequence": stopSequence,
 	}
@@ -680,7 +680,7 @@ func buildAnthropicResponse(id string, model string, result generationResult, se
 }
 
 // anthropicBlocks 把生成事件合并为 Message 内容块，思考块总带 signature，omitted 时不带思考正文
-func anthropicBlocks(result generationResult, omitted bool) []anthropicContentBlock {
+func anthropicBlocks(result generationResult, omitted bool, publish mediaPublish) []anthropicContentBlock {
 	blocks := make([]anthropicContentBlock, 0)
 	for _, event := range result.events {
 		switch event.Kind {
@@ -726,7 +726,7 @@ func anthropicBlocks(result generationResult, omitted bool) []anthropicContentBl
 			}
 		case aistudio.EventMedia:
 			if event.Media != nil {
-				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: renderMediaMarkdown(*event.Media)})
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: renderMediaMarkdown(publish.apply(*event.Media))})
 			}
 		case aistudio.EventExecutableCode, aistudio.EventCodeExecutionResult:
 			rendered := renderCodeExecution(event)
@@ -832,6 +832,7 @@ type anthropicStreamWriter struct {
 	thinkingSignature string
 	searchKey         string
 	omitted           bool
+	publish           mediaPublish
 }
 
 func (s *server) streamAnthropic(r *http.Request, writer *anthropicStreamWriter, events <-chan aistudio.Event) {
@@ -934,7 +935,7 @@ func (writer *anthropicStreamWriter) live(event aistudio.Event) error {
 		}
 		return writer.emit("content_block_delta", map[string]any{
 			"type": "content_block_delta", "index": writer.blockIndex,
-			"delta": map[string]any{"type": "text_delta", "text": renderMediaMarkdown(*event.Media)},
+			"delta": map[string]any{"type": "text_delta", "text": renderMediaMarkdown(writer.publish.apply(*event.Media))},
 		})
 	case aistudio.EventExecutableCode, aistudio.EventCodeExecutionResult:
 		rendered := renderCodeExecution(event)

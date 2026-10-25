@@ -21,6 +21,8 @@ type Config struct {
 	Updates          UpdateService
 	RequestLimits    func() (int, time.Duration)
 	AllowEmptyOutput func() bool
+	// MediaDir 保存生成的图片、音频、视频，Chat 与 Anthropic 回复改为返回 /media 链接；为空时仍返回 base64
+	MediaDir string
 }
 
 type server struct {
@@ -30,6 +32,7 @@ type server struct {
 	uploads           *geminiUploads
 	thoughtSignatures *thoughtSignatureStore
 	pairing           *pairingTokens
+	media             *mediaStore
 	// background 按响应 ID 保存进行中的 Responses 后台响应
 	background sync.Map
 }
@@ -40,7 +43,10 @@ var idSequence atomic.Uint64
 func NewHandler(service aistudio.Service, config Config) http.Handler {
 	s := &server{
 		service: service, config: config, responseStates: newResponseStateStore(), uploads: newGeminiUploads(),
-		thoughtSignatures: newThoughtSignatureStore(), pairing: &pairingTokens{},
+		thoughtSignatures: newThoughtSignatureStore(), pairing: &pairingTokens{}, media: newMediaStore(config.MediaDir),
+	}
+	if s.media != nil {
+		hostedMedia = s.media
 	}
 	public := http.NewServeMux()
 	public.HandleFunc("GET /v1/models", s.handleOpenAIModels)
@@ -112,6 +118,9 @@ func NewHandler(service aistudio.Service, config Config) http.Handler {
 	root.Handle("/v1beta/", loggedHandler)
 	root.Handle("/upload/", requestLoggingMiddleware(config.Admin, corsMiddleware(s.geminiUploadHandler(publicHandler))))
 	root.Handle("/api/", gzipJSONMiddleware(newAdminAuth(config).handler(control)))
+	if s.media != nil {
+		root.HandleFunc("GET /media/{name}", s.handleHostedMedia)
+	}
 	if config.Admin != nil {
 		root.HandleFunc("POST /api/pairing/accounts", s.handlePairingAccount)
 	}

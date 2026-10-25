@@ -90,7 +90,8 @@ type openAITool struct {
 	legacy bool
 }
 
-var assistantImagePattern = regexp.MustCompile(`!\[[^\]]*\]\((data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/_=\r\n-]+)\)`)
+// assistantImagePattern 匹配助手历史中的图片：base64 data URI，或本服务签发的 /media 图片链接
+var assistantImagePattern = regexp.MustCompile(`!\[[^\]]*\]\((data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/_=\r\n-]+|https?://[^/\s)]+/media/[0-9a-f]{32}\.(?:png|jpg|webp|gif))\)`)
 
 // openAIModelObject 投影列表与单模型共用的公开字段
 func openAIModelObject(model aistudio.Model) map[string]any {
@@ -254,7 +255,7 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.thoughtSignatures.Remember(results[index].toolCalls)
 	}
 	choices.record(r.Context(), results)
-	writeJSON(w, http.StatusOK, buildChatCompletion(requestID, created, request.Model, results, request.Tools))
+	writeJSON(w, http.StatusOK, buildChatCompletion(requestID, created, request.Model, results, request.Tools, s.mediaPublisher(r)))
 }
 
 // mergeLegacyFunctions 把旧式 functions 与 function_call 并入 tools 与 tool_choice，旧式函数每轮最多一个调用
@@ -398,12 +399,15 @@ func openAIAssistantContentParts(raw json.RawMessage, fallback []aistudio.Part) 
 	parts := make([]aistudio.Part, 0, len(matches)*2+1)
 	position := 0
 	for _, match := range matches {
-		if match[0] > position {
-			parts = append(parts, aistudio.Part{Text: text[position:match[0]]})
-		}
 		part, err := fileOrInlinePart(text[match[2]:match[3]], "")
 		if err != nil {
 			return nil, err
+		}
+		if part.InlineData == nil {
+			continue // 本服务的媒体链接已过期，按原文保留
+		}
+		if match[0] > position {
+			parts = append(parts, aistudio.Part{Text: text[position:match[0]]})
 		}
 		parts = append(parts, part)
 		position = match[1]
@@ -560,6 +564,9 @@ func imageURLString(raw json.RawMessage) (string, error) {
 }
 
 func fileOrInlinePart(value string, name string) (aistudio.Part, error) {
+	if blob, ok := hostedMedia.read(value); ok {
+		return aistudio.Part{InlineData: &blob}, nil
+	}
 	if media, ok := aistudio.ExternalMediaForURL(value); ok {
 		return aistudio.Part{ExternalMedia: media}, nil
 	}
@@ -893,7 +900,7 @@ func normalizeStopSequences(values []string) []string {
 	return normalized
 }
 
-func buildChatCompletion(id string, created int64, model string, results []generationResult, tools []openAITool) map[string]any {
+func buildChatCompletion(id string, created int64, model string, results []generationResult, tools []openAITool, publish mediaPublish) map[string]any {
 	choices := make([]any, 0, len(results))
 	response := map[string]any{
 		"id":      id,
@@ -902,7 +909,7 @@ func buildChatCompletion(id string, created int64, model string, results []gener
 		"model":   model,
 	}
 	for index := range results {
-		choices = append(choices, chatCompletionChoice(index, results[index], tools))
+		choices = append(choices, chatCompletionChoice(index, results[index], tools, publish))
 		if results[index].providerModel != "" && response["provider_model"] == nil {
 			response["provider_model"] = results[index].providerModel
 		}
@@ -915,8 +922,8 @@ func buildChatCompletion(id string, created int64, model string, results []gener
 }
 
 // chatCompletionChoice 构造非流式响应中第 index 个 choice
-func chatCompletionChoice(index int, result generationResult, tools []openAITool) map[string]any {
-	rendered, spans := renderedContent(result.events)
+func chatCompletionChoice(index int, result generationResult, tools []openAITool, publish mediaPublish) map[string]any {
+	rendered, spans := renderedContent(result.events, publish)
 	content := any(rendered)
 	if rendered == "" && len(result.toolCalls) > 0 {
 		content = nil
@@ -965,14 +972,15 @@ func (s *server) streamChatCompletion(w http.ResponseWriter, r *http.Request, re
 		defer writing.Unlock()
 		return writeSSEHeartbeat(w)
 	}
+	publish := s.mediaPublisher(r)
 	results, err := choices.run(func(index int, events <-chan aistudio.Event) (generationResult, error) {
-		choice := &chatStreamChoice{server: s, tools: request.Tools, index: index, write: write}
+		choice := &chatStreamChoice{server: s, tools: request.Tools, index: index, write: write, publish: publish}
 		result, err := consumeChatStreamEvents(choices.ctx, events, choice.emit, heartbeat)
 		if err != nil {
 			return result, err
 		}
 		if len(result.citations) > 0 {
-			rendered, spans := renderedContent(result.events)
+			rendered, spans := renderedContent(result.events, publish)
 			_ = write(index, map[string]any{"annotations": openAICitations(result.citations, rendered, spans)}, nil)
 		}
 		finish := chatFinishReason(result, request.Tools)
@@ -1024,6 +1032,7 @@ type chatStreamChoice struct {
 	toolIndex              int
 	hasContent             bool
 	contentEndsWithNewline bool
+	publish                mediaPublish
 }
 
 // emit 写出一个上游事件对应的 delta
@@ -1058,7 +1067,7 @@ func (choice *chatStreamChoice) emit(event aistudio.Event) error {
 		if event.Media == nil {
 			return nil
 		}
-		content := renderMediaMarkdown(*event.Media)
+		content := renderMediaMarkdown(choice.publish.apply(*event.Media))
 		if choice.hasContent && !choice.contentEndsWithNewline {
 			content = "\n" + content
 		}
@@ -1217,7 +1226,7 @@ func openAIUsage(usage *aistudio.Usage) map[string]any {
 }
 
 // renderedContent 返回 Chat 消息正文与其中各段连续正文的位置：正文原样拼接，媒体与代码执行渲染为 Markdown
-func renderedContent(events []aistudio.Event) (string, []textSpan) {
+func renderedContent(events []aistudio.Event, publish mediaPublish) (string, []textSpan) {
 	var content strings.Builder
 	var spans []textSpan
 	source, joined := 0, false
@@ -1240,7 +1249,7 @@ func renderedContent(events []aistudio.Event) (string, []textSpan) {
 			if content.Len() > 0 && !strings.HasSuffix(content.String(), "\n") {
 				content.WriteByte('\n')
 			}
-			content.WriteString(renderMediaMarkdown(*event.Media))
+			content.WriteString(renderMediaMarkdown(publish.apply(*event.Media)))
 		case aistudio.EventExecutableCode, aistudio.EventCodeExecutionResult:
 			rendered := renderCodeExecution(event)
 			if rendered == "" {

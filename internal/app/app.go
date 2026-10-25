@@ -151,6 +151,7 @@ func runServer(ctx context.Context, cfg config.Config, options commandOptions, m
 		AdminAuthEnabled: cfg.AdminAuthEnabled, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword,
 		RequestLimits:    manager.RequestLimits,
 		AllowEmptyOutput: manager.AllowEmptyOutput,
+		MediaDir:         filepath.Join("runtime", "media"),
 	})
 	server := &http.Server{
 		Handler:           rootHandler(apiHandler),
@@ -212,6 +213,7 @@ func rootHandler(apiHandler http.Handler) http.Handler {
 	root.Handle("/v1/", apiHandler)
 	root.Handle("/v1beta/", apiHandler)
 	root.Handle("/upload/", apiHandler)
+	root.Handle("/media/", apiHandler)
 	root.Handle("/", webui.Handler())
 	return securityHeaders(root)
 }

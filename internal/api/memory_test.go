@@ -67,7 +67,7 @@ func TestCompactChatPreservesReasoningToolsAndUsage(t *testing.T) {
 	if result.text.Len() != 0 || result.reasoning.Len() != 0 {
 		t.Fatal("stream duplicated text in builders")
 	}
-	text, _ := renderedContent(result.events)
+	text, _ := renderedContent(result.events, nil)
 	if text != "hello" {
 		t.Fatalf("citation text changed: %q", text)
 	}
