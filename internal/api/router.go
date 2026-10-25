@@ -111,7 +111,7 @@ func NewHandler(service aistudio.Service, config Config) http.Handler {
 	root.Handle("/v1/", loggedHandler)
 	root.Handle("/v1beta/", loggedHandler)
 	root.Handle("/upload/", requestLoggingMiddleware(config.Admin, corsMiddleware(s.geminiUploadHandler(publicHandler))))
-	root.Handle("/api/", newAdminAuth(config).handler(control))
+	root.Handle("/api/", gzipJSONMiddleware(newAdminAuth(config).handler(control)))
 	if config.Admin != nil {
 		root.HandleFunc("POST /api/pairing/accounts", s.handlePairingAccount)
 	}

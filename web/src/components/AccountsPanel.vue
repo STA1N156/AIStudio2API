@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { api } from '@/api'
 import { channelLabelKey, useI18n, type TranslationKey } from '@/i18n'
 import { maskedProxy } from '@/proxy'
-import { useCountdown } from '@/countdown'
+import { usePaged } from '@/paging'
 import type {
   Account,
   AccountDraft,
@@ -17,6 +17,8 @@ import DetailDialog from './DetailDialog.vue'
 import UiIcon from './UiIcon.vue'
 import AccountTransfer from './AccountTransfer.vue'
 import PageHeader from './PageHeader.vue'
+import RelativeTime from './RelativeTime.vue'
+import UiPager from './UiPager.vue'
 
 const props = defineProps<{
   accounts: Account[]
@@ -32,7 +34,6 @@ const emit = defineEmits<{
 }>()
 
 const { t, locale, errorText } = useI18n()
-const { remaining } = useCountdown(locale)
 const query = ref('')
 const selectedState = ref('all')
 const cooldownsByAccount = computed(() => {
@@ -78,6 +79,10 @@ const filteredAccounts = computed(() =>
     }
   }),
 )
+// 账户多时只渲染当前页，筛选或搜索变化时回到第一页
+const { page, pages, paged: pagedAccounts } = usePaged(filteredAccounts, 50)
+watch([query, selectedState], () => (page.value = 1))
+const accountList = ref<HTMLElement | null>(null)
 const defaultAccountLocale = navigator.language || 'en-US'
 const defaultAccountTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 const showEditor = ref(false)
@@ -500,9 +505,9 @@ async function refreshAllAccounts(): Promise<void> {
       >
         {{ t('ui.noMatches') }}
       </div>
-      <div v-else>
+      <div v-else ref="accountList" class="scroll-mt-4">
         <div
-          v-for="account in filteredAccounts"
+          v-for="account in pagedAccounts"
           :key="account.id"
           class="account-card"
           :class="{ 'opacity-60': !account.enabled }"
@@ -575,8 +580,8 @@ async function refreshAllAccounts(): Promise<void> {
               <time
                 :title="new Date(cooldown.until).toLocaleString()"
                 class="shrink-0 text-yellow-400"
-                >{{ remaining(cooldown.until) }}</time
-              >
+                ><RelativeTime :until="cooldown.until"
+              /></time>
             </div>
             <button
               v-if="accountCooldowns(account).length > 2"
@@ -661,6 +666,12 @@ async function refreshAllAccounts(): Promise<void> {
             </details>
           </div>
         </div>
+        <UiPager
+          v-model="page"
+          :pages="pages"
+          :total="filteredAccounts.length"
+          @update:model-value="accountList?.scrollIntoView({ block: 'start' })"
+        />
       </div>
 
       <DetailDialog
@@ -684,7 +695,8 @@ async function refreshAllAccounts(): Promise<void> {
               {{ cooldown.model_id }} · {{ t(channelLabelKey(cooldown.channel)) }}
             </p>
             <p class="mt-1 text-xs text-yellow-400">
-              {{ remaining(cooldown.until) }} · {{ new Date(cooldown.until).toLocaleString() }}
+              <RelativeTime :until="cooldown.until" /> ·
+              {{ new Date(cooldown.until).toLocaleString() }}
             </p>
           </div>
         </div>

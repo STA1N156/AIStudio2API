@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
-import type { Model, UsageDimension, UsageReport, UsageStats } from '@/types'
+import type { Model, UsageDimension, UsagePair, UsageReport, UsageStats } from '@/types'
 import UiIcon from './UiIcon.vue'
 import PageHeader from './PageHeader.vue'
 import UiSelect from './UiSelect.vue'
@@ -87,6 +87,7 @@ async function load(): Promise<void> {
   }
   query.set('tz', timezone)
   query.set('stack', state.stack)
+  query.set('pairs', '0')
   controller?.abort()
   const current = new AbortController()
   controller = current
@@ -104,6 +105,15 @@ async function load(): Promise<void> {
   } finally {
     if (controller === current) loading.value = false
   }
+}
+
+// loadPairs 按需读取一个账户或模型在当前范围与筛选下的组合明细，主报告不再携带全部组合
+async function loadPairs(dimension: 'account' | 'model', key: string): Promise<UsagePair[]> {
+  const query = baseQuery()
+  if (query === null) return []
+  query.set(dimension, key)
+  query.set('tz', timezone)
+  return (await api.usage(query)).pairs
 }
 
 // refresh 立即刷新报告与请求记录
@@ -583,6 +593,7 @@ function showStatusRecords(value: string): void {
               v-if="view === 'ranking'"
               :report="report"
               :now="now"
+              :load-pairs="loadPairs"
               @filter="addFilter"
               @status="showStatusRecords"
             />

@@ -51,6 +51,8 @@ type UsageQuery struct {
 	Location *time.Location
 	Filters  UsageFilters
 	Stack    string
+	// SkipPairs 为 true 时不汇总账户与模型组合，账户多时组合明细由前端按行另行读取
+	SkipPairs bool
 }
 
 // UsageLatency 汇总一组请求的平均值与分位耗时
@@ -301,7 +303,7 @@ func (s *server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	query := UsageQuery{From: from, To: to, Location: time.UTC, Filters: parseUsageFilters(values), Stack: "model"}
+	query := UsageQuery{From: from, To: to, Location: time.UTC, Filters: parseUsageFilters(values), Stack: "model", SkipPairs: values.Get("pairs") == "0"}
 	if name := values.Get("tz"); name != "" {
 		if query.Location, err = time.LoadLocation(name); err != nil {
 			writeAdminError(w, http.StatusBadRequest, "invalid_request", "tz 必须是 IANA 时区名")

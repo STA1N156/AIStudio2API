@@ -87,6 +87,13 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 			want(t, report.Totals)
 			want(t, report.Groups["account"][0].UsageStats)
 			want(t, report.Pairs[0].UsageStats)
+			skipped, err := store.Usage(ctx, api.UsageQuery{From: test.from, To: test.to, Bucket: test.bucket, Stack: "model", SkipPairs: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(skipped.Pairs) != 0 || skipped.Totals.Requests != report.Totals.Requests {
+				t.Fatalf("skip pairs = %d pairs, %d requests", len(skipped.Pairs), skipped.Totals.Requests)
+			}
 			var excluded int64
 			for _, bucket := range report.Buckets {
 				excluded += bucket.RateExcluded

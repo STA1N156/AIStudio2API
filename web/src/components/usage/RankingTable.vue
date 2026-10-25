@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { computed, ref, useId, watch } from 'vue'
 import { useI18n } from '@/i18n'
-import type { UsageDimension, UsageReport, UsageStats } from '@/types'
+import { usePaged } from '@/paging'
+import type { UsageDimension, UsagePair, UsageReport, UsageStats } from '@/types'
 import UiIcon from '../UiIcon.vue'
+import UiPager from '../UiPager.vue'
 import { useUsageFormat } from './format'
 import { rateTone, readPreference, successRate, writePreference } from './model'
 
 type Tab = UsageDimension | 'status'
 type SortKey = 'key' | 'requests' | 'rate' | 'tokens' | 'last'
 
-const props = defineProps<{ report: UsageReport; now: number }>()
+const props = defineProps<{
+  report: UsageReport
+  now: number
+  loadPairs: (dimension: 'account' | 'model', key: string) => Promise<UsagePair[]>
+}>()
 const emit = defineEmits<{
   filter: [dimension: UsageDimension, key: string]
   status: [code: string]
@@ -62,22 +68,46 @@ const rows = computed(() => {
     return descending ? -order : order
   })
 })
+// 取值多时只渲染当前页，切换维度或排序时回到第一页
+const { page, pages, paged: pagedRows } = usePaged(rows, 50)
+watch([tab, sort], () => (page.value = 1))
 
-// children 返回账户或模型行展开后的组合明细
-function children(key: string): { key: string; label: string; stats: UsageStats }[] {
+// breakdown 表示账户与模型行可以展开组合明细
+const breakdown = computed(() => tab.value === 'account' || tab.value === 'model')
+// pairs 缓存已展开行按需读取的组合明细，键为维度与取值
+const pairs = ref(new Map<string, UsagePair[]>())
+
+// fetchPairs 读取一行的组合明细，失败时按没有明细显示
+async function fetchPairs(dimension: 'account' | 'model', key: string): Promise<void> {
+  const value = await props.loadPairs(dimension, key).catch(() => [])
+  pairs.value = new Map(pairs.value).set(`${dimension}:${key}`, value)
+}
+
+// 报告刷新后重新读取仍展开的行
+watch(
+  () => props.report,
+  () => {
+    pairs.value = new Map()
+    if (tab.value === 'account' || tab.value === 'model')
+      for (const key of expanded.value) void fetchPairs(tab.value, key)
+  },
+)
+
+// children 返回账户或模型行展开后的组合明细，尚未读取完成时为 undefined
+function children(key: string): { key: string; label: string; stats: UsageStats }[] | undefined {
+  const list = pairs.value.get(`${tab.value}:${key}`)
+  if (list === undefined) return undefined
   if (tab.value === 'account')
-    return props.report.pairs
+    return list
       .filter((pair) => pair.account === key)
       .map((pair) => ({ key: pair.model, label: dimensionLabel('model', pair.model), stats: pair }))
-  if (tab.value === 'model')
-    return props.report.pairs
-      .filter((pair) => pair.model === key)
-      .map((pair) => ({
-        key: pair.account,
-        label: dimensionLabel('account', pair.account),
-        stats: pair,
-      }))
-  return []
+  return list
+    .filter((pair) => pair.model === key)
+    .map((pair) => ({
+      key: pair.account,
+      label: dimensionLabel('account', pair.account),
+      stats: pair,
+    }))
 }
 
 // toggleSort 切换排序列，再次点击同一列时反转方向
@@ -88,11 +118,18 @@ function toggleSort(key: SortKey): void {
       : { key, descending: key !== 'key' }
 }
 
-// toggleRow 展开或收起一行的组合明细
+// toggleRow 展开或收起一行的组合明细，首次展开时读取
 function toggleRow(key: string): void {
   const next = new Set(expanded.value)
   if (next.has(key)) next.delete(key)
-  else next.add(key)
+  else {
+    next.add(key)
+    if (
+      (tab.value === 'account' || tab.value === 'model') &&
+      !pairs.value.has(`${tab.value}:${key}`)
+    )
+      void fetchPairs(tab.value, key)
+  }
   expanded.value = next
 }
 
@@ -174,12 +211,12 @@ const total = computed(() => props.report.totals.requests)
           </tr>
         </thead>
         <tbody>
-          <template v-for="row in rows" :key="row.key">
+          <template v-for="row in pagedRows" :key="row.key">
             <tr class="border-t border-line/60 text-gray-300 hover:bg-raised/40">
               <th scope="row" class="max-w-72 px-4 py-2 font-normal">
                 <div class="flex items-center gap-1.5">
                   <button
-                    v-if="children(row.key).length > 0"
+                    v-if="breakdown"
                     type="button"
                     class="rounded p-0.5 text-gray-500 hover:bg-raised hover:text-white"
                     :aria-expanded="expanded.has(row.key)"
@@ -210,7 +247,7 @@ const total = computed(() => props.report.totals.requests)
               <td class="px-4 py-2 text-right tabular-nums">
                 {{ integer(row.requests) }}
                 <span class="ml-1 text-gray-500">{{
-                  percent(row.requests / Math.max(total, 1), 0)
+                  percent(row.requests / Math.max(total, 1), row.requests < total / 100 ? 1 : 0)
                 }}</span>
               </td>
               <td class="px-4 py-2 text-right tabular-nums" :class="rateTone(successRate(row))">
@@ -233,8 +270,11 @@ const total = computed(() => props.report.totals.requests)
               </td>
             </tr>
             <template v-if="expanded.has(row.key)">
+              <tr v-if="children(row.key) === undefined" class="bg-canvas/60 text-gray-500">
+                <td colspan="6" class="py-1.5 pr-4 pl-11">{{ t('common.loading') }}</td>
+              </tr>
               <tr
-                v-for="child in children(row.key)"
+                v-for="child in children(row.key) ?? []"
                 :key="`${row.key}/${child.key}`"
                 class="bg-canvas/60 text-gray-400"
               >
@@ -262,6 +302,9 @@ const total = computed(() => props.report.totals.requests)
           </template>
         </tbody>
       </table>
+    </div>
+    <div class="px-4 pb-3">
+      <UiPager v-model="page" :pages="pages" :total="rows.length" />
     </div>
   </section>
 </template>
