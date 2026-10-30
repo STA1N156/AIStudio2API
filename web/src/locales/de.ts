@@ -231,6 +231,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.earliest': 'Früheste Freigabe',
   'settings.authPath': 'Pfad der Kontostatus',
   'settings.listen': 'Listen-Adresse',
+  'settings.publicBaseURL': 'Öffentliche Basis-URL',
   'settings.apiKey': 'Lokaler API-Schlüssel',
   'settings.proxy': 'Standard-Proxy',
   'settings.initTimeout': 'Zeitlimit für die Initialisierung',
@@ -393,6 +394,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.autoStart': 'Generierungsdienst automatisch starten',
   'settings.autoStartHelp': 'Startet den Generierungsdienst, sobald das Verwaltungsprogramm läuft.',
   'settings.listenHelp': 'Listen-Adresse, die Konsole und öffentliche API gemeinsam nutzen.',
+  'settings.publicBaseURLHelp':
+    'Domain für Links zu erzeugten Bildern, Audio- und Videodateien, z. B. https://example.com. Leer: Die Adresse der jeweiligen Anfrage wird verwendet; bei Aufrufen über ein internes Netz oder einen Relay-Dienst setzen.',
   'settings.apiKeyHelp':
     'Schlüssel, der mit Anfragen an die öffentliche API gesendet wird. Mehrere Schlüssel trennen Sie durch Kommas; jeder davon wird akzeptiert. Ist das Feld leer, können im Browser nur Seiten auf diesem Computer die API direkt aufrufen.',
   'settings.authPathHelp': 'Kontodatei, Verzeichnis oder mehrere durch Kommas getrennte Pfade.',

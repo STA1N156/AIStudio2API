@@ -477,6 +477,7 @@ cp .env.example .env
 | --- | --- | --- |
 | `AISTUDIO_AUTH_STATES` | `auth` | 账户文件、目录或多个逗号分隔路径 |
 | `LISTEN_ADDR` | `127.0.0.1:2048` | 管理页面与 API 监听地址 |
+| `PUBLIC_BASE_URL` | 空 | 生成的图片、音频、视频链接使用的对外地址，如 `https://example.com`；留空时取请求的访问地址，经内网或中转服务调用时必须填写 |
 | `PROXY_API_KEY` | 空 | 公开 API key |
 | `AUTO_START` | `false` | 管理程序启动后自动启动生成服务 |
 | `REQUEST_BODY_LOG` | `false` | 保存公开 API 请求与响应正文，各截断到 64 KiB，保留最近 1000 条 |

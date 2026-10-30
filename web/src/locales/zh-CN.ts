@@ -217,6 +217,7 @@ export const messages = {
   'cooldowns.earliest': '最早恢复',
   'settings.authPath': '账号文件位置',
   'settings.listen': '服务地址',
+  'settings.publicBaseURL': '对外访问地址',
   'settings.apiKey': '本地 API 密钥',
   'settings.proxy': '默认代理',
   'settings.initTimeout': '账号启动等待上限',
@@ -368,6 +369,8 @@ export const messages = {
   'settings.autoStart': '自动启动生成服务',
   'settings.autoStartHelp': '管理程序启动后直接启动生成服务。',
   'settings.listenHelp': '管理页面与公开 API 共用的监听地址。',
+  'settings.publicBaseURLHelp':
+    '生成的图片、音频、视频链接使用的域名，例如 https://example.com。留空时取请求的访问地址；经 Zeabur 内网或其他中转服务调用时必须填写。',
   'settings.apiKeyHelp':
     '公开 API 请求携带的密钥，多个密钥用英文逗号分隔，任一密钥都可调用。为空时，浏览器中只有本机页面可以直接调用接口。',
   'settings.authPathHelp': '账户文件、目录或多个逗号分隔的路径。',

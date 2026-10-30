@@ -219,6 +219,8 @@ type RuntimeConfig struct {
 	APIKey                    string       `json:"proxy_api_key"`
 	ActiveListenAddr          string       `json:"active_listen_addr"`
 	ActiveAPIKey              string       `json:"active_proxy_api_key"`
+	PublicBaseURL             string       `json:"public_base_url"`
+	ActivePublicBaseURL       string       `json:"active_public_base_url"`
 	ManagementRestartRequired bool         `json:"management_restart_required"`
 	ServiceRestartRequired    bool         `json:"service_restart_required"`
 	Proxy                     string       `json:"proxy"`

@@ -176,12 +176,15 @@ func (publish mediaPublish) apply(media aistudio.Media) aistudio.Media {
 	return publish(media)
 }
 
-// mediaPublisher 返回本次请求的媒体链接生成器，链接主机取自客户端访问本服务使用的地址
+// mediaPublisher 返回本次请求的媒体链接生成器，链接主机优先取 PUBLIC_BASE_URL，未配置时取客户端访问本服务使用的地址
 func (s *server) mediaPublisher(r *http.Request) mediaPublish {
 	if s.media == nil {
 		return nil
 	}
-	origin := requestOrigin(r)
+	origin := s.config.PublicBaseURL
+	if origin == "" {
+		origin = requestOrigin(r)
+	}
 	return func(media aistudio.Media) aistudio.Media {
 		if len(media.Data) == 0 {
 			return media

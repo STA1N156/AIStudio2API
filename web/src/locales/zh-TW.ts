@@ -224,6 +224,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.earliest': '最早恢復',
   'settings.authPath': '帳號狀態目錄',
   'settings.listen': '監聽位址',
+  'settings.publicBaseURL': '對外存取位址',
   'settings.apiKey': '本機 API 金鑰',
   'settings.proxy': '預設代理伺服器',
   'settings.initTimeout': '初始化逾時',
@@ -375,6 +376,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.autoStart': '自動啟動生成服務',
   'settings.autoStartHelp': '管理程式啟動後直接啟動生成服務。',
   'settings.listenHelp': '主控台與公開 API 共用的監聽位址。',
+  'settings.publicBaseURLHelp':
+    '生成的圖片、音訊、影片連結使用的網域，例如 https://example.com。留空時取請求的存取位址；經 Zeabur 內網或其他中轉服務呼叫時必須填寫。',
   'settings.apiKeyHelp':
     '公開 API 請求所附的金鑰，多組金鑰以半形逗號分隔，任一組都能呼叫。留空時，瀏覽器中只有本機頁面能直接呼叫 API。',
   'settings.authPathHelp': '帳號檔案、目錄，或以逗號分隔的多個路徑。',

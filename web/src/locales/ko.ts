@@ -228,6 +228,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.earliest': '가장 빠른 복구',
   'settings.authPath': '계정 상태 경로',
   'settings.listen': '수신 주소',
+  'settings.publicBaseURL': '공개 기본 URL',
   'settings.apiKey': '로컬 API 키',
   'settings.proxy': '기본 프록시',
   'settings.initTimeout': '초기화 제한 시간',
@@ -382,6 +383,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.autoStart': '생성 서비스 자동 시작',
   'settings.autoStartHelp': '관리 프로그램이 시작되면 바로 생성 서비스를 시작합니다.',
   'settings.listenHelp': '콘솔과 공개 API가 함께 쓰는 수신 주소입니다.',
+  'settings.publicBaseURLHelp':
+    '생성된 이미지·오디오·동영상 링크에 쓰는 도메인입니다(예: https://example.com). 비워 두면 요청이 들어온 주소를 사용하며, 내부망이나 중계 서비스를 거쳐 호출할 때는 반드시 설정하세요.',
   'settings.apiKeyHelp':
     '공개 API 요청에 함께 보내는 키입니다. 여러 키는 쉼표로 구분하며 어느 키로든 호출할 수 있습니다. 비워 두면 브라우저에서는 이 컴퓨터의 페이지만 API를 직접 호출할 수 있습니다.',
   'settings.authPathHelp': '계정 파일, 디렉터리 또는 쉼표로 구분한 여러 경로입니다.',

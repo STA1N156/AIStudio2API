@@ -43,6 +43,8 @@ const form = reactive<ServiceConfig>({
   proxy_api_key: '',
   active_listen_addr: '127.0.0.1:2048',
   active_proxy_api_key: '',
+  public_base_url: '',
+  active_public_base_url: '',
   management_restart_required: false,
   service_restart_required: false,
   proxy: '',
@@ -76,7 +78,7 @@ const sections: {
     label: 'settings.section.service',
     description: 'settings.section.serviceHelp',
     icon: 'service',
-    fields: ['auto_start', 'listen_addr', 'proxy_api_key', 'auth_states'],
+    fields: ['auto_start', 'listen_addr', 'public_base_url', 'proxy_api_key', 'auth_states'],
   },
   {
     id: 'capacity',
@@ -307,6 +309,28 @@ async function saveConfig(): Promise<void> {
                 class="mt-1 text-xs break-all text-gray-500"
               >
                 {{ t('settings.activeValue') }}: {{ config.active_listen_addr }}
+              </p>
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.publicBaseURL')"
+              control-id="setting-public-base-url"
+              :description="t('settings.publicBaseURLHelp')"
+              effect="management"
+              :changed="changedFields.has('public_base_url')"
+            >
+              <input
+                id="setting-public-base-url"
+                v-model.trim="form.public_base_url"
+                :class="inputClass"
+                placeholder="https://example.com"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <p
+                v-if="form.public_base_url !== config.active_public_base_url"
+                class="mt-1 text-xs break-all text-gray-500"
+              >
+                {{ t('settings.activeValue') }}: {{ config.active_public_base_url || '—' }}
               </p>
             </SettingRow>
             <SettingRow

@@ -199,6 +199,8 @@ export interface ServiceConfig {
   proxy_api_key: string
   active_listen_addr: string
   active_proxy_api_key: string
+  public_base_url: string
+  active_public_base_url: string
   management_restart_required: boolean
   service_restart_required: boolean
   proxy: string

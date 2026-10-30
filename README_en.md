@@ -467,6 +467,7 @@ cp .env.example .env
 | --- | --- | --- |
 | `AISTUDIO_AUTH_STATES` | `auth` | Account file, directory, or comma-separated paths |
 | `LISTEN_ADDR` | `127.0.0.1:2048` | Management UI and API listen address |
+| `PUBLIC_BASE_URL` | empty | Public address used in links to generated images, audio and video, such as `https://example.com`; when empty the request address is used, so set it when calls arrive through an internal network or relay |
 | `PROXY_API_KEY` | empty | Public API key |
 | `AUTO_START` | `false` | Start the generation service when the manager starts |
 | `REQUEST_BODY_LOG` | `false` | Store public API request and response bodies, each truncated to 64 KiB, keeping the latest 1000 |

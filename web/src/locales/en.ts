@@ -228,6 +228,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.earliest': 'Earliest recovery',
   'settings.authPath': 'Account state path',
   'settings.listen': 'Listen address',
+  'settings.publicBaseURL': 'Public base URL',
   'settings.apiKey': 'Local API key',
   'settings.proxy': 'Default proxy',
   'settings.initTimeout': 'Init timeout',
@@ -383,6 +384,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.autoStartHelp':
     'Starts the generation service as soon as the management process starts.',
   'settings.listenHelp': 'Listen address shared by the console and the public API.',
+  'settings.publicBaseURLHelp':
+    'Domain used in links to generated images, audio and video, for example https://example.com. When empty, the address of each request is used; set it when calls arrive through an internal network or a relay service.',
   'settings.apiKeyHelp':
     'Key sent with public API requests. Separate several keys with commas; any of them is accepted. When empty, only pages on this machine can call the API from a browser.',
   'settings.authPathHelp': 'Account file, directory or several comma-separated paths.',

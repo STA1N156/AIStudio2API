@@ -152,6 +152,7 @@ func runServer(ctx context.Context, cfg config.Config, options commandOptions, m
 		RequestLimits:    manager.RequestLimits,
 		AllowEmptyOutput: manager.AllowEmptyOutput,
 		MediaDir:         filepath.Join("runtime", "media"),
+		PublicBaseURL:    cfg.PublicBaseURL,
 	})
 	server := &http.Server{
 		Handler:           rootHandler(apiHandler),

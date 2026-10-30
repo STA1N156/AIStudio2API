@@ -231,6 +231,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.earliest': '最短の復帰',
   'settings.authPath': 'アカウント状態のパス',
   'settings.listen': '待ち受けアドレス',
+  'settings.publicBaseURL': '公開ベース URL',
   'settings.apiKey': 'ローカル API キー',
   'settings.proxy': 'デフォルトのプロキシ',
   'settings.initTimeout': '初期化のタイムアウト',
@@ -389,6 +390,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.autoStart': '生成サービスを自動的に開始',
   'settings.autoStartHelp': '管理プログラムの起動直後に生成サービスを開始します。',
   'settings.listenHelp': 'コンソールと公開 API が共用する待ち受けアドレスです。',
+  'settings.publicBaseURLHelp':
+    '生成した画像・音声・動画のリンクに使うドメイン（例: https://example.com）。空の場合はリクエストのアクセス先を使います。内部ネットワークや中継サービス経由で呼び出す場合は設定してください。',
   'settings.apiKeyHelp':
     '公開 API のリクエストに付けるキーです。複数のキーは半角カンマで区切り、どのキーでも呼び出せます。空欄の場合、ブラウザから API を直接呼び出せるのはこのパソコン上のページだけです。',
   'settings.authPathHelp': 'アカウントのファイル、ディレクトリ、またはカンマ区切りの複数のパス。',

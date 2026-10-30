@@ -23,6 +23,8 @@ type Config struct {
 	AllowEmptyOutput func() bool
 	// MediaDir 保存生成的图片、音频、视频，Chat 与 Anthropic 回复改为返回 /media 链接；为空时仍返回 base64
 	MediaDir string
+	// PublicBaseURL 是媒体链接使用的对外地址；为空时取请求的访问地址，经内网或中转服务调用时必须配置
+	PublicBaseURL string
 }
 
 type server struct {

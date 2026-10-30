@@ -29,6 +29,7 @@ const (
 var configKeys = [...]string{
 	"AISTUDIO_AUTH_STATES",
 	"LISTEN_ADDR",
+	"PUBLIC_BASE_URL",
 	"PROXY_API_KEY",
 	"PROXY",
 	"INIT_TIMEOUT",
@@ -80,6 +81,7 @@ type Config struct {
 	BuildNativeNonstream   bool          `json:"build_native_nonstream"`
 	AuthStates             string        `json:"auth_states"`
 	ListenAddr             string        `json:"listen_addr"`
+	PublicBaseURL          string        `json:"public_base_url"`
 	ProxyAPIKey            string        `json:"proxy_api_key"`
 	Proxy                  string        `json:"proxy"`
 	InitTimeout            time.Duration `json:"-"`
@@ -190,6 +192,9 @@ func Load(path string) (Config, error) {
 	if value, ok := values["LISTEN_ADDR"]; ok {
 		cfg.ListenAddr = strings.TrimSpace(value)
 	}
+	if value, ok := values["PUBLIC_BASE_URL"]; ok {
+		cfg.PublicBaseURL = normalizePublicBaseURL(value)
+	}
 	if value, ok := values["PROXY_API_KEY"]; ok {
 		cfg.ProxyAPIKey = strings.TrimSpace(value)
 	}
@@ -274,6 +279,7 @@ func (c Config) Save(path string) error {
 		"BUILD_NATIVE_NONSTREAM":   strconv.FormatBool(c.BuildNativeNonstream),
 		"AISTUDIO_AUTH_STATES":     c.AuthStates,
 		"LISTEN_ADDR":              c.ListenAddr,
+		"PUBLIC_BASE_URL":          c.PublicBaseURL,
 		"PROXY_API_KEY":            c.ProxyAPIKey,
 		"PROXY":                    c.Proxy,
 		"INIT_TIMEOUT":             c.InitTimeout.String(),
@@ -308,6 +314,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("AISTUDIO_AUTH_STATES 不能为空")
 	}
 	if err := validateListenAddr(c.ListenAddr); err != nil {
+		return err
+	}
+	if err := validatePublicBaseURL(c.PublicBaseURL); err != nil {
 		return err
 	}
 	for _, proxy := range ProxyList(c.Proxy) {
@@ -422,6 +431,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		BuildNativeNonstream   bool     `json:"build_native_nonstream"`
 		AuthStates             string   `json:"auth_states"`
 		ListenAddr             string   `json:"listen_addr"`
+		PublicBaseURL          string   `json:"public_base_url"`
 		ProxyAPIKey            string   `json:"proxy_api_key"`
 		Proxy                  string   `json:"proxy"`
 		InitTimeout            string   `json:"init_timeout"`
@@ -448,6 +458,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		BuildNativeNonstream:   c.BuildNativeNonstream,
 		AuthStates:             c.AuthStates,
 		ListenAddr:             c.ListenAddr,
+		PublicBaseURL:          c.PublicBaseURL,
 		ProxyAPIKey:            c.ProxyAPIKey,
 		Proxy:                  c.Proxy,
 		InitTimeout:            c.InitTimeout.String(),
@@ -479,6 +490,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		BuildNativeNonstream   bool     `json:"build_native_nonstream"`
 		AuthStates             string   `json:"auth_states"`
 		ListenAddr             string   `json:"listen_addr"`
+		PublicBaseURL          string   `json:"public_base_url"`
 		ProxyAPIKey            string   `json:"proxy_api_key"`
 		Proxy                  string   `json:"proxy"`
 		InitTimeout            string   `json:"init_timeout"`
@@ -518,6 +530,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		BuildNativeNonstream:   value.BuildNativeNonstream,
 		AuthStates:             strings.TrimSpace(value.AuthStates),
 		ListenAddr:             strings.TrimSpace(value.ListenAddr),
+		PublicBaseURL:          normalizePublicBaseURL(value.PublicBaseURL),
 		ProxyAPIKey:            strings.TrimSpace(value.ProxyAPIKey),
 		Proxy:                  strings.TrimSpace(value.Proxy),
 		InitTimeout:            initTimeout,
@@ -682,6 +695,24 @@ func validateListenAddr(value string) error {
 	}
 	if parsed, err := strconv.ParseUint(port, 10, 16); err != nil || parsed == 0 {
 		return fmt.Errorf("LISTEN_ADDR 端口必须是 1 到 65535")
+	}
+	return nil
+}
+
+// normalizePublicBaseURL 去掉对外访问地址两端空白与末尾斜杠
+func normalizePublicBaseURL(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+// validatePublicBaseURL 要求对外访问地址为空，或是不带路径的 http(s) 地址
+func validatePublicBaseURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return fmt.Errorf("PUBLIC_BASE_URL 必须是 http(s)://域名[:端口]，例如 https://example.com")
 	}
 	return nil
 }

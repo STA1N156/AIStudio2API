@@ -232,6 +232,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.earliest': 'Reprise au plus tôt',
   'settings.authPath': 'Chemin des états de compte',
   'settings.listen': 'Adresse d’écoute',
+  'settings.publicBaseURL': 'URL publique',
   'settings.apiKey': 'Clé API locale',
   'settings.proxy': 'Proxy par défaut',
   'settings.initTimeout': 'Délai d’initialisation',
@@ -394,6 +395,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.autoStartHelp':
     'Démarre le service de génération dès le lancement du programme de gestion.',
   'settings.listenHelp': 'Adresse d’écoute partagée par la console et l’API publique.',
+  'settings.publicBaseURLHelp':
+    "Domaine utilisé dans les liens vers les images, audios et vidéos générés, par exemple https://example.com. Vide : l'adresse de chaque requête est utilisée ; à renseigner si les appels passent par un réseau interne ou un relais.",
   'settings.apiKeyHelp':
     'Clé envoyée avec les requêtes de l’API publique. Séparez plusieurs clés par des virgules ; chacune est acceptée. Si le champ est vide, seules les pages de cet ordinateur peuvent appeler l’API depuis un navigateur.',
   'settings.authPathHelp':

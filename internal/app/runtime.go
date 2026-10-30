@@ -3593,6 +3593,7 @@ func (service *trackedService) generateWithRetry(
 		var rpcErr *aistudio.RPCError
 		if errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusBadRequest && strings.Contains(rpcErr.Message, "131072") {
 			// 直接返回，不切换 Build/Playground、换号或重建后重试。
+			lease.ResetPermissionDeniedStreak()
 			err = errors.Join(err, lease.Release())
 			lease = nil
 			break
@@ -4012,6 +4013,7 @@ func (service *trackedService) forwardEvents(
 			terminal = true
 		}
 		if event.Kind == aistudio.EventFinish {
+			lease.ResetPermissionDeniedStreak()
 			api.SetAccessLogFinishReason(requestCtx, event.FinishReason)
 			state = "completed"
 			terminal = true

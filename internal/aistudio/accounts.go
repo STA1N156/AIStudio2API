@@ -192,6 +192,9 @@ type Account struct {
 	persistenceLocked     bool
 	authGeneration        uint64
 	authCheckedAt         time.Time
+	permissionFailures    int
+	permissionFailureAt   time.Time
+	permissionResetAt     time.Time
 	modelAccessGeneration uint64
 	stateMessage          string
 	catalogError          string
@@ -293,6 +296,7 @@ type AccountLease struct {
 	channel               Channel
 	operation             sync.Mutex
 	released              bool
+	permissionRecorded    bool
 	once                  sync.Once
 	err                   error
 }
@@ -1365,6 +1369,27 @@ func (l *AccountLease) CheckedAt() time.Time {
 	return l.checkedAt
 }
 
+// ResetPermissionDeniedStreak 只清除连续权限错误，不改变认证或停用状态。
+func (l *AccountLease) ResetPermissionDeniedStreak() {
+	if l == nil || l.account == nil || l.pool == nil {
+		return
+	}
+	l.operation.Lock()
+	defer l.operation.Unlock()
+	l.account.storageMu.Lock()
+	defer l.account.storageMu.Unlock()
+	l.pool.mu.Lock()
+	defer l.pool.mu.Unlock()
+	a := l.account
+	if l.pool.byID[a.ID] != a || l.authGeneration != a.authGeneration || !a.Config.Enabled ||
+		l.checkedAt.Before(a.permissionFailureAt) || l.checkedAt.Before(a.permissionResetAt) {
+		return
+	}
+	a.permissionFailures = 0
+	a.permissionFailureAt = time.Time{}
+	a.permissionResetAt = l.checkedAt
+}
+
 // MarkAuthenticationValid 保存当前租约确认的认证成功状态
 func (l *AccountLease) MarkAuthenticationValid() error {
 	return l.markAuthenticationStateAt(false, "", l.CheckedAt())
@@ -1471,6 +1496,9 @@ func (l *AccountLease) SaveStorageState(state StorageState) error {
 	l.pool.mu.Lock()
 	l.account.StorageState = state
 	l.account.authGeneration++
+	l.account.permissionFailures = 0
+	l.account.permissionFailureAt = time.Time{}
+	l.account.permissionResetAt = time.Time{}
 	l.authGeneration = l.account.authGeneration
 	l.account.authCheckedAt = time.Time{}
 	l.pool.mu.Unlock()
@@ -1541,6 +1569,9 @@ func (l *AccountLease) RefreshStorageState(
 	l.pool.mu.Lock()
 	l.account.StorageState = state
 	l.account.authGeneration++
+	l.account.permissionFailures = 0
+	l.account.permissionFailureAt = time.Time{}
+	l.account.permissionResetAt = time.Time{}
 	l.authGeneration = l.account.authGeneration
 	l.account.authCheckedAt = time.Time{}
 	l.pool.mu.Unlock()
@@ -1601,6 +1632,11 @@ func (l *AccountLease) SaveConfig(value AccountConfig) error {
 	}
 	l.pool.mu.Lock()
 	wasDisabled := l.account.State == AccountDisabled
+	if value.Enabled && (!l.account.Config.Enabled || value.Proxy != l.account.Config.Proxy) {
+		l.account.permissionFailures = 0
+		l.account.permissionFailureAt = time.Time{}
+		l.account.permissionResetAt = time.Now()
+	}
 	l.account.Config = value
 	if !value.Enabled {
 		l.account.State = AccountDisabled
@@ -1616,20 +1652,49 @@ func (l *AccountLease) SaveConfig(value AccountConfig) error {
 
 // Disable 保存禁用状态，保留账号凭证、代理及其他设置。
 func (l *AccountLease) Disable(reason string) error {
+	return l.disable(reason, false)
+}
+
+func (l *AccountLease) disable(reason string, permissionFailure bool) error {
 	if l == nil || l.account == nil || l.pool == nil {
 		return fmt.Errorf("账户租约未初始化")
 	}
+	l.operation.Lock()
+	defer l.operation.Unlock()
+	if l.released {
+		return fmt.Errorf("账户租约已释放")
+	}
+	l.account.storageMu.Lock()
+	defer l.account.storageMu.Unlock()
 	l.pool.mu.Lock()
+	if permissionFailure {
+		if l.pool.byID[l.account.ID] != l.account || l.authGeneration != l.account.authGeneration ||
+			!l.account.Config.Enabled || l.permissionRecorded || !l.checkedAt.After(l.account.permissionResetAt) {
+			l.pool.mu.Unlock()
+			return nil
+		}
+		l.permissionRecorded = true
+		l.account.permissionFailures++
+		if l.checkedAt.After(l.account.permissionFailureAt) {
+			l.account.permissionFailureAt = l.checkedAt
+		}
+		if l.account.permissionFailures < 3 {
+			l.pool.mu.Unlock()
+			return nil
+		}
+	}
 	config := l.account.Config
 	l.pool.mu.Unlock()
 	if !config.Enabled {
 		return nil
 	}
 	config.Enabled = false
-	if err := l.SaveConfig(config); err != nil {
+	if err := writeAccountConfig(l.account.ConfigPath, config); err != nil {
 		return err
 	}
 	l.pool.mu.Lock()
+	l.account.Config = config
+	l.account.State = AccountDisabled
 	l.account.stateMessage = reason
 	l.pool.notifyLocked()
 	l.pool.mu.Unlock()

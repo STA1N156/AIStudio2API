@@ -84,6 +84,20 @@ func TestChatReturnsHostedMediaLinks(t *testing.T) {
 	}
 }
 
+func TestMediaLinksPreferPublicBaseURL(t *testing.T) {
+	s := &server{config: Config{PublicBaseURL: "https://ai.example.com"}, media: newMediaStore(t.TempDir())}
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	r.Host = "aistudio2api.zeabur.internal:2048"
+	media := s.mediaPublisher(r).apply(aistudio.Media{MIME: "image/jpeg", Data: []byte("jpeg")})
+	if !regexp.MustCompile(`^https://ai\.example\.com/media/[0-9a-f]{32}\.jpg$`).MatchString(media.URL) || media.Data != nil {
+		t.Fatalf("media url = %q", media.URL)
+	}
+	s.config.PublicBaseURL = ""
+	if media := s.mediaPublisher(r).apply(aistudio.Media{MIME: "image/jpeg", Data: []byte("jpeg")}); !strings.HasPrefix(media.URL, "http://aistudio2api.zeabur.internal:2048/media/") {
+		t.Fatalf("fallback media url = %q", media.URL)
+	}
+}
+
 func TestMediaStoreConvertsPCMAndCleansUp(t *testing.T) {
 	store := newMediaStore(t.TempDir())
 	name, ok := store.save(aistudio.Media{MIME: "audio/L16;codec=pcm;rate=24000", Data: make([]byte, 480)})
