@@ -241,6 +241,7 @@ func (manager *runtimeManager) CountTokens(ctx context.Context, request aistudio
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	prepared := aistudio.GenerateRequest{Model: request.Model, System: request.System, Contents: request.Contents, Tools: request.Tools}
+	stripChatboxRuntimeDescription(&prepared)
 	prepareAntiTruncation(&prepared)
 	request.Model, request.System, request.Contents, request.Tools = prepared.Model, prepared.System, prepared.Contents, prepared.Tools
 	return manager.current.service.CountTokens(ctx, request)
@@ -250,6 +251,7 @@ func (manager *runtimeManager) CountTokens(ctx context.Context, request aistudio
 func (manager *runtimeManager) Generate(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
+	stripChatboxRuntimeDescription(&request)
 	convertReply := prepareAntiTruncation(&request)
 	service := manager.current.service
 	generate := func(ctx context.Context, request aistudio.GenerateRequest) (<-chan aistudio.Event, error) {
