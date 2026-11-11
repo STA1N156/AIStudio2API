@@ -62,7 +62,7 @@ const (
 	adminLogInitialEvents      = 200
 	adminRequestRetain         = 512
 	adminRequestCompactAt      = 640
-	adminRequestRefreshLatency = 50 * time.Millisecond
+	adminRequestRefreshLatency = 250 * time.Millisecond
 )
 
 type trackedRequest struct {
@@ -1397,6 +1397,12 @@ func (registry *requestRegistry) publishLocked(event api.AdminEvent) {
 }
 
 // publish 向管理页订阅者发布增量事件
+func (registry *requestRegistry) hasSubscribers() bool {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	return len(registry.subscribers) > 0
+}
+
 func (registry *requestRegistry) publish(event api.AdminEvent) {
 	registry.mu.Lock()
 	registry.publishLocked(event)

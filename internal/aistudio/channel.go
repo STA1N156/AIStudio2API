@@ -399,22 +399,44 @@ func (p *AccountPool) OutputContinuationRounds(modelID string, maxOutputTokens *
 	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.continuationModels == nil {
+		p.continuationModels = make(map[string]Model)
+	}
+	if model, ok := p.continuationModels[modelID]; ok {
+		return outputContinuationRounds(model, maxOutputTokens)
+	}
+	found := false
 	for _, account := range p.accounts {
 		if account == nil {
 			continue
 		}
 		for _, model := range account.Models {
-			if modelMatchesID(model, modelID) && model.Capabilities["output_continuation"] {
-				requested := model.OutputTokenLimit
-				if maxOutputTokens != nil {
-					requested = *maxOutputTokens
-				}
-				total := min(requested, max(model.InputTokenLimit, continuationRoundTokens))
-				return max(1, int((total+continuationRoundTokens-1)/continuationRoundTokens))
+			if !modelMatchesID(model, modelID) {
+				continue
+			}
+			found = true
+			if model.Capabilities["output_continuation"] {
+				p.continuationModels[modelID] = model
+				return outputContinuationRounds(model, maxOutputTokens)
 			}
 		}
 	}
+	if found {
+		p.continuationModels[modelID] = Model{}
+	}
 	return 1
+}
+
+func outputContinuationRounds(model Model, maxOutputTokens *int64) int {
+	if !model.Capabilities["output_continuation"] {
+		return 1
+	}
+	requested := model.OutputTokenLimit
+	if maxOutputTokens != nil {
+		requested = *maxOutputTokens
+	}
+	total := min(requested, max(model.InputTokenLimit, continuationRoundTokens))
+	return max(1, int((total+continuationRoundTokens-1)/continuationRoundTokens))
 }
 
 func (p *AccountPool) hasBuildModelLocked(modelID string, method string) bool {

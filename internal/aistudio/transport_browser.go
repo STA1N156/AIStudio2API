@@ -66,7 +66,7 @@ type browserResponseBody struct {
 // newBrowserRoundTripper 创建与当前 Camoufox 网络形状一致的 HTTP/2 传输
 func newBrowserRoundTripper(proxyURL string) (stdhttp.RoundTripper, error) {
 	proxyURL = strings.TrimSpace(proxyURL)
-	var proxyDialer proxy.ContextDialer = &net.Dialer{}
+	var proxyDialer proxy.ContextDialer = &net.Dialer{Timeout: firefoxTLSHandshakeTimeout, KeepAlive: 30 * time.Second}
 	if proxyURL != "" {
 		parsed, err := url.Parse(proxyURL)
 		if err != nil || parsed.Hostname() == "" {
@@ -104,7 +104,9 @@ func newBrowserRoundTripper(proxyURL string) (stdhttp.RoundTripper, error) {
 
 // dialBrowserTLS 以 Firefox ClientHello 建立 TLS 连接并要求协商 HTTP/2
 func dialBrowserTLS(dialer proxy.ContextDialer, hello tls.ClientHelloID, network string, address string) (net.Conn, error) {
-	raw, err := dialer.DialContext(context.Background(), network, address)
+	ctx, cancel := context.WithTimeout(context.Background(), firefoxTLSHandshakeTimeout)
+	defer cancel()
+	raw, err := dialer.DialContext(ctx, network, address)
 	if err != nil {
 		return nil, err
 	}
@@ -113,8 +115,6 @@ func dialBrowserTLS(dialer proxy.ContextDialer, hello tls.ClientHelloID, network
 		host = address
 	}
 	connection := tls.UClient(raw, &tls.Config{ServerName: host, OmitEmptyPsk: true}, hello, false, false, false)
-	ctx, cancel := context.WithTimeout(context.Background(), firefoxTLSHandshakeTimeout)
-	defer cancel()
 	if err := connection.HandshakeContext(ctx); err != nil {
 		_ = connection.Close()
 		return nil, err

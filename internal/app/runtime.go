@@ -473,23 +473,29 @@ func (manager *accountWorkerManager) reapIdleWorkers() {
 // reapIdleWorker 关闭一个多余的空闲 Worker 并返回是否关闭：超出峰值上限时立即关闭，否则只关闭最近使用早于 before 的
 func (manager *accountWorkerManager) reapIdleWorker(before time.Time) bool {
 	manager.rebalanceMu.Lock()
-	defer manager.rebalanceMu.Unlock()
 	warm := len(manager.WarmAccountIDs())
-	if len(manager.openings) > 0 || warm <= manager.warmLimit() {
-		return false
-	}
 	victim := manager.idleWarmVictim("")
 	if victim == "" {
+		manager.rebalanceMu.Unlock()
+		return false
+	}
+	obsolete := !manager.pool.WorkerEnabled(victim)
+	if !obsolete && (len(manager.openings) > 0 || warm <= manager.warmLimit()) {
+		manager.rebalanceMu.Unlock()
 		return false
 	}
 	manager.mu.RLock()
 	account := manager.accounts[victim]
 	manager.mu.RUnlock()
 	_, lastUsed := manager.pool.Activity(victim)
-	if warm <= manager.activeLimit() &&
+	if !obsolete && warm <= manager.activeLimit() &&
 		(lastUsed.After(before) || account != nil && time.Unix(0, account.readyAt.Load()).After(before)) {
+		manager.rebalanceMu.Unlock()
 		return false
 	}
+	manager.reserveVictim(victim)
+	manager.rebalanceMu.Unlock()
+	defer manager.releaseVictim(victim)
 	evicted, err := manager.evictIdleWorker(manager.lifecycle, victim)
 	if err != nil {
 		manager.requests.log(victim, "WARN", fmt.Sprintf("WAA Worker 空闲回收失败 | 错误=%v", err))
@@ -1231,6 +1237,7 @@ func (manager *accountWorkerManager) idleWarmVictimFor(excludeID string, modelID
 	var selected string
 	var selectedUsed time.Time
 	selectedCooling := false
+	selectedObsolete := false
 	for _, accountID := range warm {
 		if accountID == excludeID || manager.victimReserved(accountID) {
 			continue
@@ -1251,14 +1258,17 @@ func (manager *accountWorkerManager) idleWarmVictimFor(excludeID string, modelID
 		if busy {
 			continue
 		}
-		cooling := manager.pool.AccountCoolingDown(accountID, modelID)
+		obsolete := !manager.pool.WorkerEnabled(accountID)
+		cooling := obsolete || manager.pool.AccountCoolingDown(accountID, modelID)
 		if coolingOnly && !cooling {
 			continue
 		}
-		if selected == "" || cooling && !selectedCooling || cooling == selectedCooling && lastUsed.Before(selectedUsed) {
+		if selected == "" || obsolete && !selectedObsolete || obsolete == selectedObsolete &&
+			(cooling && !selectedCooling || cooling == selectedCooling && lastUsed.Before(selectedUsed)) {
 			selected = accountID
 			selectedUsed = lastUsed
 			selectedCooling = cooling
+			selectedObsolete = obsolete
 		}
 	}
 	return selected
@@ -1340,7 +1350,6 @@ func (manager *accountWorkerManager) ensureWorker(
 			manager.openings[accountID] = opening
 			manager.rebalanceMu.Unlock()
 			preparer, err := manager.startAuthenticatedWorker(ctx, accountID, bootstrapModel)
-			manager.rebalanceMu.Lock()
 			if err == nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					err = errors.Join(ctxErr, discardAccountWorker(preparer))
@@ -1348,6 +1357,7 @@ func (manager *accountWorkerManager) ensureWorker(
 					err = activateAccountWorker(preparer)
 				}
 			}
+			manager.rebalanceMu.Lock()
 			manager.finishOpening(accountID, opening)
 			warmCount := len(manager.WarmAccountIDs())
 			manager.rebalanceMu.Unlock()
@@ -1389,7 +1399,9 @@ func (manager *accountWorkerManager) ensureWorker(
 		for {
 			manager.rebalanceMu.Lock()
 			if ctxErr := ctx.Err(); ctxErr != nil {
+				manager.rebalanceMu.Unlock()
 				discardErr := discardAccountWorker(pending)
+				manager.rebalanceMu.Lock()
 				manager.finishOpening(accountID, opening)
 				manager.rebalanceMu.Unlock()
 				return nil, errors.Join(ctxErr, discardErr)
@@ -1403,17 +1415,19 @@ func (manager *accountWorkerManager) ensureWorker(
 			if victim == "" {
 				manager.rebalanceMu.Unlock()
 				if err := waitWarmCandidate(ctx, 100*time.Millisecond); err != nil {
-					manager.rebalanceMu.Lock()
 					discardErr := discardAccountWorker(pending)
+					manager.rebalanceMu.Lock()
 					manager.finishOpening(accountID, opening)
 					manager.rebalanceMu.Unlock()
 					return nil, errors.Join(err, discardErr)
 				}
 				continue
 			}
+			manager.rebalanceMu.Unlock()
 			evicted, evictionErr := manager.evictIdleWorker(ctx, victim)
 			if evictionErr == nil && evicted {
 				activationErr := activateAccountWorker(pending)
+				manager.rebalanceMu.Lock()
 				manager.finishOpening(accountID, opening)
 				warmCount := len(manager.WarmAccountIDs())
 				manager.rebalanceMu.Unlock()
@@ -1429,13 +1443,13 @@ func (manager *accountWorkerManager) ensureWorker(
 			}
 			if evictionErr != nil || ctx.Err() != nil {
 				discardErr := discardAccountWorker(pending)
+				manager.rebalanceMu.Lock()
 				manager.finishOpening(accountID, opening)
 				manager.rebalanceMu.Unlock()
 				return nil, errors.Join(evictionErr, ctx.Err(), discardErr)
 			}
 			manager.releaseVictim(victim)
 			victim = ""
-			manager.rebalanceMu.Unlock()
 		}
 	}
 }
@@ -2371,7 +2385,7 @@ func (service *trackedService) modelSnapshot() []aistudio.Model {
 }
 
 func (service *trackedService) publishModelAccess() {
-	if service.lifecycle.Err() != nil {
+	if service.lifecycle.Err() != nil || !service.requests.hasSubscribers() {
 		return
 	}
 	statuses := service.pool.Status()
@@ -2403,6 +2417,7 @@ func (service *trackedService) startModelCatalogRefresh(ctx context.Context) (<-
 		synchronized := 0
 		refreshed := 0
 		failures := make([]error, 0)
+		lastPublished := time.Time{}
 		authRequiredBefore := service.authRequiredAccountIDs()
 		for result := range service.refreshAccountModelCatalogs(ctx, accountIDs, false) {
 			if result.err != nil {
@@ -2414,14 +2429,19 @@ func (service *trackedService) startModelCatalogRefresh(ctx context.Context) (<-
 				continue
 			}
 			refreshed++
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && time.Since(lastPublished) >= time.Second {
 				service.applyCachedModelCatalog()
 				service.publishModelAccess()
+				lastPublished = time.Now()
 			}
 			if !firstReady && ctx.Err() == nil {
 				ready <- nil
 				firstReady = true
 			}
+		}
+		if ctx.Err() == nil && refreshed > 0 {
+			service.applyCachedModelCatalog()
+			service.publishModelAccess()
 		}
 		if !firstReady {
 			launchErr := ctx.Err()
@@ -2571,14 +2591,40 @@ func (service *trackedService) retryModelCatalogs(ctx context.Context) {
 // refreshAccountStates 并发读取启用账户的权益与模型目录，没有空闲槽位的账户跳过本轮
 func (service *trackedService) refreshAccountStates(ctx context.Context) {
 	var refreshes sync.WaitGroup
+	var changed atomic.Bool
+	slots := make(chan struct{}, max(1, service.workers.startup.size()))
 	for _, accountID := range service.modelCatalogAccountIDs() {
-		refreshes.Go(func() { _, _ = service.refreshAccountState(ctx, accountID, false) })
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		refreshes.Go(func() {
+			defer func() { <-slots }()
+			refresh, err := service.refreshAccountStateWithPublish(ctx, accountID, false, false)
+			if !refresh.Skipped && (err != nil || refresh.PreviousTier != refresh.Tier || refresh.ModelsChanged) {
+				changed.Store(true)
+			}
+		})
 	}
 	refreshes.Wait()
+	if changed.Load() && ctx.Err() == nil {
+		service.modelSyncMu.Lock()
+		service.applyCachedModelCatalog()
+		service.modelSyncMu.Unlock()
+		service.publishModelAccess()
+	}
 }
 
 // refreshAccountState 读取账户权益与模型目录，失败或变化时发布账户与模型事件并记录日志
 func (service *trackedService) refreshAccountState(ctx context.Context, accountID string, wait bool) (aistudio.AccountRefresh, error) {
+	return service.refreshAccountStateWithPublish(ctx, accountID, wait, true)
+}
+
+func (service *trackedService) refreshAccountStateWithPublish(ctx context.Context, accountID string, wait, publish bool) (aistudio.AccountRefresh, error) {
 	requestCtx, cancel := service.lifecycleRequestContext(ctx)
 	defer cancel()
 	refresh, err := service.catalog.RefreshAccountState(requestCtx, accountID, wait)
@@ -2586,17 +2632,21 @@ func (service *trackedService) refreshAccountState(ctx context.Context, accountI
 		return refresh, err
 	}
 	if err != nil {
-		service.publishModelAccess()
+		if publish {
+			service.publishModelAccess()
+		}
 		service.requests.log(accountID, "WARN", "账户状态刷新失败 | 错误="+err.Error())
 		return refresh, err
 	}
 	if refresh.PreviousTier == refresh.Tier && !refresh.ModelsChanged {
 		return refresh, nil
 	}
-	service.modelSyncMu.Lock()
-	service.applyCachedModelCatalog()
-	service.modelSyncMu.Unlock()
-	service.publishModelAccess()
+	if publish {
+		service.modelSyncMu.Lock()
+		service.applyCachedModelCatalog()
+		service.modelSyncMu.Unlock()
+		service.publishModelAccess()
+	}
 	service.requests.log(accountID, "INFO", fmt.Sprintf(
 		"账户状态已更新 | 权益=%s→%s | 模型=%d→%d", refresh.PreviousTier, refresh.Tier, refresh.PreviousModels, refresh.Models,
 	))
@@ -2622,18 +2672,23 @@ func (service *trackedService) retryAccountModelCatalogs(ctx context.Context) bo
 	}
 	accountIDs := service.pendingModelRetryIDs()
 	authRequiredBefore := service.authRequiredAccountIDs()
+	changed := false
 	for result := range service.refreshAccountModelCatalogs(ctx, accountIDs, true) {
 		if ctx.Err() != nil {
 			return false
 		}
 		if !result.skipped && result.err == nil && len(result.models) > 0 {
-			service.applyCachedModelCatalog()
-			service.publishModelAccess()
+			changed = true
 			service.requests.log(result.accountID, "INFO", fmt.Sprintf("模型目录已更新 | 模型=%d", len(result.models)))
 		}
 	}
 	authChanged := !maps.Equal(service.authRequiredAccountIDs(), authRequiredBefore)
-	if authChanged {
+	if changed {
+		service.modelSyncMu.Lock()
+		service.applyCachedModelCatalog()
+		service.modelSyncMu.Unlock()
+	}
+	if changed || authChanged {
 		service.publishModelAccess()
 	}
 	return true

@@ -399,14 +399,15 @@ func (s *PooledService) RefreshAccountState(ctx context.Context, accountID strin
 // CachedModels 返回启用账户最近同步目录的并集
 func (s *PooledService) CachedModels() []Model {
 	s.pool.mu.Lock()
-	defer s.pool.mu.Unlock()
-	models := make([]Model, 0)
+	lists := make([][]Model, 0, len(s.pool.accounts)+1)
 	for _, account := range s.pool.accounts {
 		if account != nil && account.Config.Enabled {
-			models = mergeModels(models, account.Models)
+			lists = append(lists, account.Models)
 		}
 	}
-	return mergeModels(models, s.pool.buildOnlyModelsLocked())
+	lists = append(lists, s.pool.buildOnlyModelsLocked())
+	s.pool.mu.Unlock()
+	return mergeModelLists(lists...)
 }
 
 type accountModelsResult struct {
@@ -846,40 +847,52 @@ func forwardEventsWithLease(
 }
 
 func mergeModels(base []Model, additions []Model) []Model {
-	merged := make(map[string]Model, len(base)+len(additions))
-	for _, model := range append(cloneModels(base), cloneModels(additions)...) {
-		current, exists := merged[model.ID]
-		if !exists {
-			merged[model.ID] = model
-			continue
+	return mergeModelLists(base, additions)
+}
+
+func mergeModelLists(lists ...[]Model) []Model {
+	merged := make(map[string]Model)
+	for _, models := range lists {
+		for _, model := range models {
+			current, exists := merged[model.ID]
+			if !exists {
+				merged[model.ID] = cloneModels([]Model{model})[0]
+				continue
+			}
+			if !slices.Equal(current.Methods, model.Methods) {
+				current.Methods = unionStrings(current.Methods, model.Methods)
+			}
+			if current.Name == "" {
+				current.Name = model.Name
+			}
+			if current.Description == "" {
+				current.Description = model.Description
+			}
+			current.InputTokenLimit = minimumPositive(current.InputTokenLimit, model.InputTokenLimit)
+			current.OutputTokenLimit = minimumPositive(current.OutputTokenLimit, model.OutputTokenLimit)
+			if current.Capabilities == nil && len(model.Capabilities) > 0 {
+				current.Capabilities = make(map[string]bool, len(model.Capabilities))
+			}
+			for name, enabled := range model.Capabilities {
+				current.Capabilities[name] = current.Capabilities[name] || enabled
+			}
+			if current.CapabilityOptions == nil && len(model.CapabilityOptions) > 0 {
+				current.CapabilityOptions = make(map[string][]string, len(model.CapabilityOptions))
+			}
+			for name, values := range model.CapabilityOptions {
+				if !slices.Equal(current.CapabilityOptions[name], values) {
+					current.CapabilityOptions[name] = unionStrings(current.CapabilityOptions[name], values)
+				}
+			}
+			if !slices.Equal(current.AccessModes, model.AccessModes) || !slices.IsSorted(current.AccessModes) {
+				current.AccessModes = unionInt64(current.AccessModes, model.AccessModes)
+			}
+			current.Paid = current.Paid || model.Paid
+			merged[model.ID] = current
 		}
-		current.Methods = unionStrings(current.Methods, model.Methods)
-		if current.Name == "" {
-			current.Name = model.Name
-		}
-		if current.Description == "" {
-			current.Description = model.Description
-		}
-		current.InputTokenLimit = minimumPositive(current.InputTokenLimit, model.InputTokenLimit)
-		current.OutputTokenLimit = minimumPositive(current.OutputTokenLimit, model.OutputTokenLimit)
-		if current.Capabilities == nil && len(model.Capabilities) > 0 {
-			current.Capabilities = make(map[string]bool, len(model.Capabilities))
-		}
-		for name, enabled := range model.Capabilities {
-			current.Capabilities[name] = current.Capabilities[name] || enabled
-		}
-		if current.CapabilityOptions == nil && len(model.CapabilityOptions) > 0 {
-			current.CapabilityOptions = make(map[string][]string, len(model.CapabilityOptions))
-		}
-		for name, values := range model.CapabilityOptions {
-			current.CapabilityOptions[name] = unionStrings(current.CapabilityOptions[name], values)
-		}
-		current.AccessModes = unionInt64(current.AccessModes, model.AccessModes)
-		current.Paid = current.Paid || model.Paid
-		merged[model.ID] = current
 	}
 	result := make([]Model, 0, len(merged))
-	for _, id := range upstreamModelOrder(base, additions) {
+	for _, id := range upstreamModelOrder(lists...) {
 		model := merged[id]
 		model.Methods = unionStrings(nil, model.Methods)
 		for name, values := range model.CapabilityOptions {

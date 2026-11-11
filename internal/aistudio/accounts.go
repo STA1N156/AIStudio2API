@@ -282,6 +282,8 @@ type AccountPool struct {
 	lastPickedChannel     map[string]Channel
 	channels              []Channel
 	changed               chan struct{}
+	orderedIndices        []int
+	continuationModels    map[string]Model
 }
 
 // AccountLease 表示一个账户请求槽位
@@ -870,6 +872,8 @@ func (p *AccountPool) Add(account *Account) (resultErr error) {
 		}
 	}
 	p.accounts = append(p.accounts, account)
+	p.orderedIndices = nil
+	p.continuationModels = nil
 	p.byID[account.ID] = account
 	for resourceID := range account.runtime.Resources {
 		p.resources[resourceID] = account.ID
@@ -954,6 +958,8 @@ func (p *AccountPool) Remove(accountID string, deleteDirectory func(*Account) er
 		}
 	}
 	delete(p.byID, accountID)
+	p.orderedIndices = nil
+	p.continuationModels = nil
 	for index, candidate := range p.accounts {
 		if candidate != nil && candidate.ID == accountID {
 			p.accounts = append(p.accounts[:index], p.accounts[index+1:]...)
@@ -1911,6 +1917,7 @@ func (p *AccountPool) SetCatalog(accountID string, tier BenefitTier, models []Mo
 			}
 			account.BenefitTier = tier
 			account.Models = cloneAccountModels(models)
+			p.continuationModels = nil
 			account.catalogError = ""
 			account.initializedAt = time.Now()
 			if account.State == AccountUnavailable {
@@ -2444,6 +2451,14 @@ func (p *AccountPool) MarkReady(accountID string) error {
 	return p.setAccountState(accountID, AccountReady, "")
 }
 
+// WorkerEnabled reports whether an account can keep a serving worker.
+func (p *AccountPool) WorkerEnabled(accountID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	account := p.byID[accountID]
+	return account != nil && account.Config.Enabled && account.State == AccountReady
+}
+
 // Status 返回账户池的脱敏状态
 func (p *AccountPool) Status() []AccountStatus {
 	if p == nil {
@@ -2802,11 +2817,19 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 		}
 		return nil, ErrNoEligibleAccount
 	}
-	indices := make([]int, 0, len(p.accounts))
-	for index, account := range p.accounts {
-		if account == nil {
-			continue
+	if p.orderedIndices == nil {
+		for index, account := range p.accounts {
+			if account != nil {
+				p.orderedIndices = append(p.orderedIndices, index)
+			}
 		}
+		sort.Slice(p.orderedIndices, func(left, right int) bool {
+			return p.accounts[p.orderedIndices[left]].ID < p.accounts[p.orderedIndices[right]].ID
+		})
+	}
+	indices := make([]int, 0, len(p.orderedIndices))
+	for _, index := range p.orderedIndices {
+		account := p.accounts[index]
 		if allowed != nil {
 			if _, exists := allowed[account.ID]; !exists {
 				continue
@@ -2814,9 +2837,6 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 		}
 		indices = append(indices, index)
 	}
-	sort.Slice(indices, func(left, right int) bool {
-		return p.accounts[indices[left]].ID < p.accounts[indices[right]].ID
-	})
 	if p.routingStrategy == "round-robin" {
 		last := p.lastPicked[selectionAccessScope(selection)]
 		start := sort.Search(len(indices), func(index int) bool { return p.accounts[indices[index]].ID > last })
