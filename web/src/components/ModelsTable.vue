@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { api } from '@/api'
 import { channelLabelKey, useI18n } from '@/i18n'
 import type { Model } from '@/types'
 import { useQueryText } from '@/url'
@@ -14,7 +15,37 @@ const props = defineProps<{
   error: string
 }>()
 
-const { locale, t } = useI18n()
+const { locale, t, errorText } = useI18n()
+const tiers = ['Ultra', 'Pro', 'Free']
+const saving = ref(false)
+const saveError = ref('')
+const savedModels = ref<Model[] | null>(null)
+const displayedModels = computed(() => savedModels.value ?? props.models)
+watch(
+  () => props.models,
+  () => {
+    savedModels.value = null
+  },
+)
+
+async function toggleTier(model: Model, tier: string, event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const selected = new Set(model.allowed_tiers ?? tiers)
+  if (input.checked) selected.add(tier)
+  else selected.delete(tier)
+  saving.value = true
+  saveError.value = ''
+  try {
+    savedModels.value = await api.updateModelTiers(model.id, [...selected])
+    if (detail.value)
+      detail.value = savedModels.value.find((entry) => entry.id === detail.value?.id) ?? null
+  } catch (error) {
+    input.checked = !input.checked
+    saveError.value = errorText(error)
+  } finally {
+    saving.value = false
+  }
+}
 const query = useQueryText('q')
 const selectedMethod = useQueryText('method')
 const detail = ref<Model | null>(null)
@@ -27,7 +58,7 @@ const methods = computed(() =>
 
 const filteredModels = computed(() => {
   const term = query.value.trim().toLowerCase()
-  return props.models.filter((model) => {
+  return displayedModels.value.filter((model) => {
     const capabilities = capabilityNames(model)
     const matchesQuery =
       term === '' ||
@@ -102,6 +133,7 @@ function tokenLimit(value: number | undefined): string {
         <span class="font-mono text-xs text-gray-500">{{ filteredModels.length }}</span>
       </div>
 
+      <div v-if="saveError" role="alert" class="mb-3 text-sm text-red-300">{{ saveError }}</div>
       <div v-if="error" class="rounded border border-red-500/40 bg-red-500/10 p-4 text-red-300">
         {{ error }}
       </div>
@@ -115,14 +147,16 @@ function tokenLimit(value: number | undefined): string {
         {{ t('models.empty') }}
       </div>
       <div v-else class="min-h-0 flex-1 overflow-y-auto rounded-xl border border-line bg-panel">
-        <button
+        <div
           v-for="model in filteredModels"
           :key="model.id"
-          type="button"
           class="flex w-full flex-wrap items-center gap-x-4 gap-y-2 border-b border-line/60 px-4 py-4 text-left transition hover:bg-raised"
-          @click="detail = model"
         >
-          <div class="min-w-0 flex-1 basis-full sm:basis-0">
+          <button
+            type="button"
+            class="min-w-0 flex-1 basis-full text-left sm:basis-0"
+            @click="detail = model"
+          >
             <div class="flex min-w-0 items-center gap-2">
               <span v-tooltip.overflow="model.name" class="truncate text-sm text-gray-200">{{
                 model.name
@@ -139,6 +173,22 @@ function tokenLimit(value: number | undefined): string {
               class="mt-1 block break-all text-xs text-blue-400"
               >{{ model.id }}</code
             >
+          </button>
+          <div class="flex shrink-0 flex-wrap gap-3">
+            <label
+              v-for="tier in tiers"
+              :key="tier"
+              :title="tier === 'Ultra' ? 'Ultra / Ultra Lite' : tier"
+              class="flex items-center gap-1 text-xs text-gray-300"
+            >
+              <input
+                type="checkbox"
+                :checked="(model.allowed_tiers ?? tiers).includes(tier)"
+                :disabled="saving"
+                @change="toggleTier(model, tier, $event)"
+              />
+              {{ tier }}
+            </label>
           </div>
           <div class="flex shrink-0 flex-wrap gap-1">
             <span
@@ -157,8 +207,10 @@ function tokenLimit(value: number | undefined): string {
             <span class="block text-[10px] text-gray-600">{{ t('models.output') }}</span>
             {{ tokenLimit(outputLimit(model)) }}
           </span>
-          <UiIcon name="chevronRight" :size="14" class="ml-auto shrink-0 text-gray-500 sm:ml-0" />
-        </button>
+          <button type="button" :aria-label="t('ui.advanced')" @click="detail = model">
+            <UiIcon name="chevronRight" :size="14" class="ml-auto shrink-0 text-gray-500 sm:ml-0" />
+          </button>
+        </div>
       </div>
     </div>
 

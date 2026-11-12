@@ -78,7 +78,7 @@ const visibleCooldowns = computed(() =>
 const modelGroups = computed(() => {
   const groups = new Map<
     string,
-    { model: string; items: Cooldown[]; accounts: Set<string>; earliest: string }
+    { model: string; items: Cooldown[]; accounts: Set<string>; earliest: string; total: number }
   >()
   for (const cooldown of visibleCooldowns.value) {
     const group = groups.get(cooldown.model_id) ?? {
@@ -86,6 +86,7 @@ const modelGroups = computed(() => {
       items: [],
       accounts: new Set<string>(),
       earliest: cooldown.until,
+      total: cooldown.eligible_accounts,
     }
     group.items.push(cooldown)
     group.accounts.add(cooldown.account_id)
@@ -102,10 +103,6 @@ const expandedCooldowns = computed(
 )
 const { page, pages, paged: pagedCooldowns } = usePaged(expandedCooldowns, 50)
 watch([expandedModel, activeCategory], () => (page.value = 1))
-// accountTotal 是模型冷却占比条的分母
-const accountTotal = computed(() =>
-  Math.max(props.accounts.length, ...modelGroups.value.map((group) => group.accounts.size), 1),
-)
 
 const requestStateKeys: Record<RequestState, TranslationKey> = {
   queued: 'state.queued',
@@ -311,7 +308,9 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
                   <span class="mt-2 block h-1 overflow-hidden rounded-full bg-raised">
                     <span
                       class="block h-full rounded-full bg-yellow-400/70"
-                      :style="{ width: `${(group.accounts.size / accountTotal) * 100}%` }"
+                      :style="{
+                        width: `${Math.min(100, (group.accounts.size / Math.max(group.total, 1)) * 100)}%`,
+                      }"
                     />
                   </span>
                 </div>

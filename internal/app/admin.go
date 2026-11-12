@@ -750,7 +750,7 @@ func adminAccountDTO(status aistudio.AccountStatus) api.AdminAccount {
 	return api.AdminAccount{
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Egress: status.Egress, Locale: status.Locale, Timezone: status.Timezone,
-		Models: models, BenefitTier: status.BenefitTier, Message: status.Message,
+		Models: models, BenefitTier: status.BenefitTier, Message: status.Message, DeniedModels: status.DeniedModels,
 	}
 }
 
@@ -820,6 +820,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		RoutingStrategy:        value.RoutingStrategy,
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
+		ModelTiers:             saved.ModelTiers,
 		TemporaryChat:          value.TemporaryChat,
 		WAABackend:             value.WAABackend,
 	}
@@ -884,7 +885,23 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 			})
 		}
 	}
-	return cooldowns, nil
+	models := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, cooldown := range cooldowns {
+		if !seen[cooldown.ModelID] {
+			models = append(models, cooldown.ModelID)
+			seen[cooldown.ModelID] = true
+		}
+	}
+	eligible := admin.pool.CooldownAccountEligibility(models)
+	filtered := cooldowns[:0]
+	for _, cooldown := range cooldowns {
+		if accounts := eligible[cooldown.ModelID]; accounts[cooldown.AccountID] {
+			cooldown.EligibleAccounts = len(accounts)
+			filtered = append(filtered, cooldown)
+		}
+	}
+	return filtered, nil
 }
 
 func (admin *runtimeAdmin) Requests(context.Context) ([]api.AdminRequest, error) {
@@ -906,6 +923,50 @@ type adminEventSource interface {
 // CatalogModels 返回当前运行时完整目录与各模型可用通道
 func (admin *runtimeAdmin) CatalogModels(ctx context.Context) ([]aistudio.Model, error) {
 	return admin.service.catalogModels(), nil
+}
+
+func (admin *runtimeAdmin) UpdateModelTiers(_ context.Context, model string, tiers []string) error {
+	found := false
+	for _, entry := range admin.service.catalogModels() {
+		if entry.ID == model {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return invalidConfigError(fmt.Errorf("模型不存在: %s", model))
+	}
+	selected := make(map[string]bool, len(tiers))
+	for _, tier := range tiers {
+		if tier != "Ultra" && tier != "Pro" && tier != "Free" {
+			return invalidConfigError(fmt.Errorf("账号层级无效: %s", tier))
+		}
+		selected[tier] = true
+	}
+	cfg, err := config.Load(admin.configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.ModelTiers == nil {
+		cfg.ModelTiers = make(map[string][]string)
+	}
+	allowed := []string{}
+	for _, tier := range []string{"Ultra", "Pro", "Free"} {
+		if selected[tier] {
+			allowed = append(allowed, tier)
+		}
+	}
+	if len(allowed) == 3 {
+		delete(cfg.ModelTiers, model)
+	} else {
+		cfg.ModelTiers[model] = allowed
+	}
+	if err := cfg.Save(admin.configPath); err != nil {
+		return err
+	}
+	admin.pool.SetModelTiers(cfg.ModelTiers)
+	admin.service.publishModelAccess()
+	return nil
 }
 
 func (admin *runtimeAdmin) Events(ctx context.Context) (<-chan api.AdminEvent, error) {

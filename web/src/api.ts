@@ -195,6 +195,13 @@ export const api = {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   },
   models: async () => (await requestJSON<ModelsResponse>('/api/models')).models,
+  updateModelTiers: async (model: string, tiers: string[]) =>
+    (
+      await requestJSON<ModelsResponse>('/api/models/tiers', {
+        method: 'PUT',
+        body: JSON.stringify({ model, tiers }),
+      })
+    ).models,
   cooldowns: async () => (await requestJSON<CooldownsResponse>('/api/cooldowns')).cooldowns,
   requests: async () => (await requestJSON<RequestsResponse>('/api/requests')).requests,
   config: () => requestJSON<ServiceConfig>('/api/config'),

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -234,6 +235,13 @@ func (manager *runtimeManager) CatalogModels(ctx context.Context) ([]aistudio.Mo
 	defer manager.mu.RUnlock()
 	models, err := manager.current.admin.CatalogModels(ctx)
 	return antiTruncationModels(models), err
+}
+
+// UpdateModelTiers 立即更新模型的账号层级资格。
+func (manager *runtimeManager) UpdateModelTiers(ctx context.Context, model string, tiers []string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return manager.current.admin.(api.ModelTierEditor).UpdateModelTiers(ctx, strings.TrimPrefix(model, antiTruncationPrefix), tiers)
 }
 
 // CountTokens 由当前生成服务计数

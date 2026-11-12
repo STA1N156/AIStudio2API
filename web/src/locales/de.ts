@@ -5,6 +5,8 @@ export const label = 'Deutsch'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.deniedModels': '{count} nicht verfügbare Modelle',
+  'accounts.tierFilter': 'Kontostufe',
   'ui.menu': 'Menü',
   'ui.more': 'Weitere Aktionen',
   'ui.overview': 'Übersicht',

@@ -41,6 +41,7 @@ var configKeys = [...]string{
 	"ROUTING_STRATEGY",
 	"UPSTREAM_CHANNELS",
 	"MODEL_MAPPING",
+	"MODEL_TIERS",
 	"TEMPORARY_CHAT",
 	"WAA_BACKEND",
 	"AUTO_START",
@@ -69,32 +70,33 @@ const WAABackendGo = "go"
 
 // Config 保存服务的全局配置
 type Config struct {
-	AutoStart              bool          `json:"auto_start"`
-	RequestBodyLog         bool          `json:"request_body_log"`
-	EmptyOutputError       bool          `json:"empty_output_error"`
-	LogConsole             bool          `json:"log_console"`
-	LogFile                bool          `json:"log_file"`
-	LogMaxTotalMB          int           `json:"log_max_total_mb"`
-	AdminAuthEnabled       bool          `json:"admin_auth_enabled"`
-	AdminUsername          string        `json:"admin_username"`
-	AdminPassword          string        `json:"-"`
-	BuildNativeNonstream   bool          `json:"build_native_nonstream"`
-	AuthStates             string        `json:"auth_states"`
-	ListenAddr             string        `json:"listen_addr"`
-	PublicBaseURL          string        `json:"public_base_url"`
-	ProxyAPIKey            string        `json:"proxy_api_key"`
-	Proxy                  string        `json:"proxy"`
-	InitTimeout            time.Duration `json:"-"`
-	RequestTimeout         time.Duration `json:"-"`
-	WarmWorkerLimit        int           `json:"warm_worker_limit"`
-	MaxActiveWorkers       int           `json:"max_active_workers"`
-	WarmStartupConcurrency int           `json:"warm_startup_concurrency"`
-	PerAccountConcurrency  int           `json:"per_account_concurrency"`
-	RoutingStrategy        string        `json:"routing_strategy"`
-	UpstreamChannels       []string      `json:"upstream_channels"`
-	ModelMapping           string        `json:"model_mapping"`
-	TemporaryChat          bool          `json:"temporary_chat"`
-	WAABackend             string        `json:"waa_backend"`
+	AutoStart              bool                `json:"auto_start"`
+	RequestBodyLog         bool                `json:"request_body_log"`
+	EmptyOutputError       bool                `json:"empty_output_error"`
+	LogConsole             bool                `json:"log_console"`
+	LogFile                bool                `json:"log_file"`
+	LogMaxTotalMB          int                 `json:"log_max_total_mb"`
+	AdminAuthEnabled       bool                `json:"admin_auth_enabled"`
+	AdminUsername          string              `json:"admin_username"`
+	AdminPassword          string              `json:"-"`
+	BuildNativeNonstream   bool                `json:"build_native_nonstream"`
+	AuthStates             string              `json:"auth_states"`
+	ListenAddr             string              `json:"listen_addr"`
+	PublicBaseURL          string              `json:"public_base_url"`
+	ProxyAPIKey            string              `json:"proxy_api_key"`
+	Proxy                  string              `json:"proxy"`
+	InitTimeout            time.Duration       `json:"-"`
+	RequestTimeout         time.Duration       `json:"-"`
+	WarmWorkerLimit        int                 `json:"warm_worker_limit"`
+	MaxActiveWorkers       int                 `json:"max_active_workers"`
+	WarmStartupConcurrency int                 `json:"warm_startup_concurrency"`
+	PerAccountConcurrency  int                 `json:"per_account_concurrency"`
+	RoutingStrategy        string              `json:"routing_strategy"`
+	UpstreamChannels       []string            `json:"upstream_channels"`
+	ModelMapping           string              `json:"model_mapping"`
+	ModelTiers             map[string][]string `json:"model_tiers,omitempty"`
+	TemporaryChat          bool                `json:"temporary_chat"`
+	WAABackend             string              `json:"waa_backend"`
 }
 
 // Default 返回可直接启动的默认配置
@@ -246,6 +248,11 @@ func Load(path string) (Config, error) {
 	if value, ok := values["MODEL_MAPPING"]; ok {
 		cfg.ModelMapping = strings.TrimSpace(value)
 	}
+	if value := strings.TrimSpace(values["MODEL_TIERS"]); value != "" {
+		if err := json.Unmarshal([]byte(value), &cfg.ModelTiers); err != nil {
+			return Config{}, fmt.Errorf("MODEL_TIERS 无效: %w", err)
+		}
+	}
 	if value, ok := values["TEMPORARY_CHAT"]; ok {
 		cfg.TemporaryChat, err = strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
@@ -266,7 +273,12 @@ func (c Config) Save(path string) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
+	modelTiers, err := json.Marshal(c.ModelTiers)
+	if err != nil {
+		return err
+	}
 	values := map[string]string{
+		"MODEL_TIERS":              string(modelTiers),
 		"AUTO_START":               strconv.FormatBool(c.AutoStart),
 		"REQUEST_BODY_LOG":         strconv.FormatBool(c.RequestBodyLog),
 		"EMPTY_OUTPUT_ERROR":       strconv.FormatBool(c.EmptyOutputError),
@@ -307,6 +319,16 @@ func (c Config) Save(path string) error {
 
 // Validate 校验配置值是否能用于服务启动
 func (c Config) Validate() error {
+	for model, tiers := range c.ModelTiers {
+		if strings.TrimSpace(model) == "" {
+			return fmt.Errorf("MODEL_TIERS 模型不能为空")
+		}
+		for _, tier := range tiers {
+			if tier != "Ultra" && tier != "Pro" && tier != "Free" {
+				return fmt.Errorf("MODEL_TIERS 账号层级无效: %s", tier)
+			}
+		}
+	}
 	if c.AdminAuthEnabled && (strings.TrimSpace(c.AdminUsername) == "" || strings.TrimSpace(c.AdminPassword) == "") {
 		return fmt.Errorf("开启管理登录需要 ADMIN_USERNAME 与 ADMIN_PASSWORD")
 	}
@@ -420,31 +442,32 @@ func validateUpstreamChannels(channels []string) error {
 // MarshalJSON 将时长输出为 env 使用的文本格式
 func (c Config) MarshalJSON() ([]byte, error) {
 	type payload struct {
-		AutoStart              bool     `json:"auto_start"`
-		RequestBodyLog         bool     `json:"request_body_log"`
-		EmptyOutputError       bool     `json:"empty_output_error"`
-		LogConsole             bool     `json:"log_console"`
-		LogFile                bool     `json:"log_file"`
-		LogMaxTotalMB          int      `json:"log_max_total_mb"`
-		AdminAuthEnabled       bool     `json:"admin_auth_enabled"`
-		AdminUsername          string   `json:"admin_username"`
-		BuildNativeNonstream   bool     `json:"build_native_nonstream"`
-		AuthStates             string   `json:"auth_states"`
-		ListenAddr             string   `json:"listen_addr"`
-		PublicBaseURL          string   `json:"public_base_url"`
-		ProxyAPIKey            string   `json:"proxy_api_key"`
-		Proxy                  string   `json:"proxy"`
-		InitTimeout            string   `json:"init_timeout"`
-		RequestTimeout         string   `json:"request_timeout"`
-		WarmWorkerLimit        int      `json:"warm_worker_limit"`
-		MaxActiveWorkers       int      `json:"max_active_workers"`
-		WarmStartupConcurrency int      `json:"warm_startup_concurrency"`
-		PerAccountConcurrency  int      `json:"per_account_concurrency"`
-		RoutingStrategy        string   `json:"routing_strategy"`
-		UpstreamChannels       []string `json:"upstream_channels"`
-		ModelMapping           string   `json:"model_mapping"`
-		TemporaryChat          bool     `json:"temporary_chat"`
-		WAABackend             string   `json:"waa_backend"`
+		AutoStart              bool                `json:"auto_start"`
+		RequestBodyLog         bool                `json:"request_body_log"`
+		EmptyOutputError       bool                `json:"empty_output_error"`
+		LogConsole             bool                `json:"log_console"`
+		LogFile                bool                `json:"log_file"`
+		LogMaxTotalMB          int                 `json:"log_max_total_mb"`
+		AdminAuthEnabled       bool                `json:"admin_auth_enabled"`
+		AdminUsername          string              `json:"admin_username"`
+		BuildNativeNonstream   bool                `json:"build_native_nonstream"`
+		AuthStates             string              `json:"auth_states"`
+		ListenAddr             string              `json:"listen_addr"`
+		PublicBaseURL          string              `json:"public_base_url"`
+		ProxyAPIKey            string              `json:"proxy_api_key"`
+		Proxy                  string              `json:"proxy"`
+		InitTimeout            string              `json:"init_timeout"`
+		RequestTimeout         string              `json:"request_timeout"`
+		WarmWorkerLimit        int                 `json:"warm_worker_limit"`
+		MaxActiveWorkers       int                 `json:"max_active_workers"`
+		WarmStartupConcurrency int                 `json:"warm_startup_concurrency"`
+		PerAccountConcurrency  int                 `json:"per_account_concurrency"`
+		RoutingStrategy        string              `json:"routing_strategy"`
+		UpstreamChannels       []string            `json:"upstream_channels"`
+		ModelMapping           string              `json:"model_mapping"`
+		ModelTiers             map[string][]string `json:"model_tiers,omitempty"`
+		TemporaryChat          bool                `json:"temporary_chat"`
+		WAABackend             string              `json:"waa_backend"`
 	}
 	return json.Marshal(payload{
 		AutoStart:              c.AutoStart,
@@ -470,6 +493,7 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		RoutingStrategy:        c.RoutingStrategy,
 		UpstreamChannels:       c.UpstreamChannels,
 		ModelMapping:           c.ModelMapping,
+		ModelTiers:             c.ModelTiers,
 		TemporaryChat:          c.TemporaryChat,
 		WAABackend:             c.WAABackend,
 	})
@@ -478,32 +502,33 @@ func (c Config) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON 从管理接口使用的文本时长解析配置
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type payload struct {
-		AutoStart              bool     `json:"auto_start"`
-		RequestBodyLog         bool     `json:"request_body_log"`
-		EmptyOutputError       bool     `json:"empty_output_error"`
-		LogConsole             bool     `json:"log_console"`
-		LogFile                bool     `json:"log_file"`
-		LogMaxTotalMB          int      `json:"log_max_total_mb"`
-		AdminAuthEnabled       bool     `json:"admin_auth_enabled"`
-		AdminUsername          string   `json:"admin_username"`
-		AdminPassword          string   `json:"admin_password"`
-		BuildNativeNonstream   bool     `json:"build_native_nonstream"`
-		AuthStates             string   `json:"auth_states"`
-		ListenAddr             string   `json:"listen_addr"`
-		PublicBaseURL          string   `json:"public_base_url"`
-		ProxyAPIKey            string   `json:"proxy_api_key"`
-		Proxy                  string   `json:"proxy"`
-		InitTimeout            string   `json:"init_timeout"`
-		RequestTimeout         string   `json:"request_timeout"`
-		WarmWorkerLimit        int      `json:"warm_worker_limit"`
-		MaxActiveWorkers       int      `json:"max_active_workers"`
-		WarmStartupConcurrency int      `json:"warm_startup_concurrency"`
-		PerAccountConcurrency  int      `json:"per_account_concurrency"`
-		RoutingStrategy        string   `json:"routing_strategy"`
-		UpstreamChannels       []string `json:"upstream_channels"`
-		ModelMapping           string   `json:"model_mapping"`
-		TemporaryChat          bool     `json:"temporary_chat"`
-		WAABackend             string   `json:"waa_backend"`
+		AutoStart              bool                `json:"auto_start"`
+		RequestBodyLog         bool                `json:"request_body_log"`
+		EmptyOutputError       bool                `json:"empty_output_error"`
+		LogConsole             bool                `json:"log_console"`
+		LogFile                bool                `json:"log_file"`
+		LogMaxTotalMB          int                 `json:"log_max_total_mb"`
+		AdminAuthEnabled       bool                `json:"admin_auth_enabled"`
+		AdminUsername          string              `json:"admin_username"`
+		AdminPassword          string              `json:"admin_password"`
+		BuildNativeNonstream   bool                `json:"build_native_nonstream"`
+		AuthStates             string              `json:"auth_states"`
+		ListenAddr             string              `json:"listen_addr"`
+		PublicBaseURL          string              `json:"public_base_url"`
+		ProxyAPIKey            string              `json:"proxy_api_key"`
+		Proxy                  string              `json:"proxy"`
+		InitTimeout            string              `json:"init_timeout"`
+		RequestTimeout         string              `json:"request_timeout"`
+		WarmWorkerLimit        int                 `json:"warm_worker_limit"`
+		MaxActiveWorkers       int                 `json:"max_active_workers"`
+		WarmStartupConcurrency int                 `json:"warm_startup_concurrency"`
+		PerAccountConcurrency  int                 `json:"per_account_concurrency"`
+		RoutingStrategy        string              `json:"routing_strategy"`
+		UpstreamChannels       []string            `json:"upstream_channels"`
+		ModelMapping           string              `json:"model_mapping"`
+		ModelTiers             map[string][]string `json:"model_tiers,omitempty"`
+		TemporaryChat          bool                `json:"temporary_chat"`
+		WAABackend             string              `json:"waa_backend"`
 	}
 	value := payload{EmptyOutputError: true}
 	if err := json.Unmarshal(data, &value); err != nil {
@@ -542,6 +567,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		RoutingStrategy:        value.RoutingStrategy,
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
+		ModelTiers:             value.ModelTiers,
 		TemporaryChat:          value.TemporaryChat,
 		WAABackend:             strings.ToLower(strings.TrimSpace(value.WAABackend)),
 	}

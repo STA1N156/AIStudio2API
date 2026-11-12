@@ -136,17 +136,18 @@ type AdminAccountCounts struct {
 
 // AdminAccount 表示管理端账户摘要
 type AdminAccount struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	Enabled     bool     `json:"enabled"`
-	State       string   `json:"state"`
-	Proxy       string   `json:"proxy"`
-	Egress      string   `json:"egress"`
-	Locale      string   `json:"locale"`
-	Timezone    string   `json:"timezone"`
-	Models      []string `json:"models"`
-	BenefitTier string   `json:"benefit_tier"`
-	Message     string   `json:"message"`
+	DeniedModels map[string]string `json:"denied_models,omitempty"`
+	ID           string            `json:"id"`
+	Label        string            `json:"label"`
+	Enabled      bool              `json:"enabled"`
+	State        string            `json:"state"`
+	Proxy        string            `json:"proxy"`
+	Egress       string            `json:"egress"`
+	Locale       string            `json:"locale"`
+	Timezone     string            `json:"timezone"`
+	Models       []string          `json:"models"`
+	BenefitTier  string            `json:"benefit_tier"`
+	Message      string            `json:"message"`
 }
 
 // AdminProxy 表示代理池中一个代理的可用性与绑定账户数
@@ -241,12 +242,13 @@ type RuntimeConfig struct {
 
 // AdminCooldown 表示账户模型冷却
 type AdminCooldown struct {
-	AccountID    string    `json:"account_id"`
-	AccountLabel string    `json:"account_label"`
-	Channel      string    `json:"channel"`
-	ModelID      string    `json:"model_id"`
-	Until        time.Time `json:"until"`
-	Reason       string    `json:"reason,omitempty"`
+	EligibleAccounts int       `json:"eligible_accounts"`
+	AccountID        string    `json:"account_id"`
+	AccountLabel     string    `json:"account_label"`
+	Channel          string    `json:"channel"`
+	ModelID          string    `json:"model_id"`
+	Until            time.Time `json:"until"`
+	Reason           string    `json:"reason,omitempty"`
 }
 
 // AdminRequest 表示活动请求摘要
@@ -318,6 +320,31 @@ func (s *server) handleAdminModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string][]aistudio.Model{"models": models})
+}
+
+type ModelTierEditor interface {
+	UpdateModelTiers(context.Context, string, []string) error
+}
+
+func (s *server) handleModelTiers(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Model string   `json:"model"`
+		Tiers []string `json:"tiers"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	editor, ok := s.config.Admin.(ModelTierEditor)
+	if !ok {
+		writeAdminError(w, http.StatusNotImplemented, "unsupported", "模型资格设置不可用")
+		return
+	}
+	if err := editor.UpdateModelTiers(r.Context(), input.Model, input.Tiers); err != nil {
+		writeAdminUpstreamError(w, err)
+		return
+	}
+	s.handleAdminModels(w, r)
 }
 
 func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {

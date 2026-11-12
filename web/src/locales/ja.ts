@@ -5,6 +5,8 @@ export const label = '日本語'
 
 // messages 是界面文案与管理接口错误码文案
 export const messages: Record<TranslationKey, string> = {
+  'ui.deniedModels': '利用不可のモデル {count} 件',
+  'accounts.tierFilter': 'アカウントのプラン',
   'ui.menu': 'メニュー',
   'ui.more': 'その他の操作',
   'ui.overview': '概要',

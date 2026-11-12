@@ -164,6 +164,8 @@ Google 邮箱的小写形式同时作为账户目录、管理页面标识和日�
 
 `runtime-state.json` 根字段为 `cooldowns`、`resources`、`model_access`、`benefit_tier`、`catalog_fingerprint`。cooldown value 为 `{until,reason?}`；model access value 为 `{state,checked_at,reason?}`；resource value 为 `{kind?,name?,mime?,size?,purpose?,created_at,video?:{model,seconds,size}}`。
 
+Free 权益不会自动禁用账户。模型目录可手动选择允许的 Ultra / Pro / Free 层级，默认全选；配置保存在 `MODEL_TIERS`，保存后立即用于新请求及冷却进度条的账号上限。模型失败不再自动记录无资格标记，历史 `denied` 不参与路由。账号卡片的不可用模型由手动设置计算。成功记录与 `cooldowns` 继续用于原有冷却恢复，普通限流、套餐用量耗尽和临时错误处理不变；HTTP 403 的 `The caller does not have permission` 不自动禁用账户，其他403继续禁用。抗截断入口沿用原模型的层级设置。
+
 每次运行状态事务先取得 `auth/.leases/<账户>.runtime.lock`，每 25ms 尝试一次，等待上限为 2 秒；携带调用方 context（Go 取消上下文）的事务在调用方取消或 deadline 更早到达时立即结束。取得锁后重新读取当前磁盘值，只合并目标字段，以临时文件原子替换 `runtime-state.json`，再同步内存状态与资源归属。锁等待失败、读取失败、写回失败和 unlock 失败均返回原始错误链。
 
 调度器按实时模型方法、capability、AccessModes 和账户权益选择候选，优先使用已经成功调用目标 scope（模型资格与冷却的状态记录范围）的预热账户，再按目标模型最近一次真实首事件耗时排序。常驻 Worker 优先覆盖可调用模型更多的账户。预热数量低于上限时提升待机账户，预热账户均忙时等待并发槽位。同账号 WAA proof 串行生成，已准备的 MakerSuite HTTP 请求并发执行；首个活动请求获取 `.leases/<邮箱>.lock`，最后一个释放。Drive file、Veo operation 与产物 file 始终使用创建账户。

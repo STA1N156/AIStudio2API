@@ -14,6 +14,7 @@ export type AccountState =
   'ready' | 'busy' | 'cooldown' | 'auth_required' | 'unavailable' | 'disabled'
 
 export interface Account {
+  denied_models?: Record<string, string>
   id: string
   label: string
   enabled: boolean
@@ -146,6 +147,7 @@ export interface RequestLog {
 }
 
 export interface Model {
+  allowed_tiers?: string[]
   id: string
   name: string
   description?: string
@@ -162,6 +164,7 @@ export interface Model {
 export type UpstreamChannel = 'playground' | 'build' | 'assistant'
 
 export interface Cooldown {
+  eligible_accounts: number
   account_id: string
   account_label: string
   channel: UpstreamChannel

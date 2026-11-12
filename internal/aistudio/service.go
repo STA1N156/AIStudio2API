@@ -492,14 +492,13 @@ func definitiveForbiddenFailure(err error) bool {
 	return errors.As(err, &rpcError) && rpcError.StatusCode == http.StatusForbidden
 }
 
-// MarkRequestFailure 同一账号连续三次权限拒绝才停用，其他错误保留原处理。
+// MarkRequestFailure 对通用 caller permission 拒绝保留账号，其余错误按原规则处理。
 func (l *AccountLease) MarkRequestFailure(err error) error {
 	var rpcError *RPCError
-	if errors.As(err, &rpcError) && rpcError.StatusCode == http.StatusForbidden && rpcError.Code == 7 &&
+	if errors.As(err, &rpcError) && rpcError.StatusCode == http.StatusForbidden &&
 		strings.TrimSuffix(strings.TrimSpace(rpcError.Message), ".") == "The caller does not have permission" {
-		return l.disable("上游连续 3 次返回 403："+err.Error(), true)
+		return nil
 	}
-	l.ResetPermissionDeniedStreak()
 	if definitiveForbiddenFailure(err) {
 		return l.Disable("上游返回 403：" + err.Error())
 	}
@@ -531,7 +530,6 @@ func (s *PooledService) markRetryableFailure(lease *AccountLease, modelAccessSco
 	if definitiveForbiddenFailure(err) || DefinitiveAuthenticationFailure(err) {
 		return lease.MarkRequestFailure(err)
 	}
-	lease.ResetPermissionDeniedStreak()
 	now := time.Now()
 	cooldown, ok := QuotaCooldownForError(err, now)
 	if !ok {
@@ -553,10 +551,9 @@ func (s *PooledService) modelsForLease(ctx context.Context, lease *AccountLease)
 		return nil, s.catalogFailure(lease, err)
 	}
 	if tier == BenefitTierFree {
-		return nil, errors.Join(
-			s.pool.SetCatalog(account.ID, tier, nil),
-			lease.Disable("权益查询确认账号为 Free"),
-		)
+		if err := s.pool.SetCatalog(account.ID, tier, s.cachedModels(account.ID)); err != nil {
+			return nil, err
+		}
 	}
 	models, err := s.client.ModelsForAccount(ContextWithAccountLease(ctx, lease), account.ID)
 	if err != nil {
@@ -718,8 +715,6 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		var stateErr error
 		if owned && retryable {
 			stateErr = s.markRetryableFailure(lease, lease.CooldownScope(modelID), err)
-		} else if owned {
-			lease.ResetPermissionDeniedStreak()
 		}
 		if owned {
 			requestErr = errors.Join(requestErr, stateErr, lease.Release())
@@ -803,9 +798,6 @@ func forwardEventsWithLease(
 		}
 		if event.Kind == EventError {
 			terminal = true
-			if !definitiveForbiddenFailure(event.Err) && !DefinitiveAuthenticationFailure(event.Err) {
-				lease.ResetPermissionDeniedStreak()
-			}
 			if definitiveForbiddenFailure(event.Err) || DefinitiveAuthenticationFailure(event.Err) {
 				if err := lease.MarkRequestFailure(event.Err); err != nil {
 					event.Err = errors.Join(event.Err, err)
@@ -819,9 +811,6 @@ func forwardEventsWithLease(
 					event.Err = errors.Join(event.Err, err)
 				}
 			}
-		}
-		if event.Kind == EventFinish {
-			lease.ResetPermissionDeniedStreak()
 		}
 		select {
 		case destination <- event:

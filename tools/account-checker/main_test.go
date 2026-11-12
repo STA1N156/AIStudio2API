@@ -125,7 +125,7 @@ func (transport policyTransport) Do(_ context.Context, request aistudio.RPCReque
 	}, Body: io.NopCloser(strings.NewReader(body))}, nil
 }
 
-func TestAutomaticDisableOnlyForConfirmedFree(t *testing.T) {
+func TestFreeTierAndCatalogFailureKeepAccountEnabled(t *testing.T) {
 	for _, tier := range []string{"[0]", "[1]", "[2]", "failure"} {
 		t.Run(tier, func(t *testing.T) {
 			store, pool, id := policyAccount(t)
@@ -143,15 +143,18 @@ func TestAutomaticDisableOnlyForConfirmedFree(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = service.RefreshAccountModels(context.Background(), id)
-			if tier == "[0]" && err != nil {
-				t.Fatal(err)
+			if err == nil {
+				t.Fatal("expected the simulated catalog or tier failure")
 			}
 			loaded, err := store.Load()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if loaded[0].Config.Enabled == (tier == "[0]") {
+			if !loaded[0].Config.Enabled {
 				t.Fatalf("unexpected enabled state after tier %s", tier)
+			}
+			if tier == "[0]" && pool.Status()[0].BenefitTier != "Free" {
+				t.Fatal("confirmed Free tier must survive a temporary catalog failure")
 			}
 		})
 	}

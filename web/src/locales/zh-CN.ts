@@ -3,6 +3,8 @@ export const label = '简体中文'
 
 // messages 是界面文案与管理接口错误码文案，键集合由本表定义
 export const messages = {
+  'ui.deniedModels': '{count} 个不可用模型',
+  'accounts.tierFilter': '账号层级',
   'ui.menu': '菜单',
   'ui.more': '更多操作',
   'ui.overview': '概览',

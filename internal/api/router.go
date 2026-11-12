@@ -101,6 +101,7 @@ func NewHandler(service aistudio.Service, config Config) http.Handler {
 	control := http.NewServeMux()
 	control.HandleFunc("GET /api/status", s.handleStatus)
 	control.HandleFunc("GET /api/models", s.handleAdminModels)
+	control.HandleFunc("PUT /api/models/tiers", s.handleModelTiers)
 	if config.Admin != nil {
 		s.registerAdmin(control)
 	}

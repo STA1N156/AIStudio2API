@@ -66,6 +66,7 @@ func newRuntime(
 	}
 	requests.log("service", "INFO", "运行时装配 | 3/3 | 创建协议客户端 | 出口="+egress)
 	pool := aistudio.NewAccountPool(accounts, cfg.PerAccountConcurrency)
+	pool.SetModelTiers(cfg.ModelTiers)
 	pool.SetRoutingStrategy(cfg.RoutingStrategy)
 	pool.SetUpstreamChannels(upstreamChannels(cfg.UpstreamChannels))
 	proxies := aistudio.NewProxyPool(pool, proxyList)
@@ -1981,7 +1982,7 @@ const (
 
 func (e *serviceStoppedError) Error() string {
 	if e.launching {
-		return "AIStudio2API 生成服务正在启动"
+		return "生成服务正在启动"
 	}
 	return "AIStudio2API 服务已停止"
 }
@@ -3648,7 +3649,6 @@ func (service *trackedService) generateWithRetry(
 		var rpcErr *aistudio.RPCError
 		if errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusBadRequest && strings.Contains(rpcErr.Message, "131072") {
 			// 直接返回，不切换 Build/Playground、换号或重建后重试。
-			lease.ResetPermissionDeniedStreak()
 			err = errors.Join(err, lease.Release())
 			lease = nil
 			break
@@ -4068,7 +4068,6 @@ func (service *trackedService) forwardEvents(
 			terminal = true
 		}
 		if event.Kind == aistudio.EventFinish {
-			lease.ResetPermissionDeniedStreak()
 			api.SetAccessLogFinishReason(requestCtx, event.FinishReason)
 			state = "completed"
 			terminal = true

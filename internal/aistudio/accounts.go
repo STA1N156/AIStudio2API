@@ -192,9 +192,6 @@ type Account struct {
 	persistenceLocked     bool
 	authGeneration        uint64
 	authCheckedAt         time.Time
-	permissionFailures    int
-	permissionFailureAt   time.Time
-	permissionResetAt     time.Time
 	modelAccessGeneration uint64
 	stateMessage          string
 	catalogError          string
@@ -205,19 +202,20 @@ type Account struct {
 
 // AccountStatus 表示管理界面使用的脱敏账户状态
 type AccountStatus struct {
-	ID          string                   `json:"id"`
-	Label       string                   `json:"label"`
-	State       AccountState             `json:"state"`
-	Enabled     bool                     `json:"enabled"`
-	Proxy       string                   `json:"proxy"`
-	Egress      string                   `json:"egress"`
-	Locale      string                   `json:"locale"`
-	Timezone    string                   `json:"timezone"`
-	Models      []string                 `json:"models"`
-	BenefitTier string                   `json:"benefit_tier"`
-	Cooldowns   map[string]CooldownState `json:"-"`
-	LastUsed    *time.Time               `json:"last_used,omitempty"`
-	Message     string                   `json:"message,omitempty"`
+	ID           string                   `json:"id"`
+	Label        string                   `json:"label"`
+	State        AccountState             `json:"state"`
+	Enabled      bool                     `json:"enabled"`
+	Proxy        string                   `json:"proxy"`
+	Egress       string                   `json:"egress"`
+	Locale       string                   `json:"locale"`
+	Timezone     string                   `json:"timezone"`
+	Models       []string                 `json:"models"`
+	BenefitTier  string                   `json:"benefit_tier"`
+	Cooldowns    map[string]CooldownState `json:"-"`
+	DeniedModels map[string]string        `json:"denied_models,omitempty"`
+	LastUsed     *time.Time               `json:"last_used,omitempty"`
+	Message      string                   `json:"message,omitempty"`
 }
 
 // AccountSelection 描述账户调度所需的能力或粘性条件
@@ -284,6 +282,7 @@ type AccountPool struct {
 	changed               chan struct{}
 	orderedIndices        []int
 	continuationModels    map[string]Model
+	modelTiers            map[string][]string
 }
 
 // AccountLease 表示一个账户请求槽位
@@ -298,7 +297,6 @@ type AccountLease struct {
 	channel               Channel
 	operation             sync.Mutex
 	released              bool
-	permissionRecorded    bool
 	once                  sync.Once
 	err                   error
 }
@@ -633,7 +631,7 @@ func (a *Account) SupportsModel(modelID string) bool {
 		return true
 	}
 	for _, model := range a.Models {
-		if modelMatchesID(model, modelID) && modelAllowedByTier(model, a.BenefitTier) {
+		if modelMatchesID(model, modelID) {
 			return true
 		}
 	}
@@ -649,9 +647,6 @@ func (a *Account) SupportsMethod(modelID string, method string) bool {
 	for _, model := range a.Models {
 		if !modelMatchesID(model, modelID) {
 			continue
-		}
-		if !modelAllowedByTier(model, a.BenefitTier) {
-			return false
 		}
 		for _, candidate := range model.Methods {
 			if candidate == method {
@@ -671,9 +666,6 @@ func accountSupportsSelection(account *Account, selection AccountSelection) bool
 		if !modelMatchesID(model, modelID) {
 			continue
 		}
-		if !selection.anyTier && !modelAllowedByTier(model, account.BenefitTier) {
-			return false
-		}
 		if strings.TrimSpace(selection.Method) != "" && !hasMethod(model, selection.Method) {
 			return false
 		}
@@ -689,6 +681,7 @@ func (p *AccountPool) CatalogModels(models []Model) []Model {
 	catalog := make([]Model, len(models))
 	for index, model := range models {
 		model.Channels = p.modelChannelsLocked(model, false)
+		model.AllowedTiers = p.allowedModelTiersLocked(model.ID)
 		catalog[index] = model
 	}
 	return callableFirst(catalog)
@@ -1375,27 +1368,6 @@ func (l *AccountLease) CheckedAt() time.Time {
 	return l.checkedAt
 }
 
-// ResetPermissionDeniedStreak 只清除连续权限错误，不改变认证或停用状态。
-func (l *AccountLease) ResetPermissionDeniedStreak() {
-	if l == nil || l.account == nil || l.pool == nil {
-		return
-	}
-	l.operation.Lock()
-	defer l.operation.Unlock()
-	l.account.storageMu.Lock()
-	defer l.account.storageMu.Unlock()
-	l.pool.mu.Lock()
-	defer l.pool.mu.Unlock()
-	a := l.account
-	if l.pool.byID[a.ID] != a || l.authGeneration != a.authGeneration || !a.Config.Enabled ||
-		l.checkedAt.Before(a.permissionFailureAt) || l.checkedAt.Before(a.permissionResetAt) {
-		return
-	}
-	a.permissionFailures = 0
-	a.permissionFailureAt = time.Time{}
-	a.permissionResetAt = l.checkedAt
-}
-
 // MarkAuthenticationValid 保存当前租约确认的认证成功状态
 func (l *AccountLease) MarkAuthenticationValid() error {
 	return l.markAuthenticationStateAt(false, "", l.CheckedAt())
@@ -1502,9 +1474,6 @@ func (l *AccountLease) SaveStorageState(state StorageState) error {
 	l.pool.mu.Lock()
 	l.account.StorageState = state
 	l.account.authGeneration++
-	l.account.permissionFailures = 0
-	l.account.permissionFailureAt = time.Time{}
-	l.account.permissionResetAt = time.Time{}
 	l.authGeneration = l.account.authGeneration
 	l.account.authCheckedAt = time.Time{}
 	l.pool.mu.Unlock()
@@ -1575,9 +1544,6 @@ func (l *AccountLease) RefreshStorageState(
 	l.pool.mu.Lock()
 	l.account.StorageState = state
 	l.account.authGeneration++
-	l.account.permissionFailures = 0
-	l.account.permissionFailureAt = time.Time{}
-	l.account.permissionResetAt = time.Time{}
 	l.authGeneration = l.account.authGeneration
 	l.account.authCheckedAt = time.Time{}
 	l.pool.mu.Unlock()
@@ -1638,11 +1604,6 @@ func (l *AccountLease) SaveConfig(value AccountConfig) error {
 	}
 	l.pool.mu.Lock()
 	wasDisabled := l.account.State == AccountDisabled
-	if value.Enabled && (!l.account.Config.Enabled || value.Proxy != l.account.Config.Proxy) {
-		l.account.permissionFailures = 0
-		l.account.permissionFailureAt = time.Time{}
-		l.account.permissionResetAt = time.Now()
-	}
 	l.account.Config = value
 	if !value.Enabled {
 		l.account.State = AccountDisabled
@@ -1658,10 +1619,6 @@ func (l *AccountLease) SaveConfig(value AccountConfig) error {
 
 // Disable 保存禁用状态，保留账号凭证、代理及其他设置。
 func (l *AccountLease) Disable(reason string) error {
-	return l.disable(reason, false)
-}
-
-func (l *AccountLease) disable(reason string, permissionFailure bool) error {
 	if l == nil || l.account == nil || l.pool == nil {
 		return fmt.Errorf("账户租约未初始化")
 	}
@@ -1673,22 +1630,6 @@ func (l *AccountLease) disable(reason string, permissionFailure bool) error {
 	l.account.storageMu.Lock()
 	defer l.account.storageMu.Unlock()
 	l.pool.mu.Lock()
-	if permissionFailure {
-		if l.pool.byID[l.account.ID] != l.account || l.authGeneration != l.account.authGeneration ||
-			!l.account.Config.Enabled || l.permissionRecorded || !l.checkedAt.After(l.account.permissionResetAt) {
-			l.pool.mu.Unlock()
-			return nil
-		}
-		l.permissionRecorded = true
-		l.account.permissionFailures++
-		if l.checkedAt.After(l.account.permissionFailureAt) {
-			l.account.permissionFailureAt = l.checkedAt
-		}
-		if l.account.permissionFailures < 3 {
-			l.pool.mu.Unlock()
-			return nil
-		}
-	}
 	config := l.account.Config
 	l.pool.mu.Unlock()
 	if !config.Enabled {
@@ -2047,7 +1988,7 @@ func (p *AccountPool) markModelAccessVerified(
 	return changed, nil
 }
 
-// ResetModelAccess 清空账户的实测模型资格
+// ResetModelAccess 清空成功记录。
 func (p *AccountPool) ResetModelAccess(accountID string) error {
 	_, err := p.updateRuntime(accountID, func(account *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
 		if len(runtimeState.ModelAccess) == 0 {
@@ -2459,6 +2400,31 @@ func (p *AccountPool) WorkerEnabled(accountID string) bool {
 	return account != nil && account.Config.Enabled && account.State == AccountReady
 }
 
+// CooldownAccountEligibility counts the enabled model pool, including busy and cooling accounts.
+func (p *AccountPool) CooldownAccountEligibility(modelIDs []string) map[string]map[string]bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	result := make(map[string]map[string]bool, len(modelIDs))
+	for _, modelID := range modelIDs {
+		eligible := make(map[string]bool)
+		selection := AccountSelection{ModelID: modelID, Method: "generateContent"}
+		channels := p.selectionChannelsLocked(selection)
+		for _, account := range p.accounts {
+			if account == nil || !account.Config.Enabled || account.State != AccountReady {
+				continue
+			}
+			for _, channel := range channels {
+				if p.channelSupportsLocked(account, channel, selection) {
+					eligible[account.ID] = true
+					break
+				}
+			}
+		}
+		result[modelID] = eligible
+	}
+	return result
+}
+
 // Status 返回账户池的脱敏状态
 func (p *AccountPool) Status() []AccountStatus {
 	if p == nil {
@@ -2507,6 +2473,14 @@ func (p *AccountPool) Status() []AccountStatus {
 			BenefitTier: tier,
 			Cooldowns:   cloneCooldowns(account.runtime.Cooldowns),
 			Message:     message,
+		}
+		for modelID := range p.modelTiers {
+			if !p.modelTierAllowedLocked(account, modelID) {
+				if status.DeniedModels == nil {
+					status.DeniedModels = make(map[string]string)
+				}
+				status.DeniedModels[modelID] = "模型目录未允许 " + account.BenefitTier.String() + " 账号"
+			}
 		}
 		if !account.LastUsed.IsZero() {
 			status.LastUsed = timePointer(account.LastUsed)
@@ -2733,7 +2707,7 @@ func (p *AccountPool) BootstrapModels(accountID string) ([]string, error) {
 	if account == nil {
 		return nil, fmt.Errorf("账户不存在: %s", accountID)
 	}
-	models := accountBootstrapModels(account)
+	models := p.accountBootstrapModels(account)
 	if len(models) == 0 {
 		return nil, fmt.Errorf("账户 %s 的实时目录没有可用 WAA 初始化模型", account.ID)
 	}
@@ -2748,18 +2722,18 @@ func (p *AccountPool) BootstrapModel(accountID string) (string, error) {
 	if account == nil {
 		return "", fmt.Errorf("账户不存在: %s", accountID)
 	}
-	models := accountBootstrapModels(account)
+	models := p.accountBootstrapModels(account)
 	if len(models) > 0 {
 		return models[0], nil
 	}
 	return "", fmt.Errorf("账户 %s 的实时目录没有可用 WAA 初始化模型", account.ID)
 }
 
-func accountBootstrapModels(account *Account) []string {
+func (p *AccountPool) accountBootstrapModels(account *Account) []string {
 	models := make([]string, 0, len(account.Models))
 	seen := make(map[string]struct{}, len(account.Models))
 	appendModel := func(modelID string) {
-		if _, exists := seen[modelID]; exists || !waaBootstrapModelEligible(account, modelID) {
+		if _, exists := seen[modelID]; exists || !p.modelTierAllowedLocked(account, modelID) || !waaBootstrapModelEligible(account, modelID) {
 			return
 		}
 		seen[modelID] = struct{}{}
@@ -2775,7 +2749,7 @@ func accountBootstrapModels(account *Account) []string {
 func waaBootstrapModelEligible(account *Account, modelID string) bool {
 	for _, model := range account.Models {
 		if !modelMatchesID(model, modelID) || !hasMethod(model, "generateContent") ||
-			!modelAllowedByTier(model, account.BenefitTier) || !model.Capabilities["chat_model"] || model.Capabilities["assistant_route"] {
+			!model.Capabilities["chat_model"] || model.Capabilities["assistant_route"] {
 			continue
 		}
 		return true

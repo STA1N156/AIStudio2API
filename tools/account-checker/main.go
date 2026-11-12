@@ -344,10 +344,6 @@ func probe(ctx context.Context, item exportedAccount, model, fallbackProxy strin
 	if _, err = service.RefreshAccountModels(ctx, accounts[0].ID); err != nil {
 		return fail(err)
 	}
-	if pool.Status()[0].BenefitTier == "Free" {
-		out.Kind, out.Error = "no_qualification", "权益查询确认账号为 Free"
-		return out
-	}
 	out.Stage = "generation"
 	limit := int64(128)
 	model, generationConfig, _ := aistudio.ApplyModelSuffix(model, aistudio.GenerationConfig{MaxOutputTokens: &limit, ReasoningEffort: "low"})

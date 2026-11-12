@@ -36,6 +36,16 @@ const emit = defineEmits<{
 const { t, locale, errorText } = useI18n()
 const query = ref('')
 const selectedState = ref('all')
+const selectedTier = ref('all')
+const tiers = ['all', 'Ultra', 'Pro', 'Free'] as const
+const accountDeniedModels = (account: Account) =>
+  Object.entries(account.denied_models ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([scope, reason]) => ({
+      scope,
+      reason,
+      model: scope,
+    }))
 const cooldownsByAccount = computed(() => {
   const grouped = new Map<string, Cooldown[]>()
   for (const cooldown of props.cooldowns) {
@@ -63,6 +73,7 @@ const filters = [
 ] as const
 const filteredAccounts = computed(() =>
   props.accounts.filter((account) => {
+    if (selectedTier.value !== 'all' && account.benefit_tier !== selectedTier.value) return false
     if (!`${account.label} ${account.id}`.toLowerCase().includes(query.value.trim().toLowerCase()))
       return false
     switch (selectedState.value) {
@@ -81,7 +92,7 @@ const filteredAccounts = computed(() =>
 )
 // 账户多时只渲染当前页，筛选或搜索变化时回到第一页
 const { page, pages, paged: pagedAccounts } = usePaged(filteredAccounts, 50)
-watch([query, selectedState], () => (page.value = 1))
+watch([query, selectedState, selectedTier], () => (page.value = 1))
 const accountList = ref<HTMLElement | null>(null)
 const defaultAccountLocale = navigator.language || 'en-US'
 const defaultAccountTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -485,6 +496,17 @@ async function refreshAllAccounts(): Promise<void> {
             {{ t(filter.label) }}
           </button>
         </div>
+        <div class="filter-tabs" role="group" :aria-label="t('accounts.tierFilter')">
+          <button
+            v-for="tier in tiers"
+            :key="tier"
+            type="button"
+            :aria-pressed="selectedTier === tier"
+            @click="selectedTier = tier"
+          >
+            {{ tier === 'all' ? t('ui.all') : tier }}
+          </button>
+        </div>
       </div>
       <div v-if="error" class="rounded border border-red-500/40 bg-red-500/10 p-4 text-red-300">
         {{ error }}
@@ -590,6 +612,31 @@ async function refreshAllAccounts(): Promise<void> {
               @click="messageAccount = account"
             >
               {{ t('ui.advanced') }} ({{ accountCooldowns(account).length }})
+            </button>
+          </div>
+          <div
+            v-if="accountDeniedModels(account).length"
+            class="mt-4 rounded-lg border border-red-500/20 bg-red-500/5 p-3"
+          >
+            <div class="mb-2 flex items-center gap-2 text-xs font-medium text-red-300">
+              <UiIcon name="warning" :size="14" />
+              {{
+                t('ui.deniedModels').replace('{count}', String(accountDeniedModels(account).length))
+              }}
+            </div>
+            <div
+              v-for="model in accountDeniedModels(account).slice(0, 2)"
+              :key="model.scope"
+              class="mt-1 break-all text-xs text-gray-300"
+            >
+              {{ model.model }}
+            </div>
+            <button
+              type="button"
+              class="mt-2 text-xs text-blue-400"
+              @click="messageAccount = account"
+            >
+              {{ t('ui.advanced') }} ({{ accountDeniedModels(account).length }})
             </button>
           </div>
           <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -700,8 +747,28 @@ async function refreshAllAccounts(): Promise<void> {
             </p>
           </div>
         </div>
+        <div
+          v-if="messageAccount && accountDeniedModels(messageAccount).length"
+          class="mb-4 space-y-3"
+        >
+          <div
+            v-for="model in accountDeniedModels(messageAccount)"
+            :key="model.scope"
+            class="border-b border-line py-3"
+          >
+            <p class="break-all text-sm">
+              {{ model.model }}
+            </p>
+            <p
+              v-if="model.reason"
+              class="mt-1 whitespace-pre-wrap break-words text-xs text-red-300"
+            >
+              {{ model.reason }}
+            </p>
+          </div>
+        </div>
         <pre
-          v-if="messageAccount"
+          v-if="messageAccount?.message"
           class="rounded-md border border-line bg-canvas p-3 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere] text-red-300"
           >{{ messageAccount.message }}</pre>
       </DetailDialog>

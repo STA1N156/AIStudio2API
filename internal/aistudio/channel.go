@@ -161,6 +161,9 @@ func (p *AccountPool) preferredChannelOpenLocked(account *Account, selection Acc
 
 // channelSupportsLocked 判断账户的通道目录是否支持选择
 func (p *AccountPool) channelSupportsLocked(account *Account, channel Channel, selection AccountSelection) bool {
+	if !selection.anyTier && !p.modelTierAllowedLocked(account, selection.ModelID) {
+		return false
+	}
 	if strings.TrimSpace(selection.ModelID) == "" {
 		return channel == ChannelPlayground
 	}
@@ -272,6 +275,9 @@ func (p *AccountPool) assistantModelLocked(modelID string) bool {
 
 // buildSupportsModelLocked 判断账户 Build 目录可经生成请求调用模型，anyTier 为 true 时不检查账户权益
 func (p *AccountPool) buildSupportsModelLocked(account *Account, modelID string, anyTier bool) bool {
+	if !anyTier && !p.modelTierAllowedLocked(account, modelID) {
+		return false
+	}
 	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
 	found := false
 	for _, model := range account.buildModels {
@@ -289,7 +295,7 @@ func (p *AccountPool) buildSupportsModelLocked(account *Account, modelID string,
 		}
 		for _, model := range candidate.Models {
 			if modelMatchesID(model, modelID) {
-				return !buildExcludedPlaygroundModel(model) && (anyTier || modelAllowedByTier(model, account.BenefitTier))
+				return !buildExcludedPlaygroundModel(model)
 			}
 		}
 	}

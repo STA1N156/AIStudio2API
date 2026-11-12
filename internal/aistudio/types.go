@@ -289,6 +289,7 @@ type TokenCount struct {
 
 // Model 表示实时模型目录中的模型
 type Model struct {
+	AllowedTiers      []string            `json:"allowed_tiers"`
 	ID                string              `json:"id"`
 	Name              string              `json:"name"`
 	Description       string              `json:"description,omitempty"`
