@@ -126,7 +126,7 @@ func TestEmptyOutputReturns400(t *testing.T) {
 				r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(fmt.Sprintf(
 					`{"model":"test","stream":%t,"messages":[{"role":"user","content":"hello"}]}`, stream)))
 				s.handleChatCompletions(w, r)
-				if w.Code != 400 || !strings.Contains(w.Body.String(), `"message":"模型输出为空，请降低思考强度，并检查是否含有过多敏感内容"`) || !strings.Contains(w.Body.String(), `"status":"EMPTY_MODEL_OUTPUT"`) {
+				if w.Code != 400 || !strings.Contains(w.Body.String(), `"message":"`+emptyOutputMessage+`"`) || !strings.Contains(w.Body.String(), `"status":"EMPTY_MODEL_OUTPUT"`) {
 					t.Fatalf("expected empty-output HTTP 400, got %d: %s", w.Code, w.Body.String())
 				}
 			})
@@ -152,7 +152,7 @@ func TestEmptyOutputDoesNotRejectToolsOrMedia(t *testing.T) {
 	var result generationResult
 	_ = result.apply(aistudio.Event{Kind: aistudio.EventReasoning, Text: "thinking only"})
 	err := result.apply(aistudio.Event{Kind: aistudio.EventFinish})
-	if err == nil || statusFromError(err) != 400 || err.Error() != "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容" {
+	if err == nil || statusFromError(err) != 400 || err.Error() != emptyOutputMessage {
 		t.Fatalf("reasoning-only output should fail with 400: %v", err)
 	}
 }

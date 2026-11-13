@@ -30,7 +30,7 @@ type errorCodeProvider interface {
 type emptyOutputError struct{}
 
 const (
-	emptyOutputMessage   = "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容"
+	emptyOutputMessage   = "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
 	blockedPromptMessage = "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
 )
 
@@ -42,6 +42,7 @@ func (emptyOutputError) HTTPStatus() int { return http.StatusBadRequest }
 // ExcludeFromFailureRate 仅排除指定的空回与提示词拦截 400，兼容旧记录中的上游原文。
 func ExcludeFromFailureRate(status int, message string) bool {
 	return status == http.StatusBadRequest && (strings.Contains(message, emptyOutputMessage) ||
+		strings.Contains(message, "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容") ||
 		strings.Contains(message, blockedPromptMessage) ||
 		strings.Contains(message, "The input token count exceeds the maximum number of tokens allowed 131072."))
 }
