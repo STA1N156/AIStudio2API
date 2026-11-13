@@ -78,7 +78,7 @@ type AllCoolingError struct {
 }
 
 func (e *AllCoolingError) Error() string {
-	return fmt.Sprintf("模型 %s 的可用账户均在冷却，最早恢复时间 %s", e.ModelID, e.Until.Local().Format(time.RFC3339))
+	return fmt.Sprintf("ASP渠道中，模型 %s 的可用账户均在冷却，最早恢复时间 %s（北京时间），请切换其他渠道", e.ModelID, e.Until.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04:05"))
 }
 
 // RetryAt 返回最早恢复的时刻
