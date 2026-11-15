@@ -35,6 +35,9 @@ type runtimeAdmin struct {
 	config      config.Config
 	proxies     *aistudio.ProxyPool
 	globalProxy string
+	cooldownMu  sync.Mutex
+	cooldownAt  time.Time
+	cooldowns   []api.AdminCooldown
 }
 
 // requestRegistry 保存活动请求与事件订阅
@@ -839,8 +842,15 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 }
 
 func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, error) {
-	statuses := admin.pool.Status()
+	admin.cooldownMu.Lock()
+	defer admin.cooldownMu.Unlock()
+	if time.Since(admin.cooldownAt) < adminRequestRefreshLatency {
+		return admin.cooldowns, nil
+	}
+	snapshot := admin.pool.Snapshot()
+	statuses := snapshot.Status()
 	cooldowns := make([]api.AdminCooldown, 0)
+	assistantModels := make(map[string]bool)
 	now := time.Now()
 	for _, account := range statuses {
 		models := make(map[string]struct{}, len(account.Models))
@@ -876,8 +886,15 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 			modelID, build := strings.CutPrefix(key, string(aistudio.ChannelBuild)+":")
 			if build {
 				channel = string(aistudio.ChannelBuild)
-			} else if admin.pool.AssistantModel(modelID) {
-				channel = string(aistudio.ChannelAssistant)
+			} else {
+				assistant, known := assistantModels[modelID]
+				if !known {
+					assistant = snapshot.AssistantModel(modelID)
+					assistantModels[modelID] = assistant
+				}
+				if assistant {
+					channel = string(aistudio.ChannelAssistant)
+				}
 			}
 			cooldowns = append(cooldowns, api.AdminCooldown{
 				AccountID: account.ID, AccountLabel: account.Label, Channel: channel,
@@ -893,7 +910,7 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 			seen[cooldown.ModelID] = true
 		}
 	}
-	eligible := admin.pool.CooldownAccountEligibility(models)
+	eligible := snapshot.CooldownAccountEligibility(models)
 	filtered := cooldowns[:0]
 	for _, cooldown := range cooldowns {
 		if accounts := eligible[cooldown.ModelID]; accounts[cooldown.AccountID] {
@@ -901,6 +918,7 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 			filtered = append(filtered, cooldown)
 		}
 	}
+	admin.cooldowns, admin.cooldownAt = filtered, time.Now()
 	return filtered, nil
 }
 

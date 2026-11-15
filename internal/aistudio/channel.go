@@ -1,6 +1,7 @@
 package aistudio
 
 import (
+	"iter"
 	"slices"
 	"sort"
 	"strings"
@@ -188,7 +189,11 @@ func (p *AccountPool) channelSupportsLocked(account *Account, channel Channel, s
 
 // accountSupportsAnyChannelLocked 判断账户至少有一个通道支持选择
 func (p *AccountPool) accountSupportsAnyChannelLocked(account *Account, selection AccountSelection) bool {
-	for _, channel := range p.selectionChannelsLocked(selection) {
+	return p.accountSupportsChannelsLocked(account, selection, p.selectionChannelsLocked(selection))
+}
+
+func (p *AccountPool) accountSupportsChannelsLocked(account *Account, selection AccountSelection, channels []Channel) bool {
+	for _, channel := range channels {
 		if p.channelSupportsLocked(account, channel, selection) {
 			return true
 		}
@@ -198,9 +203,13 @@ func (p *AccountPool) accountSupportsAnyChannelLocked(account *Account, selectio
 
 // accountChannelCooldownLocked 返回账户全部支持通道都冷却时的最早恢复时间
 func (p *AccountPool) accountChannelCooldownLocked(account *Account, selection AccountSelection, now time.Time) (time.Time, bool) {
+	return p.accountChannelsCooldownLocked(account, selection, now, p.selectionChannelsLocked(selection))
+}
+
+func (p *AccountPool) accountChannelsCooldownLocked(account *Account, selection AccountSelection, now time.Time, channels []Channel) (time.Time, bool) {
 	scope := selectionAccessScope(selection)
 	var earliest time.Time
-	for _, channel := range p.selectionChannelsLocked(selection) {
+	for _, channel := range channels {
 		if !p.channelSupportsLocked(account, channel, selection) {
 			continue
 		}
@@ -216,36 +225,30 @@ func (p *AccountPool) accountChannelCooldownLocked(account *Account, selection A
 }
 
 // channelCandidatesLocked 按账户 ID 与通道顺序展开候选，轮询策略从上次选中组合之后开始
-func (p *AccountPool) channelCandidatesLocked(indices []int, selection AccountSelection) []channelCandidate {
+func (p *AccountPool) channelCandidatesLocked(indices []int, selection AccountSelection) iter.Seq[channelCandidate] {
 	channels := p.selectionChannelsLocked(selection)
-	candidates := make([]channelCandidate, 0, len(indices)*len(channels))
-	for _, index := range indices {
-		for _, channel := range channels {
-			candidates = append(candidates, channelCandidate{index: index, channel: channel})
+	count := len(indices) * len(channels)
+	start := 0
+	if p.routingStrategy == "round-robin" {
+		key := selectionAccessScope(selection)
+		lastAccount, lastChannel := p.lastPicked[key], p.lastPickedChannel[key]
+		lastRank := slices.Index(channels, lastChannel)
+		start = sort.Search(count, func(position int) bool {
+			account := p.accounts[indices[position/len(channels)]].ID
+			if account != lastAccount {
+				return account > lastAccount
+			}
+			return lastChannel != "" && position%len(channels) > lastRank
+		})
+	}
+	return func(yield func(channelCandidate) bool) {
+		for i := range count {
+			position := (start + i) % count
+			if !yield(channelCandidate{index: indices[position/len(channels)], channel: channels[position%len(channels)]}) {
+				return
+			}
 		}
 	}
-	rank := func(channel Channel) int { return slices.Index(channels, channel) }
-	sort.SliceStable(candidates, func(left, right int) bool {
-		leftID, rightID := p.accounts[candidates[left].index].ID, p.accounts[candidates[right].index].ID
-		if leftID != rightID {
-			return leftID < rightID
-		}
-		return rank(candidates[left].channel) < rank(candidates[right].channel)
-	})
-	if p.routingStrategy != "round-robin" || len(indices) <= 1 && len(channels) <= 1 {
-		return candidates
-	}
-	key := selectionAccessScope(selection)
-	lastAccount := p.lastPicked[key]
-	lastChannel := p.lastPickedChannel[key]
-	start := sort.Search(len(candidates), func(position int) bool {
-		account := p.accounts[candidates[position].index].ID
-		if account != lastAccount {
-			return account > lastAccount
-		}
-		return lastChannel != "" && rank(candidates[position].channel) > rank(lastChannel)
-	})
-	return append(candidates[start:], candidates[:start]...)
 }
 
 // AssistantModel 判断模型是否为经 Build 写代码助手生成的 -build 模型

@@ -55,7 +55,7 @@ type StreamInterruptedError struct {
 
 // Error 返回中断前已接收的帧数与读取错误
 func (e *StreamInterruptedError) Error() string {
-	return fmt.Sprintf("AI Studio %s 上游流中断（已接收 %d 帧）: %v", e.Method, e.Frames, e.Err)
+	return fmt.Sprintf("AI Studio %s 中断（已接收 %d 帧）: %v", e.Method, e.Frames, e.Err)
 }
 
 // Unwrap 返回读取错误

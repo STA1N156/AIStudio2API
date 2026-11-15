@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"net/mail"
@@ -78,7 +79,7 @@ type AllCoolingError struct {
 }
 
 func (e *AllCoolingError) Error() string {
-	return fmt.Sprintf("ASP渠道中，模型 %s 的可用账户均在冷却，最早恢复时间 %s（北京时间），请切换按量计费/AN渠道", e.ModelID, e.Until.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04:05"))
+	return fmt.Sprintf("ASP渠道中，模型 %s 的可用账户均在冷却，恢复时间 %s，请切换其他渠道", e.ModelID, e.Until.In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04:05"))
 }
 
 // RetryAt 返回最早恢复的时刻
@@ -2402,8 +2403,10 @@ func (p *AccountPool) WorkerEnabled(accountID string) bool {
 
 // CooldownAccountEligibility counts the enabled model pool, including busy and cooling accounts.
 func (p *AccountPool) CooldownAccountEligibility(modelIDs []string) map[string]map[string]bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	return p.statusSnapshot(false).cooldownAccountEligibility(modelIDs)
+}
+
+func (p *AccountPool) cooldownAccountEligibility(modelIDs []string) map[string]map[string]bool {
 	result := make(map[string]map[string]bool, len(modelIDs))
 	for _, modelID := range modelIDs {
 		eligible := make(map[string]bool)
@@ -2430,8 +2433,28 @@ func (p *AccountPool) Status() []AccountStatus {
 	if p == nil {
 		return nil
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	return p.Snapshot().Status()
+}
+
+// AccountPoolSnapshot lets one management query reuse a single detached view.
+type AccountPoolSnapshot struct {
+	pool *AccountPool
+}
+
+func (p *AccountPool) Snapshot() AccountPoolSnapshot {
+	return AccountPoolSnapshot{pool: p.statusSnapshot(true)}
+}
+
+func (view AccountPoolSnapshot) CooldownAccountEligibility(models []string) map[string]map[string]bool {
+	return view.pool.cooldownAccountEligibility(models)
+}
+
+func (view AccountPoolSnapshot) AssistantModel(model string) bool {
+	return view.pool.assistantModelLocked(model)
+}
+
+func (view AccountPoolSnapshot) Status() []AccountStatus {
+	p := view.pool
 	now := time.Now()
 	statuses := make([]AccountStatus, 0, len(p.accounts))
 	for _, account := range p.accounts {
@@ -2471,7 +2494,7 @@ func (p *AccountPool) Status() []AccountStatus {
 			Timezone:    account.Config.Timezone,
 			Models:      models,
 			BenefitTier: tier,
-			Cooldowns:   cloneCooldowns(account.runtime.Cooldowns),
+			Cooldowns:   account.runtime.Cooldowns,
 			Message:     message,
 		}
 		for modelID := range p.modelTiers {
@@ -2488,6 +2511,33 @@ func (p *AccountPool) Status() []AccountStatus {
 		statuses = append(statuses, status)
 	}
 	return statuses
+}
+
+// Catalogs and tier rules are replaced, never edited in place; only mutable cooldowns need cloning.
+func (p *AccountPool) statusSnapshot(includeCooldowns bool) *AccountPool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	view := &AccountPool{accounts: make([]*Account, 0, len(p.accounts)), channels: p.channels, modelTiers: p.modelTiers}
+	accounts := make([]Account, len(p.accounts))
+	for i, account := range p.accounts {
+		if account == nil {
+			continue
+		}
+		copy := &accounts[i]
+		*copy = Account{
+			ID: account.ID, Config: account.Config, Models: account.Models, buildModels: account.buildModels,
+			BenefitTier: account.BenefitTier, State: account.State, LastUsed: account.LastUsed,
+			active: account.active, exclusive: account.exclusive, exclusiveWaiters: account.exclusiveWaiters,
+			authRefreshers: account.authRefreshers, stateMessage: account.stateMessage, catalogError: account.catalogError,
+			runtime: accountRuntimeState{CatalogFingerprint: account.runtime.CatalogFingerprint},
+		}
+		if includeCooldowns && len(account.runtime.Cooldowns) > 0 {
+			copy.runtime.Cooldowns = cloneCooldowns(account.runtime.Cooldowns)
+		}
+		copy.boundProxy.Store(account.boundProxy.Load())
+		view.accounts = append(view.accounts, copy)
+	}
+	return view
 }
 
 // ClassifyCandidates 按 warm 集合分类目标请求的候选账户
@@ -2556,16 +2606,17 @@ func (p *AccountPool) classifyCandidatesLocked(
 	}
 	now := time.Now()
 	groups := AccountCandidateGroups{}
-	for _, index := range indices {
+	channels := p.selectionChannelsLocked(selection)
+	for index := range p.rotatedIndicesLocked(indices, selectionAccessScope(selection)) {
 		account := p.accounts[index]
 		if account == nil || !account.Config.Enabled || account.State != AccountReady {
 			continue
 		}
-		if modelID != "" && !p.accountSupportsAnyChannelLocked(account, selection) {
+		if modelID != "" && !p.accountSupportsChannelsLocked(account, selection, channels) {
 			continue
 		}
 		groups.Eligible = true
-		if until, active := p.accountChannelCooldownLocked(account, selection, now); active {
+		if until, active := p.accountChannelsCooldownLocked(account, selection, now, channels); active {
 			if groups.EarliestCooldown.IsZero() || until.Before(groups.EarliestCooldown) {
 				groups.EarliestCooldown = until
 			}
@@ -2595,7 +2646,7 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 	}
 	waitable := false
 	var earliest time.Time
-	for _, candidate := range p.channelCandidatesLocked(indices, selection) {
+	for candidate := range p.channelCandidatesLocked(indices, selection) {
 		account := p.accounts[candidate.index]
 		if account == nil || !account.Config.Enabled || account.State != AccountReady {
 			continue
@@ -2801,22 +2852,34 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 			return p.accounts[p.orderedIndices[left]].ID < p.accounts[p.orderedIndices[right]].ID
 		})
 	}
-	indices := make([]int, 0, len(p.orderedIndices))
-	for _, index := range p.orderedIndices {
-		account := p.accounts[index]
-		if allowed != nil {
+	indices := p.orderedIndices
+	if allowed != nil {
+		indices = make([]int, 0, min(len(allowed), len(p.orderedIndices)))
+		for _, index := range p.orderedIndices {
+			account := p.accounts[index]
 			if _, exists := allowed[account.ID]; !exists {
 				continue
 			}
+			indices = append(indices, index)
 		}
-		indices = append(indices, index)
-	}
-	if p.routingStrategy == "round-robin" {
-		last := p.lastPicked[selectionAccessScope(selection)]
-		start := sort.Search(len(indices), func(index int) bool { return p.accounts[indices[index]].ID > last })
-		indices = append(indices[start:], indices[:start]...)
 	}
 	return indices, nil
+}
+
+// Walk the cached order without allocating a rotated copy.
+func (p *AccountPool) rotatedIndicesLocked(indices []int, scope string) iter.Seq[int] {
+	start := 0
+	if p.routingStrategy == "round-robin" {
+		last := p.lastPicked[scope]
+		start = sort.Search(len(indices), func(index int) bool { return p.accounts[indices[index]].ID > last })
+	}
+	return func(yield func(int) bool) {
+		for i := range len(indices) {
+			if !yield(indices[(start+i)%len(indices)]) {
+				return
+			}
+		}
+	}
 }
 
 // SetRoutingStrategy 设置账户轮询或优先填满策略
@@ -2843,7 +2906,7 @@ func (p *AccountPool) OrderCandidates(accountIDs []string, modelAccessScope stri
 	defer p.mu.Unlock()
 	indices, _ := p.selectionIndicesLocked(AccountSelection{AllowedAccountIDs: accountIDs, ModelAccessScope: modelAccessScope})
 	ordered := make([]string, 0, len(indices))
-	for _, index := range indices {
+	for index := range p.rotatedIndicesLocked(indices, modelAccessScope) {
 		ordered = append(ordered, p.accounts[index].ID)
 	}
 	return ordered

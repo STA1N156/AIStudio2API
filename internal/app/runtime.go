@@ -1984,7 +1984,7 @@ func (e *serviceStoppedError) Error() string {
 	if e.launching {
 		return "生成服务正在启动"
 	}
-	return "AIStudio2API 服务已停止"
+	return "生成服务已停止"
 }
 
 func (*serviceStoppedError) HTTPStatus() int {
