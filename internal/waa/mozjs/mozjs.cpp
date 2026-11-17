@@ -669,6 +669,13 @@ extern "C" mz_context* mz_context_new(uintptr_t id, uint32_t heap_bytes, size_t 
   mz->cx = cx;
   mz->id = id;
   JS_SetContextPrivate(cx, mz);
+  // Account runtimes share a 2 GiB executable arena; keep the baseline interpreter
+  // without duplicating per-function Baseline/Ion code for every account.
+  static std::once_flag jitOptions;
+  std::call_once(jitOptions, [cx]() {
+    JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_ION_ENABLE, 0);
+    JS_SetGlobalJitCompilerOption(cx, JSJITCOMPILER_BASELINE_ENABLE, 0);
+  });
   if (stack_quota) {
     JS_SetNativeStackQuota(cx, JS::NativeStackSize(stack_quota));
   }
@@ -717,7 +724,7 @@ extern "C" void mz_set_camou_locale(const char* locale) {
 extern "C" uint32_t mz_global_new(mz_context* mz, uint32_t same, const char* timezone) {
   JSContext* cx = mz->cx;
   JS::RealmOptions options;
-  options.creationOptions().setSharedMemoryAndAtomicsEnabled(true).setDefineSharedArrayBufferConstructor(false).setPreserveJitCode(true);
+  options.creationOptions().setSharedMemoryAndAtomicsEnabled(true).setDefineSharedArrayBufferConstructor(false);
   if (same) {
     options.creationOptions().setExistingCompartment(&Slot(mz, same).toObject());
   } else {
