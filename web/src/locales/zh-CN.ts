@@ -1869,7 +1869,7 @@ export const messages = {
   'usage.otherErrors': '其他错误',
   'usage.successRate': '成功率',
   'usage.successRateHelp':
-    '成功 ÷（请求 − 客户端取消）。工具调用、达到输出上限与上游终止都计为成功',
+    '成功 ÷（请求 − 客户端取消）。HTTP 400、工具调用、达到输出上限与上游终止都计为成功',
   'usage.tokens': 'Token',
   'usage.throughput': '当前吞吐',
   'usage.throughputHelp': '最近 {minutes} 分钟内平均每分钟完成的请求数与 token 数',

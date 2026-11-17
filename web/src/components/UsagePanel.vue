@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, onActivated, onDeactivated, provide, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
@@ -353,8 +354,10 @@ const statusOptions = computed(() =>
   <section class="relative flex min-h-0 flex-1 flex-col overflow-auto [scrollbar-gutter:stable]">
     <header class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4">
       <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('usage.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('usage.description') }}</p>
+        <div class="flex min-w-0 items-center gap-2">
+          <MobileNavigationButton />
+          <h2 class="text-xl font-semibold text-white">{{ t('usage.title') }}</h2>
+        </div>
       </div>
       <div class="flex h-10 items-stretch rounded border border-line text-sm">
         <RefreshButton

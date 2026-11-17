@@ -9,34 +9,7 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
 )
 
-func TestFailureRateExclusionMatchesOnlySpecified400s(t *testing.T) {
-	const empty = "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容"
-	const blocked = "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
-	const upstream = "The input token count exceeds the maximum number of tokens allowed 131072."
-	for _, test := range []struct {
-		name, message string
-		status        int
-		want          bool
-	}{
-		{"empty", empty, 400, true},
-		{"wrapped empty", "status_code=400, " + empty, 400, true},
-		{"blocked", blocked, 400, true},
-		{"historical upstream", "[original: INVALID_ARGUMENT] " + upstream + " (qos=CRITICAL)", 400, true},
-		{"other 400", "Request contains an invalid argument.", 400, false},
-		{"other input limit", "The input token count exceeds the maximum number of tokens allowed 65536.", 400, false},
-		{"unrelated number", "Invalid value 131072", 400, false},
-		{"quota", "Resource has been exhausted", 429, false},
-		{"not a 400", empty, 500, false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if got := api.ExcludeFromFailureRate(test.status, test.message); got != test.want {
-				t.Fatalf("excluded = %v, want %v", got, test.want)
-			}
-		})
-	}
-}
-
-func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
+func Test400sCountAsSuccessPreserveRecordsAndRollups(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "usage.db"), func(string, string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +24,7 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 		{ID: "historical", Status: 400, State: "failed", Error: "The input token count exceeds the maximum number of tokens allowed 131072."},
 		{ID: "invalid", Status: 400, State: "failed", Error: "Request contains an invalid argument."},
 		{ID: "quota", Status: 429, State: "failed", Error: "Resource has been exhausted"},
+		{ID: "upstream", Status: 502, State: "failed", Error: "unexpected EOF"},
 		{ID: "cancelled", Status: 499, State: "cancelled"},
 	}
 	var batch []write
@@ -58,6 +32,7 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 		rows[i].Time, rows[i].Model, rows[i].Account = at, "model", "account"
 		rows[i].Protocol, rows[i].Channel = "openai-chat", "playground"
 		rows[i].InputTokens, rows[i].ReplyTokens, rows[i].TotalTokens = 4, 6, 10
+		rows[i].Duration = time.Duration(i+1) * time.Second
 		batch = append(batch, write{row: &rows[i]})
 	}
 	if err := store.write(batch); err != nil {
@@ -65,8 +40,11 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 	}
 	want := func(t *testing.T, stats api.UsageStats) {
 		t.Helper()
-		if stats.Requests != 7 || stats.Succeeded != 1 || stats.Failed != 5 || stats.Canceled != 1 || stats.RateExcluded != 3 || stats.TotalTokens != 70 {
+		if stats.Requests != 8 || stats.Succeeded != 5 || stats.Failed != 2 || stats.Canceled != 1 || stats.RateExcluded != 4 || stats.TotalTokens != 80 {
 			t.Fatalf("unexpected stats: %+v", stats)
+		}
+		if stats.Duration.AvgMS != 1000 {
+			t.Fatalf("400 changed generation latency: %+v", stats.Duration)
 		}
 	}
 	ctx := context.Background()
@@ -98,7 +76,7 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 			for _, bucket := range report.Buckets {
 				excluded += bucket.RateExcluded
 			}
-			if excluded != 3 {
+			if excluded != 4 {
 				t.Fatalf("bucket exclusions = %d", excluded)
 			}
 		})
@@ -112,7 +90,7 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filtered.Totals.Requests != 5 || filtered.Totals.RateExcluded != 3 {
+	if filtered.Totals.Requests != 6 || filtered.Totals.Succeeded != 4 || filtered.Totals.Failed != 2 || filtered.Totals.RateExcluded != 4 {
 		t.Fatalf("filtered exclusions: %+v", filtered.Totals)
 	}
 	records, err := store.Records(ctx, api.UsageRecordQuery{From: day, To: day.Add(24 * time.Hour), Limit: 20})

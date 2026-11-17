@@ -2021,7 +2021,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.otherErrors': 'Andere Fehler',
   'usage.successRate': 'Erfolgsquote',
   'usage.successRateHelp':
-    'Erfolgreich ÷ (Anfragen − Abbrüche durch den Client). Toolaufrufe, erreichte Ausgabelimits und Abbrüche im Upstream zählen als erfolgreich',
+    'Erfolgreich ÷ (Anfragen − Abbrüche durch den Client). HTTP 400, Toolaufrufe, erreichte Ausgabelimits und Abbrüche im Upstream zählen als erfolgreich',
   'usage.tokens': 'Tokens',
   'usage.throughput': 'Aktueller Durchsatz',
   'usage.throughputHelp':

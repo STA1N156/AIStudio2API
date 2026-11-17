@@ -1958,7 +1958,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.otherErrors': '기타 오류',
   'usage.successRate': '성공률',
   'usage.successRateHelp':
-    '성공 ÷ (요청 − 클라이언트 취소). 도구 호출, 출력 한도 도달, 업스트림 중단은 성공으로 계산합니다',
+    '성공 ÷ (요청 − 클라이언트 취소). HTTP 400, 도구 호출, 출력 한도 도달, 업스트림 중단은 성공으로 계산합니다',
   'usage.tokens': '토큰',
   'usage.throughput': '현재 처리량',
   'usage.throughputHelp': '최근 {minutes}분 동안 분당 평균으로 완료된 요청 수와 토큰 수',

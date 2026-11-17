@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, ref, watch } from 'vue'
 import { api } from '@/api'
 import { channelLabelKey, useI18n, type TranslationKey } from '@/i18n'
@@ -224,8 +225,10 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
       class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4 md:overflow-hidden md:[scrollbar-gutter:stable]"
     >
       <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('section.requests.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('section.requests.description') }}</p>
+        <div class="flex min-w-0 items-center gap-2">
+          <MobileNavigationButton />
+          <h2 class="text-xl font-semibold text-white">{{ t('section.requests.title') }}</h2>
+        </div>
       </div>
       <button
         class="flex items-center gap-2 rounded border border-line bg-raised px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-line disabled:opacity-50"

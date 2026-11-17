@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from '@/components/MobileNavigationButton.vue'
 import { computed } from 'vue'
 import { useI18n } from '@/i18n'
 import UiIcon from '@/playground/ui/UiIcon.vue'
@@ -23,6 +24,7 @@ const hasPrompt = computed(
 <template>
   <header class="ms-header">
     <div class="toolbar-left">
+      <MobileNavigationButton />
       <h1 class="mode-title">{{ t('nav.playground') }}</h1>
       <TokenCountTooltip v-if="!comparing" />
     </div>

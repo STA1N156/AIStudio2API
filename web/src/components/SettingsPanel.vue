@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { parseAccountBindings } from '@/accountBindings'
@@ -426,8 +427,10 @@ async function saveConfig(): Promise<void> {
 <template>
   <section class="flex min-h-0 flex-1 flex-col">
     <header class="page-x overflow-hidden border-b border-line py-4 [scrollbar-gutter:stable]">
-      <h2 class="text-xl font-semibold text-white">{{ t('section.settings.title') }}</h2>
-      <p class="mt-1 text-sm text-gray-500">{{ t('section.settings.description') }}</p>
+      <div class="flex min-w-0 items-center gap-2">
+        <MobileNavigationButton />
+        <h2 class="text-xl font-semibold text-white">{{ t('section.settings.title') }}</h2>
+      </div>
     </header>
 
     <div v-if="error" class="page-x overflow-hidden py-4 [scrollbar-gutter:stable] md:py-8">

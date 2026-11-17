@@ -1,9 +1,16 @@
 <script setup lang="ts">
 defineProps<{ adminUsername?: string }>()
 const emit = defineEmits<{ logout: [] }>()
-import { computed, defineAsyncComponent, h, onMounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, defineAsyncComponent, h, ref, useTemplateRef, watch } from 'vue'
 import type { AsyncComponentLoader } from 'vue'
 import {
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogOverlay,
+  DialogPortal,
+  DialogRoot,
+  DialogTitle,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuPortal,
@@ -24,6 +31,7 @@ import { afterTask } from '@/lazy'
 import { readPreference, writePreference } from '@/preference'
 import { useRoute, useRouter } from 'vue-router'
 import type { IconName } from '@/icons'
+import { useMediaQuery } from '@/playground/media-query'
 
 const { availableLocales, locale, setLocale, t, logText } = useI18n()
 // lazyPanel 创建按需加载的页面组件
@@ -64,31 +72,18 @@ const route = useRoute()
 const currentTab = computed<TabID>(() => {
   if (route.meta.studio) return 'playground'
   const tab = route.query.tab as TabID
-  return validTabs.includes(tab) ? tab : 'logs'
+  return validTabs.includes(tab) ? tab : 'accounts'
 })
 
 // openTab 切换页面，API 试用进入独立的试用页
 function openTab(tab: TabID): void {
+  mobileSidebarOpen.value = false
   if (tab === 'playground') void router.push('/prompts/new_chat')
-  else void router.push({ path: '/', query: tab === 'logs' ? {} : { tab } })
+  else void router.push({ path: '/', query: tab === 'accounts' ? {} : { tab } })
 }
-const navigationBar = ref<HTMLElement | null>(null)
-
-// wideQuery 匹配导航纵向排列的宽屏
-const wideQuery = window.matchMedia('(min-width: 48rem)')
-
-// revealCurrentTab 把窄屏横向导航的当前项横向滚入视野
-function revealCurrentTab(): void {
-  if (wideQuery.matches) return
-  const bar = navigationBar.value
-  const item = bar?.querySelector('[aria-current="page"]')
-  if (!bar || !item) return
-  const barRect = bar.getBoundingClientRect()
-  const itemRect = item.getBoundingClientRect()
-  if (itemRect.left < barRect.left) bar.scrollLeft -= barRect.left - itemRect.left
-  else if (itemRect.right > barRect.right) bar.scrollLeft += itemRect.right - barRect.right
-}
-watch(currentTab, revealCurrentTab, { flush: 'post' })
+const wide = useMediaQuery('(min-width: 48rem)')
+const mobileSidebarOpen = ref(false)
+watch([wide, () => route.fullPath], () => (mobileSidebarOpen.value = false))
 
 // defaultSidebarWidth 是宽屏侧栏的默认宽度，双击拖动条恢复
 const defaultSidebarWidth = 280
@@ -196,7 +191,6 @@ watch(
 )
 
 const navigation: { id: TabID; label: TranslationKey; icon: IconName }[] = [
-  { id: 'logs', label: 'nav.logs', icon: 'logs' },
   { id: 'accounts', label: 'nav.accounts', icon: 'accounts' },
   { id: 'access', label: 'nav.access', icon: 'access' },
   { id: 'models', label: 'nav.models', icon: 'models' },
@@ -204,6 +198,7 @@ const navigation: { id: TabID; label: TranslationKey; icon: IconName }[] = [
   { id: 'usage', label: 'nav.usage', icon: 'usage' },
   { id: 'settings', label: 'nav.settings', icon: 'settings' },
   { id: 'playground', label: 'nav.playground', icon: 'playground' },
+  { id: 'logs', label: 'nav.logs', icon: 'logs' },
   { id: 'version', label: 'nav.version', icon: 'version' },
 ]
 
@@ -234,368 +229,381 @@ async function logout(): Promise<void> {
   await commitDelete()
   emit('logout')
 }
-
-onMounted(revealCurrentTab)
 </script>
 
 <template>
   <div class="flex h-full w-full flex-col md:flex-row">
-    <aside
-      class="app-sidebar relative grid w-full min-w-0 shrink-0 border-b border-line bg-panel md:border-r md:border-b-0"
-      :style="{ '--sidebar-width': `${sidebarWidth}px` }"
-    >
-      <div
-        class="flex h-14 min-w-0 items-center gap-2.5 border-b border-line px-4 [grid-area:brand]"
-      >
-        <span v-tooltip="`${t('app.status')}: ${serviceStateLabel}`" class="relative shrink-0">
-          <img src="/favicon.svg" alt="" class="h-6 w-6" />
-          <span
-            class="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-panel"
-            :class="statusColor"
-          ></span>
-        </span>
-        <h1 class="relative top-px min-w-0 flex-1 truncate text-base font-bold text-white">
-          AIStudio2API
-        </h1>
-        <div class="flex shrink-0 items-center gap-1">
-          <ThemeToggle />
-          <DropdownMenuRoot :modal="false">
-            <DropdownMenuTrigger
-              v-tooltip="t('app.language')"
-              :aria-label="t('app.language')"
-              class="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white data-[state=open]:text-white"
-            >
-              <UiIcon name="language" :size="13" />
-            </DropdownMenuTrigger>
-            <DropdownMenuPortal>
-              <DropdownMenuContent
-                align="end"
-                :side-offset="4"
-                class="z-[60] max-h-[var(--reka-dropdown-menu-content-available-height)] overflow-y-auto rounded border border-line bg-panel shadow-xl"
-              >
-                <DropdownMenuItem
-                  v-for="item in availableLocales"
-                  :key="item.code"
-                  class="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-2 text-left text-xs whitespace-nowrap text-gray-300 outline-none data-[highlighted]:bg-blue-600 data-[highlighted]:text-white"
-                  @select="setLocale(item.code)"
-                >
-                  {{ item.label }}
-                  <UiIcon v-if="item.code === locale" name="check" :size="12" />
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenuPortal>
-          </DropdownMenuRoot>
-        </div>
-      </div>
-
-      <div
-        v-if="adminUsername"
-        class="flex min-w-0 items-center gap-1 border-b border-line pr-4 [grid-area:controls] md:border-t md:border-b-0 md:px-3 md:py-2"
-      >
-        <span
-          v-tooltip.overflow="adminUsername"
-          class="hidden min-w-0 flex-1 truncate text-xs text-gray-400 md:block"
-          >{{ adminUsername }}</span
-        >
-        <button
-          v-tooltip="t('auth.logout')"
-          type="button"
-          :aria-label="`${adminUsername} · ${t('auth.logout')}`"
-          class="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white"
-          @click="logout"
-        >
-          <UiIcon name="login" :size="13" />
-        </button>
-      </div>
-
-      <nav
-        ref="navigationBar"
-        class="flex w-full min-w-0 gap-1 overflow-x-auto p-2 [grid-area:nav] md:flex-col md:overflow-x-hidden md:overflow-y-auto"
-      >
-        <button
-          v-for="item in navigation"
-          :key="item.id"
-          :class="[
-            'console-nav-item flex w-auto shrink-0 items-center gap-2 px-3 py-2 text-left whitespace-nowrap transition md:w-full',
-            currentTab === item.id ? 'is-active' : 'text-gray-400 hover:bg-raised hover:text-white',
-          ]"
-          type="button"
-          :aria-current="currentTab === item.id ? 'page' : undefined"
-          @click="openTab(item.id)"
-        >
-          <UiIcon :name="item.icon" :size="16" class="shrink-0" />
-          <span v-tooltip.overflow="t(item.label)" class="min-w-0 truncate md:whitespace-normal">{{
-            t(item.label)
-          }}</span>
-          <span
-            v-if="item.id === 'requests'"
-            class="ml-auto shrink-0 text-xs tabular-nums text-amber-400"
-            >{{ t('state.queued') }} {{ queuedCount }}</span
+    <DialogRoot v-model:open="mobileSidebarOpen">
+      <DialogPortal :disabled="wide" :force-mount="wide">
+        <DialogOverlay v-if="!wide" class="fixed inset-0 z-[70] bg-black/50" />
+        <component :is="wide ? 'div' : DialogContent" :as-child="!wide" :class="{ contents: wide }">
+          <aside
+            class="app-sidebar relative grid min-w-0 shrink-0 border-r border-line bg-panel outline-none"
+            :style="{ '--sidebar-width': `${sidebarWidth}px` }"
           >
-          <span
-            v-if="item.id === 'version' && update?.available"
-            class="size-2 shrink-0 rounded-full bg-amber-400 md:ml-auto"
-            aria-hidden="true"
-            :title="t('version.available').replace('{version}', update.latest!)"
-          />
-        </button>
-      </nav>
-
-      <div class="min-w-0 overflow-hidden border-t border-line p-2 [grid-area:status] md:p-4">
-        <div class="mb-2 hidden text-xs text-gray-500 md:block">{{ t('app.status') }}</div>
-        <div class="flex items-center justify-between gap-2 md:mb-4">
-          <div class="flex min-w-0 items-center gap-2 md:contents">
-            <span
-              class="grid shrink-0 font-mono font-bold whitespace-nowrap uppercase"
-              :class="statusTextColor"
+            <DialogDescription v-if="!wide" class="sr-only">{{ t('nav.open') }}</DialogDescription>
+            <div
+              class="flex h-14 min-w-0 items-center gap-2.5 border-b border-line px-4 [grid-area:brand]"
             >
               <span
-                v-for="state in serviceStates"
-                :key="state"
-                class="[grid-area:1/1]"
-                :class="{ invisible: loading.status || state !== serviceState }"
-                >{{ t(`state.${state}`) }}</span
+                v-tooltip="`${t('app.status')}: ${serviceStateLabel}`"
+                class="relative shrink-0"
               >
-            </span>
-            <span
-              v-if="!loading.status"
-              v-tooltip="status?.version"
-              class="max-w-[65%] truncate font-mono text-xs text-gray-500"
+                <img src="/favicon.svg" alt="" class="h-6 w-6" />
+                <span
+                  class="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-panel"
+                  :class="statusColor"
+                ></span>
+              </span>
+              <component
+                :is="wide ? 'h1' : DialogTitle"
+                class="relative top-px min-w-0 flex-1 truncate text-base font-bold text-white"
+              >
+                AIStudio2API
+              </component>
+              <div class="flex shrink-0 items-center gap-1">
+                <ThemeToggle />
+                <DropdownMenuRoot :modal="false">
+                  <DropdownMenuTrigger
+                    v-tooltip="t('app.language')"
+                    :aria-label="t('app.language')"
+                    class="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white data-[state=open]:text-white"
+                  >
+                    <UiIcon name="language" :size="13" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuPortal>
+                    <DropdownMenuContent
+                      align="end"
+                      :side-offset="4"
+                      class="z-[80] max-h-[var(--reka-dropdown-menu-content-available-height)] overflow-y-auto rounded border border-line bg-panel shadow-xl"
+                    >
+                      <DropdownMenuItem
+                        v-for="item in availableLocales"
+                        :key="item.code"
+                        class="flex w-full cursor-pointer items-center justify-between gap-4 px-4 py-2 text-left text-xs whitespace-nowrap text-gray-300 outline-none data-[highlighted]:bg-blue-600 data-[highlighted]:text-white"
+                        @select="setLocale(item.code)"
+                      >
+                        {{ item.label }}
+                        <UiIcon v-if="item.code === locale" name="check" :size="12" />
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenuPortal>
+                </DropdownMenuRoot>
+              </div>
+              <DialogClose
+                v-if="!wide"
+                class="flex size-8 shrink-0 items-center justify-center rounded hover:bg-raised"
+                :aria-label="t('common.close')"
+              >
+                <UiIcon name="close" :size="18" />
+              </DialogClose>
+            </div>
+
+            <div
+              v-if="adminUsername"
+              class="flex min-w-0 items-center gap-1 border-t border-line px-3 py-2 [grid-area:controls]"
             >
-              {{ status?.version || '—' }}
-            </span>
-          </div>
-          <button
-            v-if="serviceState === 'stopped' || serviceState === 'unavailable'"
-            :class="{ invisible: serviceState === 'unavailable' }"
-            class="flex shrink-0 items-center gap-1.5 rounded bg-green-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50 md:hidden"
-            type="button"
-            :disabled="startPending || stopPending"
-            @click="startService"
-          >
-            <UiIcon :name="startPending ? 'spinner' : 'play'" :size="13" />
-            {{ t('app.start') }}
-          </button>
-          <button
-            v-else-if="serviceState === 'launching' || serviceState === 'running'"
-            class="flex shrink-0 items-center gap-1.5 rounded bg-red-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50 md:hidden"
-            type="button"
-            :disabled="stopPending"
-            @click="stopService"
-          >
-            <UiIcon :name="stopPending ? 'spinner' : 'stop'" :size="13" />
-            {{ t('app.stop') }}
-          </button>
-        </div>
-        <button
-          v-if="serviceState === 'stopped' || serviceState === 'unavailable'"
-          :class="{ invisible: serviceState === 'unavailable' }"
-          class="hidden w-full items-center justify-center gap-2 rounded bg-green-600 py-2 font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50 md:flex"
-          type="button"
-          :disabled="startPending || stopPending"
-          @click="startService"
-        >
-          <UiIcon :name="startPending ? 'spinner' : 'play'" :size="16" />
-          {{ t('app.start') }}
-        </button>
-        <button
-          v-else-if="serviceState === 'launching' || serviceState === 'running'"
-          class="hidden w-full items-center justify-center gap-2 rounded bg-red-600 py-2 font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50 md:flex"
-          type="button"
-          :disabled="stopPending"
-          @click="stopService"
-        >
-          <UiIcon :name="stopPending ? 'spinner' : 'stop'" :size="16" />
-          {{ t('app.stop') }}
-        </button>
-      </div>
-      <div
-        class="sidebar-resizer"
-        :class="{ 'is-resizing': resizingSidebar }"
-        role="separator"
-        tabindex="0"
-        aria-orientation="vertical"
-        :aria-label="t('app.resizeSidebar')"
-        :aria-valuemin="minSidebarWidth"
-        :aria-valuemax="maxSidebarWidth"
-        :aria-valuenow="sidebarWidth"
-        @pointerdown="startSidebarResize"
-        @pointermove="moveSidebarResize"
-        @pointerup="resizingSidebar = false"
-        @pointercancel="resizingSidebar = false"
-        @dblclick="sidebarWidth = defaultSidebarWidth"
-        @keydown="resizeSidebarWithKeyboard"
-      ></div>
-    </aside>
+              <span
+                v-tooltip.overflow="adminUsername"
+                class="min-w-0 flex-1 truncate text-xs text-gray-400"
+                >{{ adminUsername }}</span
+              >
+              <button
+                v-tooltip="t('auth.logout')"
+                type="button"
+                :aria-label="`${adminUsername} · ${t('auth.logout')}`"
+                class="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white"
+                @click="logout"
+              >
+                <UiIcon name="login" :size="13" />
+              </button>
+            </div>
 
-    <main class="@container flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
-      <div
-        v-if="!route.meta.studio && config?.reserved_listen_addr"
-        role="alert"
-        class="page-x overflow-hidden border-b border-amber-500/30 bg-amber-500/10 py-2.5 text-sm break-words text-amber-200 [scrollbar-gutter:stable]"
-      >
-        {{
-          t('app.listenReserved')
-            .replace('{reserved}', config.reserved_listen_addr)
-            .replace('{active}', config.active_listen_addr)
-        }}
-      </div>
-      <CamoufoxBanner
-        v-if="!route.meta.studio && status && !camoufoxInTask"
-        :camoufox="status.camoufox"
-        @retry="retryCamoufox"
-      />
-      <div
-        v-if="!route.meta.studio && config?.invalid.length"
-        role="alert"
-        class="page-x overflow-hidden border-b border-amber-500/30 bg-amber-500/10 py-2.5 text-sm break-words text-amber-200 [scrollbar-gutter:stable]"
-      >
-        <p>{{ t('app.invalidConfig') }}</p>
-        <p v-for="item in config.invalid" :key="item.key" class="mt-1 font-mono text-xs">
-          {{ item.value ? `${item.key}=${item.value}` : item.key }} · {{ logText(item.reason) }}
-        </p>
-      </div>
-      <KeepAlive
-        include="StudioLayout,LogsPanel,AccountsPanel,AccessPanel,ModelsTable,RequestsPanel,SettingsPanel,VersionPanel,UsagePanel"
-      >
-        <StudioLayout v-if="route.meta.studio" />
-        <LogsPanel v-else-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
-        <AccountsPanel
-          v-else-if="currentTab === 'accounts'"
-          :accounts="visibleAccounts"
-          :tasks="accountTasks"
-          :loading="loading.accounts"
-          :error="errors.accounts"
-          :chrome-import="status?.chrome_import ?? false"
-          :camoufox="status?.camoufox"
-          :geoip="status?.geoip"
-          @refresh="loadAccountData"
-          @updated="updateAccount"
-          @notice="showNotice"
-          @delete="deleteAccounts"
-        />
-        <AccessPanel
-          v-else-if="currentTab === 'access'"
-          :config="config"
-          :models="models"
-          @settings="openTab('settings')"
-        />
-        <ModelsTable
-          v-else-if="currentTab === 'models'"
-          :models="models"
-          :loading="loading.models"
-          :error="errors.models"
-          :config="config"
-          :accounts="accounts"
-          @saved="config = $event"
-          @notice="showNotice"
-        />
-        <RequestsPanel
-          v-else-if="currentTab === 'requests'"
-          :accounts="accounts"
-          :cooldowns="cooldowns"
-          :requests="requests"
-          :loading="loading.requests || loading.cooldowns"
-          :cooldown-error="errors.cooldowns"
-          :request-error="errors.requests"
-          @refresh="loadRequestData"
-          @notice="showNotice"
-        />
-        <UsagePanel v-else-if="currentTab === 'usage'" :models="models" />
-        <SettingsPanel
-          v-else-if="currentTab === 'settings'"
-          :config="config"
-          :accounts="accounts"
-          :models="models"
-          :loading="loading.config || loading.accounts"
-          :error="errors.config"
-          @saved="config = $event"
-          @notice="showNotice"
-        />
-        <VersionPanel
-          v-else-if="currentTab === 'version'"
-          :status="update"
-          :active-requests="status?.active_requests ?? 0"
-          @status="update = $event"
-          @restarting="waitForRestart"
-        />
-      </KeepAlive>
-    </main>
+            <nav
+              class="flex min-h-0 w-full min-w-0 flex-col gap-1 overflow-x-hidden overflow-y-auto p-2 [grid-area:nav]"
+            >
+              <button
+                v-for="item in navigation"
+                :key="item.id"
+                :class="[
+                  'console-nav-item flex w-full shrink-0 items-center gap-2 px-3 py-2 text-left transition',
+                  currentTab === item.id
+                    ? 'is-active'
+                    : 'text-gray-400 hover:bg-raised hover:text-white',
+                ]"
+                type="button"
+                :aria-current="currentTab === item.id ? 'page' : undefined"
+                @click="openTab(item.id)"
+              >
+                <UiIcon :name="item.icon" :size="16" class="shrink-0" />
+                <span
+                  v-tooltip.overflow="t(item.label)"
+                  class="min-w-0 truncate whitespace-normal"
+                  >{{ t(item.label) }}</span
+                >
+                <span
+                  v-if="item.id === 'requests'"
+                  class="ml-auto shrink-0 text-xs tabular-nums text-amber-400"
+                  >{{ t('usage.queue') }} {{ queuedCount }}</span
+                >
+              </button>
+            </nav>
 
-    <div
-      class="pointer-events-none fixed right-5 bottom-5 left-5 z-50 flex flex-col items-end gap-2 sm:left-auto sm:max-w-md"
-    >
-      <Transition name="notice">
+            <div class="min-w-0 overflow-hidden border-t border-line p-4 [grid-area:status]">
+              <div class="mb-2 text-xs text-gray-500">{{ t('app.status') }}</div>
+              <div class="mb-4 flex items-center justify-between gap-2">
+                <div class="contents">
+                  <span
+                    class="grid shrink-0 font-mono font-bold whitespace-nowrap uppercase"
+                    :class="statusTextColor"
+                  >
+                    <span
+                      v-for="state in serviceStates"
+                      :key="state"
+                      class="[grid-area:1/1]"
+                      :class="{ invisible: loading.status || state !== serviceState }"
+                      >{{ t(`state.${state}`) }}</span
+                    >
+                  </span>
+                  <span
+                    v-if="!loading.status"
+                    v-tooltip="status?.version"
+                    class="max-w-[65%] truncate font-mono text-xs text-gray-500"
+                  >
+                    {{ status?.version || '—' }}
+                  </span>
+                </div>
+              </div>
+              <button
+                v-if="serviceState === 'stopped' || serviceState === 'unavailable'"
+                :class="{ invisible: serviceState === 'unavailable' }"
+                class="flex w-full items-center justify-center gap-2 rounded bg-green-600 py-2 font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50"
+                type="button"
+                :disabled="startPending || stopPending"
+                @click="startService"
+              >
+                <UiIcon :name="startPending ? 'spinner' : 'play'" :size="16" />
+                {{ t('app.start') }}
+              </button>
+              <button
+                v-else-if="serviceState === 'launching' || serviceState === 'running'"
+                class="flex w-full items-center justify-center gap-2 rounded bg-red-600 py-2 font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50"
+                type="button"
+                :disabled="stopPending"
+                @click="stopService"
+              >
+                <UiIcon :name="stopPending ? 'spinner' : 'stop'" :size="16" />
+                {{ t('app.stop') }}
+              </button>
+            </div>
+            <div
+              class="sidebar-resizer"
+              :class="{ 'is-resizing': resizingSidebar }"
+              role="separator"
+              tabindex="0"
+              aria-orientation="vertical"
+              :aria-label="t('app.resizeSidebar')"
+              :aria-valuemin="minSidebarWidth"
+              :aria-valuemax="maxSidebarWidth"
+              :aria-valuenow="sidebarWidth"
+              @pointerdown="startSidebarResize"
+              @pointermove="moveSidebarResize"
+              @pointerup="resizingSidebar = false"
+              @pointercancel="resizingSidebar = false"
+              @dblclick="sidebarWidth = defaultSidebarWidth"
+              @keydown="resizeSidebarWithKeyboard"
+            ></div>
+          </aside>
+        </component>
+      </DialogPortal>
+      <main class="@container flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
         <div
-          v-if="notice.message"
-          role="status"
-          class="pointer-events-auto flex max-w-full items-start gap-2 rounded border bg-panel py-3 pr-2 pl-4 text-sm shadow-xl"
-          :class="
-            notice.tone === 'error'
-              ? 'border-red-500/50 text-red-300'
-              : 'border-green-500/50 text-green-300'
-          "
+          v-if="!route.meta.studio && config?.reserved_listen_addr"
+          role="alert"
+          class="page-x overflow-hidden border-b border-amber-500/30 bg-amber-500/10 py-2.5 text-sm break-words text-amber-200 [scrollbar-gutter:stable]"
         >
-          <UiDisclosure v-if="noticeClipped" v-model="noticeOpen" />
-          <p
-            ref="noticeBody"
-            class="min-w-0 flex-1 break-words"
-            :class="noticeClamped ? 'line-clamp-3' : 'max-h-[40vh] overflow-y-auto'"
-          >
-            {{ noticeText }}
+          {{
+            t('app.listenReserved')
+              .replace('{reserved}', config.reserved_listen_addr)
+              .replace('{active}', config.active_listen_addr)
+          }}
+        </div>
+        <CamoufoxBanner
+          v-if="!route.meta.studio && status && !camoufoxInTask"
+          :camoufox="status.camoufox"
+          @retry="retryCamoufox"
+        />
+        <div
+          v-if="!route.meta.studio && config?.invalid.length"
+          role="alert"
+          class="page-x overflow-hidden border-b border-amber-500/30 bg-amber-500/10 py-2.5 text-sm break-words text-amber-200 [scrollbar-gutter:stable]"
+        >
+          <p>{{ t('app.invalidConfig') }}</p>
+          <p v-for="item in config.invalid" :key="item.key" class="mt-1 font-mono text-xs">
+            {{ item.value ? `${item.key}=${item.value}` : item.key }} · {{ logText(item.reason) }}
           </p>
-          <button
-            type="button"
-            class="-my-1 shrink-0 rounded p-1 text-gray-500 transition hover:bg-raised hover:text-gray-200"
-            :aria-label="t('common.close')"
-            @click="closeNotice"
-          >
-            <UiIcon name="close" :size="14" />
-          </button>
         </div>
-      </Transition>
-      <Transition name="notice">
-        <div
-          v-if="pendingDelete"
-          class="pointer-events-auto flex max-w-full items-center gap-4 rounded border border-line-strong bg-panel px-4 py-3 text-sm text-gray-200 shadow-xl"
-          role="status"
+        <KeepAlive
+          include="StudioLayout,LogsPanel,AccountsPanel,AccessPanel,ModelsTable,RequestsPanel,SettingsPanel,VersionPanel,UsagePanel"
         >
-          <span v-tooltip.overflow="deletedNotice" class="min-w-0 truncate">{{
-            deletedNotice
-          }}</span>
-          <button
-            type="button"
-            class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1 font-medium text-blue-400 hover:bg-raised"
-            @click="undoDelete"
+          <StudioLayout v-if="route.meta.studio" />
+          <LogsPanel v-else-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
+          <AccountsPanel
+            v-else-if="currentTab === 'accounts'"
+            :accounts="visibleAccounts"
+            :tasks="accountTasks"
+            :loading="loading.accounts"
+            :error="errors.accounts"
+            :chrome-import="status?.chrome_import ?? false"
+            :camoufox="status?.camoufox"
+            :geoip="status?.geoip"
+            @refresh="loadAccountData"
+            @updated="updateAccount"
+            @notice="showNotice"
+            @delete="deleteAccounts"
+          />
+          <AccessPanel
+            v-else-if="currentTab === 'access'"
+            :config="config"
+            :models="models"
+            @settings="openTab('settings')"
+          />
+          <ModelsTable
+            v-else-if="currentTab === 'models'"
+            :models="models"
+            :loading="loading.models"
+            :error="errors.models"
+            :config="config"
+            :accounts="accounts"
+            @saved="config = $event"
+            @notice="showNotice"
+          />
+          <RequestsPanel
+            v-else-if="currentTab === 'requests'"
+            :accounts="accounts"
+            :cooldowns="cooldowns"
+            :requests="requests"
+            :loading="loading.requests || loading.cooldowns"
+            :cooldown-error="errors.cooldowns"
+            :request-error="errors.requests"
+            @refresh="loadRequestData"
+            @notice="showNotice"
+          />
+          <UsagePanel v-else-if="currentTab === 'usage'" :models="models" />
+          <SettingsPanel
+            v-else-if="currentTab === 'settings'"
+            :config="config"
+            :accounts="accounts"
+            :models="models"
+            :loading="loading.config || loading.accounts"
+            :error="errors.config"
+            @saved="config = $event"
+            @notice="showNotice"
+          />
+          <VersionPanel
+            v-else-if="currentTab === 'version'"
+            :status="update"
+            :active-requests="status?.active_requests ?? 0"
+            @status="update = $event"
+            @restarting="waitForRestart"
+          />
+        </KeepAlive>
+      </main>
+
+      <div
+        class="pointer-events-none fixed right-5 bottom-5 left-5 z-50 flex flex-col items-end gap-2 sm:left-auto sm:max-w-md"
+      >
+        <Transition name="notice">
+          <div
+            v-if="notice.message"
+            role="status"
+            class="pointer-events-auto flex max-w-full items-start gap-2 rounded border bg-panel py-3 pr-2 pl-4 text-sm shadow-xl"
+            :class="
+              notice.tone === 'error'
+                ? 'border-red-500/50 text-red-300'
+                : 'border-green-500/50 text-green-300'
+            "
           >
-            <UiIcon name="undo" :size="14" />
-            {{ t('common.undo') }}
-          </button>
-        </div>
-      </Transition>
-    </div>
+            <UiDisclosure v-if="noticeClipped" v-model="noticeOpen" />
+            <p
+              ref="noticeBody"
+              class="min-w-0 flex-1 break-words"
+              :class="noticeClamped ? 'line-clamp-3' : 'max-h-[40vh] overflow-y-auto'"
+            >
+              {{ noticeText }}
+            </p>
+            <button
+              type="button"
+              class="-my-1 shrink-0 rounded p-1 text-gray-500 transition hover:bg-raised hover:text-gray-200"
+              :aria-label="t('common.close')"
+              @click="closeNotice"
+            >
+              <UiIcon name="close" :size="14" />
+            </button>
+          </div>
+        </Transition>
+        <Transition name="notice">
+          <div
+            v-if="pendingDelete"
+            class="pointer-events-auto flex max-w-full items-center gap-4 rounded border border-line-strong bg-panel px-4 py-3 text-sm text-gray-200 shadow-xl"
+            role="status"
+          >
+            <span v-tooltip.overflow="deletedNotice" class="min-w-0 truncate">{{
+              deletedNotice
+            }}</span>
+            <button
+              type="button"
+              class="flex shrink-0 items-center gap-1.5 rounded px-2 py-1 font-medium text-blue-400 hover:bg-raised"
+              @click="undoDelete"
+            >
+              <UiIcon name="undo" :size="14" />
+              {{ t('common.undo') }}
+            </button>
+          </div>
+        </Transition>
+      </div>
+    </DialogRoot>
   </div>
 </template>
 
 <style scoped>
 .app-sidebar {
-  grid-template-columns: minmax(0, 1fr) auto;
+  width: var(--sidebar-width);
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
-    'brand controls'
-    'nav nav'
-    'status status';
+    'brand'
+    'nav'
+    'controls'
+    'status';
 }
 
-@media (width >= 48rem) {
+@media (width < 48rem) {
   .app-sidebar {
-    width: var(--sidebar-width);
-    grid-template-rows: auto minmax(0, 1fr) auto auto;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas:
-      'brand'
-      'nav'
-      'controls'
-      'status';
+    position: fixed;
+    z-index: 71;
+    inset: 0 auto 0 0;
+    width: min(20rem, calc(100vw - 3rem));
+    height: 100dvh;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    animation: sidebar-enter 160ms ease-out;
+  }
+}
+
+@keyframes sidebar-enter {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar {
+    animation: none;
   }
 }
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from '@/components/MobileNavigationButton.vue'
 import { ref } from 'vue'
 import { useI18n } from '@/i18n'
 import UiIcon from '@/playground/ui/UiIcon.vue'
@@ -27,6 +28,7 @@ function closeSettings(): void {
     <div ref="column" class="chat-column">
       <header class="ms-header">
         <div class="page-title" :class="{ 'title-enter': fadeTitle }">
+          <MobileNavigationButton />
           <h1 class="mode-title">{{ title || t('nav.playground') }}</h1>
           <slot name="title" />
         </div>

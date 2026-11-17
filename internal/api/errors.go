@@ -35,13 +35,6 @@ func (emptyOutputError) Error() string     { return emptyOutputMessage }
 func (emptyOutputError) HTTPStatus() int   { return http.StatusBadRequest }
 func (emptyOutputError) ErrorCode() string { return "EMPTY_MODEL_OUTPUT" }
 
-func ExcludeFromFailureRate(status int, message string) bool {
-	return status == http.StatusBadRequest && (strings.Contains(message, emptyOutputMessage) ||
-		strings.Contains(message, "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容") ||
-		strings.Contains(message, "预设或其他内容被谷歌拦截") ||
-		strings.Contains(message, "The input token count exceeds the maximum number of tokens allowed 131072."))
-}
-
 // decodeJSON 把请求正文解码为一个 JSON 值；读取或解码失败时以同一正文与读取错误逐段解码，返回其错误
 func decodeJSON(r *http.Request, target any) error {
 	body, readErr := io.ReadAll(r.Body)
@@ -304,8 +297,31 @@ func serverErrorPrefix(status int) string {
 	return ""
 }
 
-// publicErrorMessage 在 5xx 错误原因前加官方英文开头
+// public400Message 统一客户可见的指定 400 提示，保留内部错误供重试和诊断使用。
+func public400Message(status int, message string) string {
+	if status != http.StatusBadRequest {
+		return message
+	}
+	switch {
+	case strings.Contains(message, "AI Studio 因内容策略结束生成: PROHIBITED_CONTENT"),
+		strings.Contains(message, "AI Studio 拒绝当前输入: prohibited_content"):
+		return "输入内容违反了Google内容政策，请切换抗截断模型以解决"
+	case strings.Contains(message, "Request contains an invalid argument."):
+		return "请求参数错误，请核对客户端请求参数"
+	case strings.Contains(message, "Please ensure that function call turn comes immediately after a user turn or after a function response turn."):
+		return "工具调用顺序错误，工具轮次需在用户轮次/另一工具轮次之后"
+	case strings.Contains(message, "The input token count exceeds the maximum number of tokens allowed 1048576."):
+		return "输入内容超出模型最大上下文1048576"
+	case strings.Contains(message, "AI Studio 因内容策略结束生成: OTHER:") &&
+		strings.Contains(message, "This request was blocked by Gemini's filters."):
+		return "请求含有敏感内容，被Google安全过滤器封锁，请切换抗截断模型以解决"
+	}
+	return message
+}
+
+// publicErrorMessage 统一客户提示，在 5xx 错误原因前加官方英文开头。
 func publicErrorMessage(status int, message string) string {
+	message = public400Message(status, message)
 	if prefix := serverErrorPrefix(status); prefix != "" && !strings.HasPrefix(message, prefix) {
 		return prefix + ": " + message
 	}
@@ -355,6 +371,7 @@ type anthropicErrorBody struct {
 }
 
 func writeGeminiError(w http.ResponseWriter, status int, statusName string, message string) {
+	message = public400Message(status, message)
 	setAccessLogResponseError(w, message)
 	writeJSON(w, status, officialOrder("gemini", map[string]any{"error": map[string]any{
 		"code":    status,
@@ -431,7 +448,8 @@ func writeGeminiRequestError(w http.ResponseWriter, err error) {
 
 // geminiErrorPayload 返回 Gemini 错误对象，seconds 大于 0 时 details 带该时长的 RetryInfo
 func geminiErrorPayload(err error, seconds int64) map[string]any {
-	payload := map[string]any{"code": statusFromError(err), "message": err.Error(), "status": geminiErrorStatus(err)}
+	status := statusFromError(err)
+	payload := map[string]any{"code": status, "message": public400Message(status, err.Error()), "status": geminiErrorStatus(err)}
 	if seconds > 0 {
 		payload["details"] = []any{map[string]any{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": strconv.FormatInt(seconds, 10) + "s"}}
 	}
@@ -454,13 +472,19 @@ func upstreamErrorPayload(err error) (map[string]any, bool) {
 	var payload map[string]any
 	for _, raw := range []json.RawMessage{rpc.ResponseBody, json.RawMessage(rpc.Message)} {
 		if json.Unmarshal(raw, &payload) == nil && payload["error"] != nil {
-			if detail, ok := payload["error"].(map[string]any); ok && message != rpc.Message {
-				detail["message"] = message
+			if detail, ok := payload["error"].(map[string]any); ok {
+				text, _ := detail["message"].(string)
+				if message != rpc.Message {
+					text = message
+				}
+				if text != "" {
+					detail["message"] = public400Message(rpc.StatusCode, text)
+				}
 			}
 			return payload, true
 		}
 	}
-	detail := map[string]any{"code": statusFromError(err), "message": message, "status": geminiErrorStatus(err)}
+	detail := map[string]any{"code": statusFromError(err), "message": public400Message(rpc.StatusCode, message), "status": geminiErrorStatus(err)}
 	if len(rpc.Metadata) > 0 {
 		detail["details"] = []any{map[string]any{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": rpc.Metadata}}
 	}

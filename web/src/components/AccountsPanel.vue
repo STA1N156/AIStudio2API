@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, reactive, ref, useTemplateRef, watch } from 'vue'
 import {
   DropdownMenuContent,
@@ -1025,8 +1026,10 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
       class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4 md:overflow-hidden md:[scrollbar-gutter:stable]"
     >
       <div class="min-w-0 flex-[1_1_16rem]">
-        <h2 class="text-xl font-semibold text-white">{{ t('section.accounts.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('section.accounts.description') }}</p>
+        <div class="flex min-w-0 items-center gap-2">
+          <MobileNavigationButton />
+          <h2 class="text-xl font-semibold text-white">{{ t('section.accounts.title') }}</h2>
+        </div>
       </div>
       <div class="ml-auto flex flex-wrap justify-end gap-2">
         <label

@@ -1876,7 +1876,8 @@ export const messages: Record<TranslationKey, string> = {
   'usage.rateLimitedShort': '限流',
   'usage.otherErrors': '其他錯誤',
   'usage.successRate': '成功率',
-  'usage.successRateHelp': '成功 ÷（請求 − 用戶端取消）。工具呼叫、達到輸出上限與上游終止都算成功',
+  'usage.successRateHelp':
+    '成功 ÷（請求 − 用戶端取消）。HTTP 400、工具呼叫、達到輸出上限與上游終止都算成功',
   'usage.tokens': 'Token',
   'usage.throughput': '目前處理量',
   'usage.throughputHelp': '最近 {minutes} 分鐘內平均每分鐘完成的請求數與 Token 數',

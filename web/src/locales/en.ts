@@ -1988,7 +1988,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.otherErrors': 'Other errors',
   'usage.successRate': 'Success rate',
   'usage.successRateHelp':
-    'Succeeded ÷ (requests − client cancellations). Tool calls, output limits and upstream stops count as succeeded',
+    'Succeeded ÷ (requests − client cancellations). HTTP 400, tool calls, output limits and upstream stops count as succeeded',
   'usage.tokens': 'Tokens',
   'usage.throughput': 'Current throughput',
   'usage.throughputHelp':

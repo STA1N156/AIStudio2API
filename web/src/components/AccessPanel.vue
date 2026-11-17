@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { capabilities, chatModel } from '@/access/capabilities'
 import { clients, protocolNames, type Client, type Protocol, type Shell } from '@/access/clients'
@@ -393,7 +394,10 @@ function methodClass(method: string): string {
 
 <template>
   <section class="flex min-h-0 flex-1 flex-col">
-    <header class="page-x overflow-hidden border-b border-line py-4 [scrollbar-gutter:stable]">
+    <header
+      class="page-x flex items-center gap-2 overflow-hidden border-b border-line py-4 [scrollbar-gutter:stable]"
+    >
+      <MobileNavigationButton />
       <h2 class="text-xl font-semibold text-white">{{ t('section.access.title') }}</h2>
     </header>
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, onActivated, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
@@ -132,8 +133,10 @@ onActivated(() => void check(false))
       class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4 md:overflow-hidden md:[scrollbar-gutter:stable]"
     >
       <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('section.version.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('section.version.description') }}</p>
+        <div class="flex min-w-0 items-center gap-2">
+          <MobileNavigationButton />
+          <h2 class="text-xl font-semibold text-white">{{ t('section.version.title') }}</h2>
+        </div>
       </div>
     </header>
     <div

@@ -2027,7 +2027,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.otherErrors': 'Autres erreurs',
   'usage.successRate': 'Taux de réussite',
   'usage.successRateHelp':
-    'Réussies ÷ (requêtes − annulations client). Les appels d’outils, les limites de sortie atteintes et les arrêts en amont comptent comme des réussites',
+    'Réussies ÷ (requêtes − annulations client). HTTP 400, les appels d’outils, les limites de sortie atteintes et les arrêts en amont comptent comme des réussites',
   'usage.tokens': 'Jetons',
   'usage.throughput': 'Débit actuel',
   'usage.throughputHelp':

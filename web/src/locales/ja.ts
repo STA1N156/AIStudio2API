@@ -1976,7 +1976,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.otherErrors': 'その他のエラー',
   'usage.successRate': '成功率',
   'usage.successRateHelp':
-    '成功 ÷（リクエスト − クライアントによるキャンセル）。ツール呼び出し、出力上限への到達、上流での停止は成功として数えます',
+    '成功 ÷（リクエスト − クライアントによるキャンセル）。HTTP 400、ツール呼び出し、出力上限への到達、上流での停止は成功として数えます',
   'usage.tokens': 'トークン',
   'usage.throughput': '現在のスループット',
   'usage.throughputHelp': '直近 {minutes} 分間に 1 分あたり平均で完了したリクエスト数とトークン数',

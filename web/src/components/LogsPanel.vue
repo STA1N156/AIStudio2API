@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MobileNavigationButton from './MobileNavigationButton.vue'
 import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n, type TranslationKey } from '@/i18n'
 import type { AdminLog } from '@/types'
@@ -408,6 +409,7 @@ onUnmounted(() => {
     <div
       class="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-panel px-4 py-1.5"
     >
+      <MobileNavigationButton />
       <div class="flex items-center gap-2" role="group" :aria-label="t('logs.level')">
         <span class="hidden text-xs text-gray-400 sm:inline">{{ t('logs.level') }}:</span>
         <div class="flex rounded border border-line bg-canvas p-0.5">
