@@ -25,7 +25,7 @@ type errorCodeProvider interface {
 	ErrorCode() string
 }
 
-const emptyOutputMessage = "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
+const emptyOutputMessage = aistudio.EmptyModelOutputMessage
 
 type emptyOutputError struct{}
 

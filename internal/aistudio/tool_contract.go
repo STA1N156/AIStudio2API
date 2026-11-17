@@ -241,7 +241,7 @@ func (contract *toolContract) forward(ctx context.Context, source <-chan Event) 
 				}
 			}
 			if event.Kind == EventFinish && contract.required && calls == 0 && !(contract.serverSide && serverSideUsed) {
-				err = fmt.Errorf("上游未返回 required tool call")
+				err = RequiredToolCallError{}
 			}
 			if err != nil {
 				event = Event{Kind: EventError, Err: err}

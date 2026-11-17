@@ -49,6 +49,16 @@ type ContentPolicyError struct {
 	Usage *Usage
 }
 
+func (e *ContentPolicyError) HTTPStatus() int { return http.StatusBadRequest }
+
+const EmptyModelOutputMessage = "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
+
+type RequiredToolCallError struct{}
+
+func (RequiredToolCallError) Error() string     { return EmptyModelOutputMessage }
+func (RequiredToolCallError) HTTPStatus() int   { return http.StatusBadRequest }
+func (RequiredToolCallError) ErrorCode() string { return "EMPTY_MODEL_OUTPUT" }
+
 // AbnormalFinishError 表示上游以格式错误的函数调用、意外的工具调用或格式错误的响应结束且这次生成没有任何输出
 type AbnormalFinishError struct {
 	Reason  string
