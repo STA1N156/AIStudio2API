@@ -1,6 +1,7 @@
 package aistudio
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -36,8 +37,22 @@ type BidiTranslationConfig struct {
 
 // BidiTranscriptionConfig 表示实时转录模型的输入转录参数
 type BidiTranscriptionConfig struct {
-	LanguageCodes []string `json:"language_codes,omitempty"`
+	LanguageCodes    []string `json:"language_codes,omitempty"`
+	CustomVocabulary []string `json:"custom_vocabulary,omitempty"`
+	Smart            bool     `json:"smart,omitempty"`
 }
+
+// BidiContextWindow 表示 Live 会话的滑动上下文窗口，上下文达到 TriggerTokens 时缩减到 TargetTokens
+type BidiContextWindow struct {
+	TriggerTokens int64 `json:"trigger_tokens"`
+	TargetTokens  int64 `json:"target_tokens"`
+}
+
+// bidiMediaResolutions 是 Live setup 媒体分辨率的取值与上游编号
+var bidiMediaResolutions = map[string]int64{"low": 1, "medium": 2, "high": 3}
+
+// bidiThinkingLevels 是 Live setup 思考档位的取值与上游编号
+var bidiThinkingLevels = map[string]int64{"low": 1, "medium": 2, "high": 3, "minimal": 4}
 
 // BidiRequest 定义一条双向实时会话
 type BidiRequest struct {
@@ -48,6 +63,12 @@ type BidiRequest struct {
 	Translation              *BidiTranslationConfig
 	Transcription            *BidiTranscriptionConfig
 	Tools                    []FunctionDeclaration
+	SystemInstruction        string
+	Voice                    string
+	MediaResolution          string
+	ThinkingLevel            string
+	ContextWindow            *BidiContextWindow
+	GoogleSearch             bool
 	AccountID                string
 	AllowedAccountIDs        []string
 	SessionToken             string
@@ -79,6 +100,12 @@ func validateLiveVariant(request BidiRequest) error {
 	if output != "" && output != "audio" && output != "text" {
 		return fmt.Errorf("%w: live output modality %q 不可用", ErrInvalidArgument, request.OutputModality)
 	}
+	if _, ok := bidiMediaResolutions[request.MediaResolution]; request.MediaResolution != "" && !ok {
+		return fmt.Errorf("%w: media_resolution 必须是 low、medium 或 high", ErrInvalidArgument)
+	}
+	if _, ok := bidiThinkingLevels[request.ThinkingLevel]; request.ThinkingLevel != "" && !ok {
+		return fmt.Errorf("%w: thinking_level 必须是 minimal、low、medium 或 high", ErrInvalidArgument)
+	}
 	if request.variant == bidiVariantUnknown {
 		return nil
 	}
@@ -88,8 +115,14 @@ func validateLiveVariant(request BidiRequest) error {
 	if request.variant != bidiVariantTranscription && request.Transcription != nil {
 		return fmt.Errorf("%w: 模型 %s 不支持 transcription", ErrInvalidArgument, request.Model)
 	}
-	if request.variant != bidiVariantConversation && len(request.Tools) > 0 {
+	if request.variant != bidiVariantConversation && (len(request.Tools) > 0 || request.GoogleSearch) {
 		return fmt.Errorf("%w: 模型 %s 不支持 tools", ErrInvalidArgument, request.Model)
+	}
+	if request.variant != bidiVariantConversation && (request.Voice != "" || request.MediaResolution != "" || request.ThinkingLevel != "" || request.ContextWindow != nil) {
+		return fmt.Errorf("%w: 模型 %s 不支持 voice、media_resolution、thinking_level 与 context_window_compression", ErrInvalidArgument, request.Model)
+	}
+	if request.variant == bidiVariantTranscription && request.SystemInstruction != "" {
+		return fmt.Errorf("%w: 模型 %s 不支持 system_instruction", ErrInvalidArgument, request.Model)
 	}
 	switch request.variant {
 	case bidiVariantTranslation:
@@ -163,7 +196,7 @@ type BidiTranscription struct {
 type BidiEvent struct {
 	Kind          BidiEventKind      `json:"kind"`
 	Text          string             `json:"text,omitempty"`
-	Media         *Media             `json:"media,omitempty"`
+	Media         *Blob              `json:"media,omitempty"`
 	Transcription *BidiTranscription `json:"transcription,omitempty"`
 	ToolCall      *FunctionCall      `json:"tool_call,omitempty"`
 	ToolCallIDs   []string           `json:"tool_call_ids,omitempty"`
@@ -173,8 +206,9 @@ type BidiEvent struct {
 	Err           error              `json:"-"`
 }
 
-// EncodeBidiSetupRequest 编码 Live 或 Robotics 的已验证 setup 帧
+// EncodeBidiSetupRequest 编码 Live 或 Robotics 的已验证 setup 帧，系统指令按 clientSystemText 改写
 func EncodeBidiSetupRequest(request BidiRequest, runtime RequestContext) ([]byte, string, error) {
+	request.SystemInstruction = clientSystemText(request.SystemInstruction)
 	model := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
 	if model == "" {
 		return nil, "", fmt.Errorf("%w: bidi model 不能为空", ErrInvalidArgument)
@@ -206,8 +240,10 @@ func EncodeBidiSetupRequest(request BidiRequest, runtime RequestContext) ([]byte
 			configuration[14] = []any{int64(1)}
 		default:
 			configuration[14] = []any{int64(3)}
-			configuration[15] = []any{[]any{[]any{"Zephyr"}}}
-			if request.generationDefaults.ThinkingLevel {
+			configuration[15] = []any{[]any{[]any{cmp.Or(request.Voice, "Zephyr")}}}
+			if request.ThinkingLevel != "" {
+				configuration[16] = []any{int64(1), nil, nil, bidiThinkingLevels[request.ThinkingLevel]}
+			} else if request.generationDefaults.ThinkingLevel {
 				configuration[16] = []any{int64(1), nil, nil, request.generationDefaults.DefaultThinkingLevel}
 			}
 		}
@@ -218,12 +254,18 @@ func EncodeBidiSetupRequest(request BidiRequest, runtime RequestContext) ([]byte
 		return nil, "", fmt.Errorf("%w: 未识别的 bidi mode %q", ErrInvalidArgument, request.Mode)
 	}
 	if conversation {
-		configuration[17] = int64(2)
+		configuration[17] = bidiMediaResolutions[cmp.Or(request.MediaResolution, "medium")]
 	}
 	wireModel := wireModelName(model)
 	setup[0] = wireModel
 	setup[1] = configuration
 	bindingParts := []string{wireModel}
+	if request.SystemInstruction != "" {
+		// BidiGenerateContentSetup field 3 为系统指令 Content
+		setup[2] = []any{[]any{[]any{nil, request.SystemInstruction}}}
+		bindingParts = append(bindingParts, request.SystemInstruction)
+	}
+	tools := []any{}
 	if len(request.Tools) > 0 {
 		declarations := make([]any, 0, len(request.Tools))
 		for _, declaration := range request.Tools {
@@ -236,7 +278,14 @@ func EncodeBidiSetupRequest(request BidiRequest, runtime RequestContext) ([]byte
 		}
 		tool := make([]any, 2)
 		tool[1] = declarations
-		setup[3] = []any{tool}
+		tools = append(tools, tool)
+	}
+	if request.GoogleSearch {
+		// Tool field 4 为 GoogleSearch
+		tools = append(tools, []any{nil, nil, nil, []any{}})
+	}
+	if len(tools) > 0 {
+		setup[3] = tools
 	}
 	if sessionToken := strings.TrimSpace(request.SessionToken); sessionToken != "" {
 		setup[6] = []any{sessionToken}
@@ -244,13 +293,28 @@ func EncodeBidiSetupRequest(request BidiRequest, runtime RequestContext) ([]byte
 		setup[6] = []any{}
 	}
 	if conversation {
-		setup[7] = []any{int64(104857), []any{int64(52428)}}
+		window := BidiContextWindow{TriggerTokens: 104857, TargetTokens: 52428}
+		if request.ContextWindow != nil {
+			window = *request.ContextWindow
+		}
+		setup[7] = []any{window.TriggerTokens, []any{window.TargetTokens}}
 	}
 	setup[9] = []any{}
-	if request.Transcription != nil && len(request.Transcription.LanguageCodes) > 0 {
-		// AudioTranscriptionConfig field 8 为 language codes
-		transcription := make([]any, 8)
-		transcription[7] = append([]string(nil), request.Transcription.LanguageCodes...)
+	if config := request.Transcription; config != nil && (len(config.LanguageCodes) > 0 || len(config.CustomVocabulary) > 0 || config.Smart) {
+		// AudioTranscriptionConfig field 7、8、9 为 custom vocabulary、language codes 与 mode，mode 2 为 Smart transcription
+		transcription := make([]any, 9)
+		if len(config.CustomVocabulary) > 0 {
+			transcription[6] = append([]string(nil), config.CustomVocabulary...)
+		}
+		if len(config.LanguageCodes) > 0 {
+			transcription[7] = append([]string(nil), config.LanguageCodes...)
+		}
+		if config.Smart {
+			transcription[8] = int64(2)
+		}
+		for transcription[len(transcription)-1] == nil {
+			transcription = transcription[:len(transcription)-1]
+		}
 		setup[9] = transcription
 	}
 	setup[10] = []any{}
@@ -308,10 +372,7 @@ func EncodeBidiTextRequest(text string) ([]byte, string, error) {
 	}
 	wire := make([]any, 6)
 	wire[2] = []any{nil, nil, nil, nil, text}
-	body, err := json.Marshal(wire)
-	if err != nil {
-		return nil, "", fmt.Errorf("编码 bidi text: %w", err)
-	}
+	body, _ := json.Marshal(wire)
 	return body, "", nil
 }
 
@@ -332,10 +393,7 @@ func EncodeBidiMediaRequest(mimeType string, data []byte) ([]byte, string, error
 	}
 	wire := make([]any, 6)
 	wire[2] = realtimeInput
-	body, err := json.Marshal(wire)
-	if err != nil {
-		return nil, "", fmt.Errorf("编码 bidi media: %w", err)
-	}
+	body, _ := json.Marshal(wire)
 	return body, "", nil
 }
 
@@ -343,10 +401,7 @@ func EncodeBidiMediaRequest(mimeType string, data []byte) ([]byte, string, error
 func EncodeBidiMediaEndRequest() ([]byte, string, error) {
 	wire := make([]any, 6)
 	wire[2] = []any{nil, nil, int64(1)}
-	body, err := json.Marshal(wire)
-	if err != nil {
-		return nil, "", fmt.Errorf("编码 bidi media end: %w", err)
-	}
+	body, _ := json.Marshal(wire)
 	return body, "", nil
 }
 
@@ -361,7 +416,12 @@ func EncodeBidiToolResponseRequest(results []FunctionResult) ([]byte, string, er
 		if err != nil {
 			return nil, "", fmt.Errorf("%w: bidi function response content %v", ErrInvalidArgument, err)
 		}
-		functionResponses = append(functionResponses, []any{result.Name, response, result.ID})
+		entry := []any{result.Name, response, result.ID}
+		if result.WillContinue {
+			// FunctionResponse field 4 为 willContinue，官网写为 1
+			entry = append(entry, int64(1))
+		}
+		functionResponses = append(functionResponses, entry)
 	}
 	responses := make([]any, 2)
 	responses[1] = functionResponses
@@ -646,6 +706,9 @@ func parseBidiServerContent(raw json.RawMessage, evidence json.RawMessage) ([]Bi
 		if err != nil {
 			return nil, err
 		}
+		if transcription == (BidiTranscription{}) {
+			continue
+		}
 		events = append(events, BidiEvent{
 			Kind: field.kind, Text: transcription.Text, Transcription: &transcription,
 		})
@@ -692,7 +755,7 @@ func parseBidiContent(raw json.RawMessage, evidence json.RawMessage) ([]BidiEven
 	decoder := NewFrameDecoder()
 	events := make([]BidiEvent, 0, len(parts))
 	for index, partRaw := range parts {
-		decoded, err := decoder.decodePart(partRaw, fmt.Sprintf("$message[2][0][0][%d]", index), evidence)
+		decoded, err := decoder.decodePart(nil, partRaw, fmt.Sprintf("$message[2][0][0][%d]", index), evidence)
 		if err != nil {
 			return nil, withBidiMethod(err)
 		}
@@ -701,9 +764,9 @@ func parseBidiContent(raw json.RawMessage, evidence json.RawMessage) ([]BidiEven
 			case EventText:
 				events = append(events, BidiEvent{Kind: BidiEventText, Text: event.Text})
 			case EventMedia:
-				events = append(events, BidiEvent{Kind: BidiEventMedia, Media: event.Media})
+				events = append(events, BidiEvent{Kind: BidiEventMedia, Media: event.InlineData})
 			case EventToolCall:
-				events = append(events, BidiEvent{Kind: BidiEventToolCall, ToolCall: event.ToolCall})
+				events = append(events, BidiEvent{Kind: BidiEventToolCall, ToolCall: event.FunctionCall})
 			default:
 				encoded, marshalErr := json.Marshal(event)
 				if marshalErr != nil {
@@ -721,11 +784,13 @@ func parseBidiTranscription(raw json.RawMessage, evidence json.RawMessage) (Bidi
 	if err != nil {
 		return BidiTranscription{}, withBidiMethod(err)
 	}
-	text, err := rawString(rawAt(values, 0), "$transcription[0]", evidence)
-	if err != nil {
-		return BidiTranscription{}, withBidiMethod(err)
+	transcription := BidiTranscription{}
+	if text := rawAt(values, 0); !isJSONNull(text) {
+		transcription.Text, err = rawString(text, "$transcription[0]", evidence)
+		if err != nil {
+			return BidiTranscription{}, withBidiMethod(err)
+		}
 	}
-	transcription := BidiTranscription{Text: text}
 	if finished := rawAt(values, 1); !isJSONNull(finished) {
 		transcription.Finished, err = rawBool(finished, "$transcription[1]", evidence)
 		if err != nil {

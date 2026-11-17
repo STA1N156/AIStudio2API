@@ -1,9 +1,7 @@
 package aistudio
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 )
@@ -23,17 +21,16 @@ const (
 )
 
 var tieredRPCMethods = map[string]struct{}{
-	"GenerateContent":           {},
-	"CountTokens":               {},
-	"ProxyUnaryCall":            {},
-	"CodeAssistantOffline":      {},
-	"CancelInteraction":         {},
-	"CreateInteraction":         {},
-	"CreateInteractionStream":   {},
-	"GetInteractionStream":      {},
-	"GenerateVideo":             {},
-	"GetGenerateVideoOperation": {},
-	"StreamExtractVideoFrames":  {},
+	"GenerateContent":          {},
+	"CountTokens":              {},
+	"ProxyUnaryCall":           {},
+	"CodeAssistantOffline":     {},
+	"CancelInteraction":        {},
+	"CreateInteraction":        {},
+	"CreateDecision":           {},
+	"CreateInteractionStream":  {},
+	"GetInteractionStream":     {},
+	"StreamExtractVideoFrames": {},
 }
 
 // String 返回账户权益的稳定显示名称
@@ -64,29 +61,11 @@ func (tier BenefitTier) HeaderValue() string {
 	}
 }
 
-// BenefitTierForAccount 读取并缓存指定账户的官网权益等级
-func (c *Client) BenefitTierForAccount(ctx context.Context, accountID string) (BenefitTier, error) {
-	accountID = strings.TrimSpace(accountID)
-	if accountID == "" {
-		return BenefitTierFree, fmt.Errorf("GetAiStudioBenefitTier 缺少账户 ID")
-	}
-	response, err := c.do(ctx, "GetAiStudioBenefitTier", accountID, "", []byte("[]"), false)
-	if err != nil {
-		return BenefitTierFree, err
-	}
-	defer response.Body.Close()
-	raw, err := io.ReadAll(response.Body)
-	if err != nil {
-		return BenefitTierFree, fmt.Errorf("读取 GetAiStudioBenefitTier: %w", err)
-	}
-	tier, err := decodeBenefitTier(raw)
-	if err != nil {
-		return BenefitTierFree, err
-	}
+// setBenefitTier 记录账户的权益等级
+func (c *Client) setBenefitTier(accountID string, tier BenefitTier) {
 	c.tierMu.Lock()
 	c.tiers[accountID] = tier
 	c.tierMu.Unlock()
-	return tier, nil
 }
 
 func decodeBenefitTier(raw []byte) (BenefitTier, error) {
@@ -118,9 +97,6 @@ func decodeBenefitTier(raw []byte) (BenefitTier, error) {
 }
 
 func (c *Client) applyBenefitTier(method string, accountID string, header http.Header) {
-	if header == nil {
-		return
-	}
 	if _, ok := tieredRPCMethods[method]; !ok {
 		return
 	}

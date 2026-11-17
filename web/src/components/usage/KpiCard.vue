@@ -13,14 +13,14 @@ const props = defineProps<{
   delta?:
     | { text: string; tone: 'good' | 'bad' | 'neutral'; direction: 'up' | 'down'; help: string }
     | undefined
-  spark?: number[] | undefined
-  color?: string | undefined
+  spark: number[]
+  color: string
   tone?: string | undefined
 }>()
 
 // sparkPath 把序列归一化为 100×28 的折线路径
 const sparkPath = computed(() => {
-  const values = props.spark ?? []
+  const values = props.spark
   if (values.length < 2) return ''
   const high = Math.max(...values)
   const low = Math.min(...values)
@@ -37,10 +37,6 @@ const deltaClass = computed(() => {
   if (props.delta === undefined) return ''
   return { good: 'text-green-400', bad: 'text-red-400', neutral: 'text-gray-500' }[props.delta.tone]
 })
-// note 是补充行的完整文本
-const note = computed(() =>
-  props.details.map((detail) => `${detail.label} ${detail.value}`.trim()).join(' · '),
-)
 </script>
 
 <template>
@@ -71,17 +67,13 @@ const note = computed(() =>
       :class="tone ?? 'text-white'"
       >{{ value }}</data
     >
-    <p v-tooltip="note" class="mt-1 flex flex-wrap gap-x-2 text-xs leading-5 text-gray-500">
-      <span
-        v-for="(detail, index) in details"
-        :key="detail.label"
-        class="inline-flex items-baseline gap-1 whitespace-nowrap"
-      >
-        <span v-if="index > 0" aria-hidden="true">·</span>{{ detail.label }}
+    <p class="mt-1 text-xs text-gray-500">
+      <template v-for="(detail, index) in details" :key="detail.label">
+        <span v-if="index > 0" aria-hidden="true"> · </span>{{ detail.label }}
         <span v-if="detail.value" class="tabular-nums" :class="detail.tone ?? 'text-gray-300'">{{
           detail.value
         }}</span>
-      </span>
+      </template>
     </p>
     <svg
       v-if="sparkPath"
@@ -93,7 +85,7 @@ const note = computed(() =>
       <path
         :d="sparkPath"
         fill="none"
-        :stroke="color ?? '#60a5fa'"
+        :stroke="color"
         stroke-width="1.5"
         vector-effect="non-scaling-stroke"
       />

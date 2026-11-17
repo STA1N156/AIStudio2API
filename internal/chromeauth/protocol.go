@@ -3,12 +3,10 @@ package chromeauth
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/hmac"
+	"crypto/hpke"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -19,11 +17,16 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
-	"github.com/bogdanfinn/tls-client/profiles"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
 // ErrCredentialsRejected 表示上游已拒绝保存的 Chrome 续签材料
@@ -38,8 +41,13 @@ func multiloginStatusError(phase string, statusCode int, status string) error {
 	return err
 }
 
+// multiloginURL 是 OAuthMultilogin 的地址
+var multiloginURL = "https://accounts.google.com/oauth/multilogin?source=ChromiumAccountReconcilorDice&reuseCookies=0"
+
+// gaiaURL 是解析 DBSC 相对刷新地址的 Gaia 地址
+var gaiaURL = &url.URL{Scheme: "https", Host: "accounts.google.com", Path: "/"}
+
 const (
-	multiloginURL     = "https://accounts.google.com/oauth/multilogin?source=ChromiumAccountReconcilorDice&reuseCookies=0"
 	oauthClientID     = "77185425430.apps.googleusercontent.com"
 	assertionAudience = "https://accounts.google.com/accountmanager"
 	assertionSentinel = "DBSC_CHALLENGE_IF_REQUIRED"
@@ -66,110 +74,248 @@ type multiloginResponse struct {
 			Challenge string `json:"challenge"`
 		} `json:"token_binding_retry_response"`
 	} `json:"failed_accounts"`
+	BoundSessions []struct {
+		IsDeviceBound bool   `json:"is_device_bound"`
+		Domain        string `json:"domain"`
+		Payload       *struct {
+			SessionID   string `json:"session_identifier"`
+			RefreshURL  string `json:"refresh_url"`
+			Credentials []struct {
+				Name string `json:"name"`
+			} `json:"credentials"`
+		} `json:"register_session_payload"`
+	} `json:"device_bound_session_info"`
+}
+
+// googleBoundSession 返回响应为 google.com 登记的 DBSC 会话，相对刷新地址按 Gaia 地址解析
+func (response multiloginResponse) googleBoundSession() *aistudio.BoundSession {
+	for _, session := range response.BoundSessions {
+		if !session.IsDeviceBound || session.Domain != "GOOGLE_COM" || session.Payload == nil {
+			continue
+		}
+		refreshURL, err := url.Parse(session.Payload.RefreshURL)
+		if err != nil {
+			return nil
+		}
+		bound := &aistudio.BoundSession{ID: session.Payload.SessionID, RefreshURL: gaiaURL.ResolveReference(refreshURL).String()}
+		for _, credential := range session.Payload.Credentials {
+			bound.Credentials = append(bound.Credentials, credential.Name)
+		}
+		return bound
+	}
+	return nil
 }
 
 type deviceBindingKey interface {
-	PublicKey() (*ecdsa.PublicKey, []byte, error)
+	PublicKey() ([]byte, error)
 	SignSHA256([]byte) ([]byte, error)
 	Close()
 }
 
-func fetchGoogleCookies(ctx context.Context, gaiaID string, token string, wrappedKey []byte, proxyURL string) ([]multiloginCookie, error) {
-	bindingKey, err := openDeviceBindingKey(wrappedKey)
+// multiloginHeaderOrder 是 Chrome GaiaAuthFetcher 发出 OAuthMultilogin 的请求头顺序
+var multiloginHeaderOrder = []string{"content-length", "authorization", "content-type", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "user-agent", "accept-encoding", "accept-language", "priority"}
+
+// chromeIdentity 是本机 Chrome profile 发出 Gaia 请求时的 User-Agent 与 Accept-Language
+type chromeIdentity struct {
+	userAgent      string
+	acceptLanguage string
+}
+
+// readChromeIdentity 按 User Data 的 Last Version 与 profile 的语言设置生成 Chrome 的 User-Agent 与 Accept-Language
+func readChromeIdentity(chromeRoot string, profile string) (chromeIdentity, error) {
+	version, err := os.ReadFile(filepath.Join(chromeRoot, "Last Version"))
 	if err != nil {
-		return nil, err
+		return chromeIdentity{}, fmt.Errorf("读取 Chrome 版本: %w", err)
 	}
-	defer bindingKey.Close()
-	publicKey, spki, err := bindingKey.PublicKey()
+	major, _, _ := strings.Cut(strings.TrimSpace(string(version)), ".")
+	return chromeIdentity{
+		userAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + ".0.0.0 Safari/537.36",
+		acceptLanguage: acceptLanguageHeader(profileLanguages(chromeRoot, profile)),
+	}, nil
+}
+
+// profileLanguages 返回 profile 的 intl.accept_languages，等于默认值未写入时返回 intl.selected_languages
+func profileLanguages(chromeRoot string, profile string) string {
+	data, err := os.ReadFile(filepath.Join(chromeRoot, profile, "Preferences"))
 	if err != nil {
-		return nil, err
+		return ""
 	}
-	client, err := newOAuthClient(proxyURL)
+	var preferences struct {
+		Intl struct {
+			AcceptLanguages   string `json:"accept_languages"`
+			SelectedLanguages string `json:"selected_languages"`
+		} `json:"intl"`
+	}
+	if json.Unmarshal(data, &preferences) != nil {
+		return ""
+	}
+	if strings.TrimSpace(preferences.Intl.AcceptLanguages) != "" {
+		return preferences.Intl.AcceptLanguages
+	}
+	return preferences.Intl.SelectedLanguages
+}
+
+// acceptLanguageHeader 按 Chromium HttpUtil 的 ExpandLanguageList 与 GenerateAcceptLanguageHeader 把语言设置展开为 Accept-Language
+func acceptLanguageHeader(languages string) string {
+	items := strings.Split(languages, ",")
+	primary := func(language string) string {
+		base, _, _ := strings.Cut(language, "-")
+		return strings.TrimSpace(base)
+	}
+	var expanded []string
+	add := func(language string) {
+		if !slices.Contains(expanded, language) {
+			expanded = append(expanded, language)
+		}
+	}
+	for index, item := range items {
+		language := strings.TrimSpace(item)
+		add(language)
+		base := primary(language)
+		if base == "x" || base == "i" {
+			continue
+		}
+		if index+1 == len(items) || primary(items[index+1]) != base {
+			add(base)
+		}
+	}
+	var header strings.Builder
+	quality := 10
+	for index, language := range expanded {
+		if index == 0 {
+			header.WriteString(language)
+		} else {
+			fmt.Fprintf(&header, ",%s;q=0.%d", language, quality)
+		}
+		if quality > 1 {
+			quality--
+		}
+	}
+	return header.String()
+}
+
+// fetchGoogleCookies 用 refresh token 经 OAuthMultilogin 取得 Google Cookie，有设备绑定密钥时走 DBSC 挑战与 HPKE 解密，并返回 google.com 的 DBSC 会话登记
+func fetchGoogleCookies(ctx context.Context, identity chromeIdentity, gaiaID string, token string, wrappedKey []byte, proxyURL string) ([]multiloginCookie, *aistudio.BoundSession, error) {
+	client, err := newOAuthClient(proxyURL, chromeIdle)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer client.CloseIdleConnections()
+	if len(wrappedKey) == 0 {
+		cookies, err := fetchBearerCookies(ctx, client, identity, gaiaID, token)
+		return cookies, nil, err
+	}
+	return fetchBoundCookies(ctx, client, identity, gaiaID, token, wrappedKey)
+}
 
-	firstStatus, first, err := requestMultilogin(ctx, client, gaiaID, token, assertionSentinel)
+// fetchBearerCookies 为没有设备绑定的 token 请求一次 OAuthMultilogin，返回明文 Cookie
+func fetchBearerCookies(ctx context.Context, client tls_client.HttpClient, identity chromeIdentity, gaiaID string, token string) ([]multiloginCookie, error) {
+	status, response, err := requestMultilogin(ctx, client, identity, gaiaID, token, "")
 	if err != nil {
 		return nil, err
+	}
+	if status != http.StatusOK || response.Status != "OK" {
+		return nil, multiloginStatusError("bearer", status, response.Status)
+	}
+	if err := checkMultiloginCookies(response.Cookies); err != nil {
+		return nil, err
+	}
+	return response.Cookies, nil
+}
+
+// fetchBoundCookies 为设备绑定的 token 取得 DBSC challenge、以设备密钥签发 assertion，再解密服务端返回的 Cookie
+func fetchBoundCookies(ctx context.Context, client tls_client.HttpClient, identity chromeIdentity, gaiaID string, token string, wrappedKey []byte) ([]multiloginCookie, *aistudio.BoundSession, error) {
+	bindingKey, err := openDeviceBindingKey(wrappedKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer bindingKey.Close()
+	spki, err := bindingKey.PublicKey()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	firstStatus, first, err := requestMultilogin(ctx, client, identity, gaiaID, token, assertionSentinel)
+	if err != nil {
+		return nil, nil, err
 	}
 	challenge := findChallenge(first)
 	if first.Status != "RETRY" || challenge == "" {
-		return nil, multiloginStatusError("challenge", firstStatus, first.Status)
+		return nil, nil, multiloginStatusError("challenge", firstStatus, first.Status)
 	}
 
 	ephemeralPrivateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("生成 HPKE 临时密钥: %w", err)
+		return nil, nil, fmt.Errorf("生成 HPKE 临时密钥: %w", err)
 	}
-	assertion, err := createAssertion(bindingKey, publicKey, spki, challenge, ephemeralPrivateKey.PublicKey().Bytes())
+	assertion, err := createAssertion(bindingKey, spki, challenge, ephemeralPrivateKey.PublicKey().Bytes())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	secondStatus, second, err := requestMultilogin(ctx, client, gaiaID, token, assertion)
+	secondStatus, second, err := requestMultilogin(ctx, client, identity, gaiaID, token, assertion)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if secondStatus != http.StatusOK || second.Status != "OK" {
-		return nil, multiloginStatusError("assertion", secondStatus, second.Status)
+		return nil, nil, multiloginStatusError("assertion", secondStatus, second.Status)
 	}
 	if len(second.Directed) == 0 || bytes.Equal(second.Directed, []byte("null")) {
-		return nil, fmt.Errorf("OAuthMultilogin 响应缺少 token_binding_directed_response")
+		return nil, nil, fmt.Errorf("OAuthMultilogin 响应缺少 token_binding_directed_response")
 	}
-	if len(second.Cookies) == 0 {
-		return nil, fmt.Errorf("OAuthMultilogin 响应缺少 Cookie")
+	if err := checkMultiloginCookies(second.Cookies); err != nil {
+		return nil, nil, err
 	}
-
-	names := make(map[string]struct{}, len(second.Cookies))
 	for index := range second.Cookies {
-		cookie := &second.Cookies[index]
-		if cookie.Name == "" || cookie.Value == "" {
-			return nil, fmt.Errorf("OAuthMultilogin Cookie 格式异常")
+		if second.Cookies[index].Value, err = hpkeOpen(ephemeralPrivateKey, second.Cookies[index].Value); err != nil {
+			return nil, nil, err
 		}
-		cookie.Value, err = hpkeOpen(ephemeralPrivateKey, cookie.Value)
-		if err != nil {
-			return nil, err
+	}
+	return second.Cookies, second.googleBoundSession(), nil
+}
+
+// checkMultiloginCookies 核对 OAuthMultilogin 返回的 Cookie 带有名称、值、域，并包含 SAPISID 与 __Secure-1PSID
+func checkMultiloginCookies(cookies []multiloginCookie) error {
+	if len(cookies) == 0 {
+		return fmt.Errorf("OAuthMultilogin 响应缺少 Cookie")
+	}
+	names := make(map[string]struct{}, len(cookies))
+	for _, cookie := range cookies {
+		if cookie.Name == "" || cookie.Value == "" {
+			return fmt.Errorf("OAuthMultilogin Cookie 格式异常")
 		}
 		if cookie.Domain == "" && (cookie.Host == "" || strings.HasPrefix(cookie.Host, ".")) {
-			return nil, fmt.Errorf("OAuthMultilogin Cookie 域格式异常")
+			return fmt.Errorf("OAuthMultilogin Cookie 域格式异常")
 		}
 		names[cookie.Name] = struct{}{}
 	}
 	for _, required := range []string{"SAPISID", "__Secure-1PSID"} {
 		if _, ok := names[required]; !ok {
-			return nil, fmt.Errorf("OAuthMultilogin 缺少核心 Cookie: %s", required)
+			return fmt.Errorf("OAuthMultilogin 缺少核心 Cookie: %s", required)
 		}
 	}
-	return second.Cookies, nil
+	return nil
 }
 
-func newOAuthClient(proxyURL string) (tls_client.HttpClient, error) {
-	options := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(30),
-		tls_client.WithClientProfile(profiles.Chrome_146),
-		tls_client.WithNotFollowRedirects(),
-		tls_client.WithCookieJar(tls_client.NewCookieJar()),
+// requestMultilogin 按 Chrome 的请求头发送一次 OAuthMultilogin：带 assertion 时用 MultiOAuth 头，没有设备绑定的 token 用 MultiBearer 头
+func requestMultilogin(ctx context.Context, client tls_client.HttpClient, identity chromeIdentity, gaiaID string, token string, assertion string) (int, multiloginResponse, error) {
+	authorization := "MultiBearer " + token + ":" + gaiaID
+	if assertion != "" {
+		authorization = "MultiOAuth " + encodeMultiOAuthHeader(gaiaID, token, assertion)
 	}
-	if proxyURL != "" {
-		options = append(options, tls_client.WithProxyUrl(proxyURL))
-	}
-	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
-	if err != nil {
-		return nil, fmt.Errorf("创建 OAuth HTTP 客户端: %w", err)
-	}
-	return client, nil
-}
-
-func requestMultilogin(ctx context.Context, client tls_client.HttpClient, gaiaID string, token string, assertion string) (int, multiloginResponse, error) {
-	authorization := encodeMultiOAuthHeader(gaiaID, token, assertion)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, multiloginURL, strings.NewReader(" "))
 	if err != nil {
 		return 0, multiloginResponse{}, fmt.Errorf("创建 OAuthMultilogin 请求: %w", err)
 	}
-	request.Header.Set("Authorization", "MultiOAuth "+authorization)
+	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Sec-Fetch-Site", "none")
+	request.Header.Set("Sec-Fetch-Mode", "no-cors")
+	request.Header.Set("Sec-Fetch-Dest", "empty")
+	request.Header.Set("User-Agent", identity.userAgent)
+	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	request.Header.Set("Accept-Language", identity.acceptLanguage)
+	request.Header.Set("Priority", "u=4, i")
+	request.Header[http.HeaderOrderKey] = multiloginHeaderOrder
 	response, err := client.Do(request)
 	if err != nil {
 		return 0, multiloginResponse{}, fmt.Errorf("OAuthMultilogin 请求失败: %w", err)
@@ -224,7 +370,7 @@ func createTinkHPKEKeyset(publicKey []byte) []byte {
 	return appendBytesField(keyset, 2, key)
 }
 
-func createAssertion(bindingKey deviceBindingKey, publicKey *ecdsa.PublicKey, spki []byte, challenge string, ephemeralPublicKey []byte) (string, error) {
+func createAssertion(bindingKey deviceBindingKey, spki []byte, challenge string, ephemeralPublicKey []byte) (string, error) {
 	header := struct {
 		Algorithm string `json:"alg"`
 		Type      string `json:"typ"`
@@ -258,96 +404,23 @@ func createAssertion(bindingKey deviceBindingKey, publicKey *ecdsa.PublicKey, sp
 	if err != nil {
 		return "", err
 	}
-	if len(signature) != 64 {
-		return "", fmt.Errorf("NCrypt ECDSA 签名长度异常")
-	}
-	digest := sha256.Sum256([]byte(signingInput))
-	r := new(big.Int).SetBytes(signature[:32])
-	s := new(big.Int).SetBytes(signature[32:])
-	if !ecdsa.Verify(publicKey, digest[:], r, s) {
-		return "", fmt.Errorf("NCrypt ECDSA 签名校验失败")
-	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
 func hpkeOpen(privateKey *ecdh.PrivateKey, encodedValue string) (string, error) {
 	encrypted, err := base64.RawURLEncoding.DecodeString(encodedValue)
-	if err != nil || len(encrypted) <= 48 {
+	if err != nil {
 		return "", fmt.Errorf("OAuthMultilogin Cookie 密文格式异常")
 	}
-	encapsulatedKey := encrypted[:32]
-	senderPublicKey, err := ecdh.X25519().NewPublicKey(encapsulatedKey)
+	recipientKey, err := hpke.NewDHKEMPrivateKey(privateKey)
 	if err != nil {
-		return "", fmt.Errorf("解析 HPKE 封装密钥: %w", err)
+		return "", fmt.Errorf("创建 HPKE 接收密钥: %w", err)
 	}
-	sharedDH, err := privateKey.ECDH(senderPublicKey)
-	if err != nil {
-		return "", fmt.Errorf("计算 HPKE 共享密钥: %w", err)
-	}
-	kemSuite := append([]byte("KEM"), 0, 0x20)
-	hpkeSuite := append([]byte("HPKE"), 0, 0x20, 0, 1, 0, 1)
-	eaePRK := labeledExtract(nil, kemSuite, []byte("eae_prk"), sharedDH)
-	kemContext := append(append([]byte{}, encapsulatedKey...), privateKey.PublicKey().Bytes()...)
-	sharedSecret := labeledExpand(eaePRK, kemSuite, []byte("shared_secret"), kemContext, 32)
-	pskIDHash := labeledExtract(nil, hpkeSuite, []byte("psk_id_hash"), nil)
-	infoHash := labeledExtract(nil, hpkeSuite, []byte("info_hash"), nil)
-	keyScheduleContext := append(append([]byte{0}, pskIDHash...), infoHash...)
-	secret := labeledExtract(sharedSecret, hpkeSuite, []byte("secret"), nil)
-	key := labeledExpand(secret, hpkeSuite, []byte("key"), keyScheduleContext, 16)
-	nonce := labeledExpand(secret, hpkeSuite, []byte("base_nonce"), keyScheduleContext, 12)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", fmt.Errorf("创建 HPKE AES 解密器: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("创建 HPKE GCM 解密器: %w", err)
-	}
-	plaintext, err := gcm.Open(nil, nonce, encrypted[32:], []byte{})
+	plaintext, err := hpke.Open(recipientKey, hpke.HKDFSHA256(), hpke.AES128GCM(), nil, encrypted)
 	if err != nil {
 		return "", fmt.Errorf("OAuthMultilogin Cookie 解密失败")
 	}
 	return string(plaintext), nil
-}
-
-func labeledExtract(salt []byte, suite []byte, label []byte, input []byte) []byte {
-	material := append([]byte("HPKE-v1"), suite...)
-	material = append(material, label...)
-	material = append(material, input...)
-	return hkdfExtract(salt, material)
-}
-
-func labeledExpand(key []byte, suite []byte, label []byte, info []byte, length int) []byte {
-	labeledInfo := make([]byte, 2)
-	binary.BigEndian.PutUint16(labeledInfo, uint16(length))
-	labeledInfo = append(labeledInfo, []byte("HPKE-v1")...)
-	labeledInfo = append(labeledInfo, suite...)
-	labeledInfo = append(labeledInfo, label...)
-	labeledInfo = append(labeledInfo, info...)
-	return hkdfExpand(key, labeledInfo, length)
-}
-
-func hkdfExtract(salt []byte, input []byte) []byte {
-	if len(salt) == 0 {
-		salt = make([]byte, sha256.Size)
-	}
-	hash := hmac.New(sha256.New, salt)
-	hash.Write(input)
-	return hash.Sum(nil)
-}
-
-func hkdfExpand(key []byte, info []byte, length int) []byte {
-	result := make([]byte, 0, length)
-	block := []byte(nil)
-	for counter := byte(1); len(result) < length; counter++ {
-		hash := hmac.New(sha256.New, key)
-		hash.Write(block)
-		hash.Write(info)
-		hash.Write([]byte{counter})
-		block = hash.Sum(nil)
-		result = append(result, block...)
-	}
-	return result[:length]
 }
 
 func appendBytesField(output []byte, number int, value []byte) []byte {
@@ -369,19 +442,13 @@ func appendVarint(output []byte, value uint64) []byte {
 	return append(output, byte(value))
 }
 
-func parsePublicKeyBlob(blob []byte) (*ecdsa.PublicKey, []byte, error) {
+func parsePublicKeyBlob(blob []byte) ([]byte, error) {
 	if len(blob) != 72 || binary.LittleEndian.Uint32(blob[4:8]) != 32 {
-		return nil, nil, fmt.Errorf("NCrypt ECDSA 公钥格式异常")
+		return nil, fmt.Errorf("NCrypt ECDSA 公钥格式异常")
 	}
-	x := new(big.Int).SetBytes(blob[8:40])
-	y := new(big.Int).SetBytes(blob[40:72])
-	if !elliptic.P256().IsOnCurve(x, y) {
-		return nil, nil, fmt.Errorf("NCrypt ECDSA 公钥曲线异常")
-	}
-	publicKey := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
-	spki, err := x509.MarshalPKIXPublicKey(publicKey)
+	spki, err := x509.MarshalPKIXPublicKey(&ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(blob[8:40]), Y: new(big.Int).SetBytes(blob[40:72])})
 	if err != nil {
-		return nil, nil, fmt.Errorf("编码 NCrypt ECDSA 公钥: %w", err)
+		return nil, fmt.Errorf("编码 NCrypt ECDSA 公钥: %w", err)
 	}
-	return publicKey, spki, nil
+	return spki, nil
 }

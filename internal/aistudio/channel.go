@@ -1,7 +1,9 @@
 package aistudio
 
 import (
+	"context"
 	"iter"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -43,15 +45,112 @@ func (p *AccountPool) SetUpstreamChannels(channels []Channel) {
 	p.notifyLocked()
 }
 
+// SetModelChannels 设置模型限定使用的上游通道，键为模型 ID
+func (p *AccountPool) SetModelChannels(channels map[string]Channel) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.modelChannels = maps.Clone(channels)
+	p.notifyLocked()
+}
+
+// SetModelAccounts 设置模型可用的账户 ID，未列出的模型可用全部账户
+func (p *AccountPool) SetModelAccounts(accounts map[string][]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.modelAccounts = maps.Clone(accounts)
+	p.notifyLocked()
+}
+
+// SetAccountOrder 设置 fill-first 依次使用的账户 ID
+func (p *AccountPool) SetAccountOrder(accountIDs []string) {
+	order := make(map[string]int, len(accountIDs))
+	for rank, accountID := range accountIDs {
+		order[accountID] = rank
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.accountOrder = order
+	p.orderedIndices = nil
+	p.notifyLocked()
+}
+
+// apiKeyContextKey 是请求上下文中所用 API key 的键
+type apiKeyContextKey struct{}
+
+// ContextWithAPIKey 返回带有请求所用 API key 的上下文，账户池只在该 key 绑定的账户中选号
+func ContextWithAPIKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, apiKeyContextKey{}, key)
+}
+
+// accountContextKey 是请求上下文中指定账户的键
+type accountContextKey struct{}
+
+// ContextWithAccount 返回带有请求指定账户的上下文，账户池只用该账户
+func ContextWithAccount(ctx context.Context, accountID string) context.Context {
+	return context.WithValue(ctx, accountContextKey{}, accountID)
+}
+
+// contextAccount 返回请求上下文中指定的账户 ID，没有指定时为空
+func contextAccount(ctx context.Context) string {
+	accountID, _ := ctx.Value(accountContextKey{}).(string)
+	return accountID
+}
+
+// ContextWithSelectionScope 返回带有 source 中所用 API key 与指定账户的 ctx，供跨请求的操作沿用发起请求的选号范围
+func ContextWithSelectionScope(ctx, source context.Context) context.Context {
+	if key, ok := source.Value(apiKeyContextKey{}).(string); ok {
+		ctx = ContextWithAPIKey(ctx, key)
+	}
+	if accountID := contextAccount(source); accountID != "" {
+		ctx = ContextWithAccount(ctx, accountID)
+	}
+	return ctx
+}
+
+// SetAPIKeyAccounts 设置各 API key 可用的账户 ID，未列出的 key 可用全部账户
+func (p *AccountPool) SetAPIKeyAccounts(accounts map[string][]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.apiKeyAccounts = maps.Clone(accounts)
+	p.notifyLocked()
+}
+
+// scopedSelection 把请求指定的账户、所用 API key 与模型绑定的账户并入选择，指定账户与绑定资源的选择不受模型绑定限制
+func (p *AccountPool) scopedSelection(ctx context.Context, selection AccountSelection) AccountSelection {
+	if selection.AccountID == "" {
+		selection.AccountID = contextAccount(ctx)
+	}
+	key, _ := ctx.Value(apiKeyContextKey{}).(string)
+	p.mu.Lock()
+	keyScope, keyBound := p.apiKeyAccounts[key]
+	modelScope, modelBound := p.modelAccounts[strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")]
+	p.mu.Unlock()
+	if keyBound {
+		selection.AllowedAccountIDs = narrowedAccounts(selection.AllowedAccountIDs, keyScope)
+	}
+	if modelBound && selection.AccountID == "" && selection.ResourceID == "" {
+		selection.AllowedAccountIDs = narrowedAccounts(selection.AllowedAccountIDs, modelScope)
+	}
+	return selection
+}
+
+// narrowedAccounts 返回 allowed 中属于 scope 的账户，allowed 为 nil 时返回 scope
+func narrowedAccounts(allowed []string, scope []string) []string {
+	if allowed == nil {
+		return scope
+	}
+	return slices.DeleteFunc(slices.Clone(allowed), func(id string) bool { return !slices.Contains(scope, id) })
+}
+
 // SetBuildCatalog 保存账户 Build 代理返回的 Gemini API 模型目录
 func (p *AccountPool) SetBuildCatalog(accountID string, models []Model) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	account := p.byID[strings.TrimSpace(accountID)]
+	account := p.byID[accountID]
 	if account == nil {
 		return ErrAccountNotFound
 	}
-	account.buildModels = cloneAccountModels(models)
+	account.buildModels = cloneModels(models)
 	p.notifyLocked()
 	return nil
 }
@@ -108,35 +207,42 @@ func generationChannelSelection(selection AccountSelection) bool {
 }
 
 // buildMethods 表示经 Build 代理调用、只服务 Playground 目录没有的模型的上游方法
-var buildMethods = []string{"embedContent", "bidiGenerateContent", "bidiGenerateMusic"}
+var buildMethods = []string{"embedContent", "bidiGenerateContent", "bidiGenerateMusic", "countTokens"}
 
-// buildMethodSelection 判断选择是否为 embedding 或实时方法，这类选择的 Build 组合只服务 Build 独有模型
+// buildMethodSelection 判断选择是否为 embedding、实时或计数方法，这类选择的 Build 组合只服务 Build 独有模型
 func buildMethodSelection(selection AccountSelection) bool {
 	return strings.TrimSpace(selection.ModelID) != "" && slices.Contains(buildMethods, selection.Method) &&
 		strings.TrimSpace(selection.Capability) == "" && !selection.PlaygroundOnly
 }
 
-// selectionChannelsLocked 返回选择可使用的通道顺序，优先通道排在首位；-build 模型只使用写代码助手，embedding 只使用 Build，实时方法依次尝试 Playground 与 Build，其余非生成请求只使用 Playground RPC
+// selectionChannelsLocked 返回选择可使用的通道顺序，优先通道排在首位，限定通道的模型只使用该通道
 func (p *AccountPool) selectionChannelsLocked(selection AccountSelection) []Channel {
 	if p.assistantModelLocked(selection.ModelID) {
 		return []Channel{ChannelAssistant}
 	}
 	if !generationChannelSelection(selection) {
 		if buildMethodSelection(selection) && p.channelEnabledLocked(ChannelBuild) {
-			if selection.Method == "embedContent" {
+			if selection.Method == "embedContent" || selection.Channel == ChannelBuild {
 				return []Channel{ChannelBuild}
 			}
 			return []Channel{ChannelPlayground, ChannelBuild}
 		}
 		return []Channel{ChannelPlayground}
 	}
+	limited, restricted := p.modelChannels[strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")]
 	if selection.Channel != "" {
-		if p.channelEnabledLocked(selection.Channel) {
+		if p.channelEnabledLocked(selection.Channel) && (!restricted || limited == selection.Channel) {
 			return []Channel{selection.Channel}
 		}
 		return nil
 	}
 	channels := p.enabledChannelsLocked()
+	if restricted {
+		if slices.Contains(channels, limited) {
+			return []Channel{limited}
+		}
+		return nil
+	}
 	if selection.PreferredChannel == "" || !slices.Contains(channels, selection.PreferredChannel) {
 		return channels
 	}
@@ -156,7 +262,7 @@ func (p *AccountPool) preferredChannelOpenLocked(account *Account, selection Acc
 		!p.channelSupportsLocked(account, preferred, selection) {
 		return false
 	}
-	_, cooling := accountCooldown(account, ChannelCooldownScope(preferred, selectionAccessScope(selection)), now)
+	_, cooling := selectionCooldown(account, ChannelCooldownScope(preferred, selectionAccessScope(selection)), selection, now)
 	return !cooling
 }
 
@@ -176,7 +282,8 @@ func (p *AccountPool) channelSupportsLocked(account *Account, channel Channel, s
 		return accountSupportsSelection(account, selection)
 	case ChannelBuild:
 		if buildMethodSelection(selection) {
-			return p.channelEnabledLocked(ChannelBuild) && p.buildSupportsMethodLocked(account, selection.ModelID, selection.Method)
+			return p.channelEnabledLocked(ChannelBuild) && (p.buildSupportsMethodLocked(account, selection.ModelID, selection.Method) ||
+				selection.Channel == ChannelBuild && buildCatalogHasMethod(account, selection.ModelID, selection.Method))
 		}
 		return generationChannelSelection(selection) && p.channelEnabledLocked(ChannelBuild) &&
 			p.buildSupportsModelLocked(account, selection.ModelID, selection.anyTier)
@@ -201,30 +308,30 @@ func (p *AccountPool) accountSupportsChannelsLocked(account *Account, selection 
 	return false
 }
 
-// accountChannelCooldownLocked 返回账户全部支持通道都冷却时的最早恢复时间
-func (p *AccountPool) accountChannelCooldownLocked(account *Account, selection AccountSelection, now time.Time) (time.Time, bool) {
+// accountChannelCooldownLocked 返回账户全部支持通道都冷却时最早恢复的冷却
+func (p *AccountPool) accountChannelCooldownLocked(account *Account, selection AccountSelection, now time.Time) (CooldownState, bool) {
 	return p.accountChannelsCooldownLocked(account, selection, now, p.selectionChannelsLocked(selection))
 }
 
-func (p *AccountPool) accountChannelsCooldownLocked(account *Account, selection AccountSelection, now time.Time, channels []Channel) (time.Time, bool) {
+func (p *AccountPool) accountChannelsCooldownLocked(account *Account, selection AccountSelection, now time.Time, channels []Channel) (CooldownState, bool) {
 	scope := selectionAccessScope(selection)
-	var earliest time.Time
+	var earliest CooldownState
 	for _, channel := range channels {
 		if !p.channelSupportsLocked(account, channel, selection) {
 			continue
 		}
-		cooldown, active := accountCooldown(account, ChannelCooldownScope(channel, scope), now)
+		cooldown, active := selectionCooldown(account, ChannelCooldownScope(channel, scope), selection, now)
 		if !active {
-			return time.Time{}, false
+			return CooldownState{}, false
 		}
-		if earliest.IsZero() || cooldown.Until.Before(earliest) {
-			earliest = cooldown.Until
+		if earliest.Until.IsZero() || cooldown.Until.Before(earliest.Until) {
+			earliest = cooldown
 		}
 	}
-	return earliest, !earliest.IsZero()
+	return earliest, !earliest.Until.IsZero()
 }
 
-// channelCandidatesLocked 按账户 ID 与通道顺序展开候选，轮询策略从上次选中组合之后开始
+// channelCandidatesLocked 按 indices 的账户顺序与通道顺序展开候选，轮询策略改按账户 ID 排序并从上次选中组合之后开始
 func (p *AccountPool) channelCandidatesLocked(indices []int, selection AccountSelection) iter.Seq[channelCandidate] {
 	channels := p.selectionChannelsLocked(selection)
 	count := len(indices) * len(channels)
@@ -258,18 +365,33 @@ func (p *AccountPool) AssistantModel(modelID string) bool {
 	return p.assistantModelLocked(modelID)
 }
 
+// assistantModelLocked 判断模型是否带 assistant_route 能力，调用方持有 p.mu
 func (p *AccountPool) assistantModelLocked(modelID string) bool {
+	return p.modelCapabilityLocked(modelID, "assistant_route")
+}
+
+// assistantBusyLocked 判断账户正在为 -build 选择运行另一个写代码助手生成，同一账户同时只运行一个
+func (p *AccountPool) assistantBusyLocked(account *Account, selection AccountSelection) bool {
+	return account.assistantBusy && p.assistantModelLocked(selection.ModelID)
+}
+
+// InteractionAgentModel 判断模型是否为经 CreateInteraction 后台任务生成的 agent，如 Deep Research 与 Antigravity
+func (p *AccountPool) InteractionAgentModel(modelID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.modelCapabilityLocked(modelID, "interaction_task")
+}
+
+// modelCapabilityLocked 返回目录中首个同 ID 模型的能力标记
+func (p *AccountPool) modelCapabilityLocked(modelID string, capability string) bool {
 	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
 	if modelID == "" {
 		return false
 	}
 	for _, account := range p.accounts {
-		if account == nil {
-			continue
-		}
 		for _, model := range account.Models {
 			if model.ID == modelID {
-				return model.Capabilities["assistant_route"]
+				return model.Capabilities[capability]
 			}
 		}
 	}
@@ -293,9 +415,6 @@ func (p *AccountPool) buildSupportsModelLocked(account *Account, modelID string,
 		return false
 	}
 	for _, candidate := range p.accounts {
-		if candidate == nil {
-			continue
-		}
 		for _, model := range candidate.Models {
 			if modelMatchesID(model, modelID) {
 				return !buildExcludedPlaygroundModel(model)
@@ -307,13 +426,18 @@ func (p *AccountPool) buildSupportsModelLocked(account *Account, modelID string,
 
 // buildExcludedPlaygroundModel 判断 Playground 目录模型是否使用 Build 未接入的专用路由
 func buildExcludedPlaygroundModel(model Model) bool {
-	return model.Capabilities["interactions_api"] || model.Capabilities["interaction_route"] ||
-		model.Capabilities["transcription_output"]
+	return model.Capabilities["interactions_api"] || model.Capabilities["transcription_output"]
 }
 
 // buildRequiresSpecialTool 判断 Build 独有模型是否只能配合 Computer Use 等专用工具调用
 func buildRequiresSpecialTool(modelID string) bool {
 	return strings.Contains(modelID, "computer-use")
+}
+
+// buildCatalogHasMethod 判断账户 Build 目录的模型提供方法
+func buildCatalogHasMethod(account *Account, modelID string, method string) bool {
+	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+	return slices.ContainsFunc(account.buildModels, func(model Model) bool { return model.ID == modelID && hasMethod(model, method) })
 }
 
 // buildSupportsMethodLocked 判断账户 Build 目录可经 embedding 或实时方法调用 Playground 目录没有的模型
@@ -333,8 +457,8 @@ func (p *AccountPool) buildSupportsMethodLocked(account *Account, modelID string
 // buildPublicMethods 返回 Build 独有 embedding 与实时模型在公开目录中可调用的方法
 func buildPublicMethods(model Model) []string {
 	var methods []string
-	for _, method := range buildMethods {
-		if !hasMethod(model, method) {
+	for _, method := range model.Methods {
+		if !slices.Contains(buildMethods, method) {
 			continue
 		}
 		if method == "embedContent" {
@@ -353,14 +477,14 @@ func (p *AccountPool) buildOnlyModelsLocked() []Model {
 	var models []Model
 	seen := make(map[string]struct{})
 	for _, account := range p.accounts {
-		if account == nil || !account.Config.Enabled {
+		if !account.Config.Enabled {
 			continue
 		}
 		for _, model := range account.buildModels {
 			if _, exists := seen[model.ID]; exists || p.hasPlaygroundModelLocked(model.ID) {
 				continue
 			}
-			listed := cloneAccountModels([]Model{model})[0]
+			listed := cloneModels([]Model{model})[0]
 			if !hasMethod(model, "generateContent") {
 				listed.Methods = buildPublicMethods(model)
 			} else if !p.buildSupportsModelLocked(account, model.ID, false) {
@@ -378,9 +502,6 @@ func (p *AccountPool) buildOnlyModelsLocked() []Model {
 
 func (p *AccountPool) hasPlaygroundModelLocked(modelID string) bool {
 	for _, account := range p.accounts {
-		if account == nil {
-			continue
-		}
 		for _, model := range account.Models {
 			if modelMatchesID(model, modelID) {
 				return true
@@ -400,7 +521,7 @@ func (p *AccountPool) BidiMethod(modelID string) string {
 	return "bidiGenerateContent"
 }
 
-// OutputContinuationRounds 返回请求按官网自动续写需要的轮数，未指定输出上限时按目录默认上限计算，不需要续写时为 1；多轮请求只能经 Playground 生成
+// OutputContinuationRounds 返回请求按官网自动续写需要的轮数，不需要续写时为 1
 func (p *AccountPool) OutputContinuationRounds(modelID string, maxOutputTokens *int64) int {
 	if maxOutputTokens != nil && *maxOutputTokens <= continuationRoundTokens {
 		return 1
@@ -414,25 +535,15 @@ func (p *AccountPool) OutputContinuationRounds(modelID string, maxOutputTokens *
 	if model, ok := p.continuationModels[modelID]; ok {
 		return outputContinuationRounds(model, maxOutputTokens)
 	}
-	found := false
 	for _, account := range p.accounts {
-		if account == nil {
-			continue
-		}
 		for _, model := range account.Models {
-			if !modelMatchesID(model, modelID) {
-				continue
-			}
-			found = true
-			if model.Capabilities["output_continuation"] {
+			if modelMatchesID(model, modelID) && model.Capabilities["output_continuation"] {
 				p.continuationModels[modelID] = model
 				return outputContinuationRounds(model, maxOutputTokens)
 			}
 		}
 	}
-	if found {
-		p.continuationModels[modelID] = Model{}
-	}
+	p.continuationModels[modelID] = Model{}
 	return 1
 }
 
@@ -440,7 +551,7 @@ func outputContinuationRounds(model Model, maxOutputTokens *int64) int {
 	if !model.Capabilities["output_continuation"] {
 		return 1
 	}
-	requested := model.OutputTokenLimit
+	requested := max(model.InputTokenLimit, continuationRoundTokens)
 	if maxOutputTokens != nil {
 		requested = *maxOutputTokens
 	}
@@ -453,9 +564,6 @@ func (p *AccountPool) hasBuildModelLocked(modelID string, method string) bool {
 		return false
 	}
 	for _, account := range p.accounts {
-		if account == nil {
-			continue
-		}
 		for _, model := range account.buildModels {
 			if model.ID != modelID || method != "" && !hasMethod(model, method) {
 				continue
@@ -484,7 +592,7 @@ func (p *AccountPool) modelChannelsLocked(model Model, anyTier bool) []string {
 	var channels []string
 	for _, channel := range p.selectionChannelsLocked(selection) {
 		for _, account := range p.accounts {
-			if account != nil && account.Config.Enabled && p.channelSupportsLocked(account, channel, selection) {
+			if account.Config.Enabled && p.channelSupportsLocked(account, channel, selection) {
 				channels = append(channels, string(channel))
 				break
 			}
@@ -495,12 +603,9 @@ func (p *AccountPool) modelChannelsLocked(model Model, anyTier bool) []string {
 
 // AccountChannelAvailable 返回账户是否还有支持选择且未冷却的通道
 func (p *AccountPool) AccountChannelAvailable(accountID string, selection AccountSelection) bool {
-	if p == nil {
-		return false
-	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	account := p.byID[strings.TrimSpace(accountID)]
+	account := p.byID[accountID]
 	if account == nil || !account.Config.Enabled || !p.accountSupportsAnyChannelLocked(account, selection) {
 		return false
 	}

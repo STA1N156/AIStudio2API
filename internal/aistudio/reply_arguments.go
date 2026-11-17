@@ -49,12 +49,12 @@ func (d *BuildStreamDecoder) decodeReplyArguments(part buildResponsePart, raw []
 	var events []Event
 	if delta.Len() > 0 {
 		call := *d.replyCall
-		events = append(events, Event{Kind: EventToolCallDelta, Text: delta.String(), ToolCall: &call})
+		events = append(events, Event{Kind: EventToolCallDelta, Part: Part{Text: delta.String(), FunctionCall: &call}})
 	}
 	if !call.WillContinue {
 		completed := *d.replyCall
 		completed.Arguments, _ = json.Marshal(map[string]string{"content": d.replyText.String()})
-		events = append(events, Event{Kind: EventToolCall, ToolCall: &completed, ThoughtSignature: completed.ThoughtSignature})
+		events = append(events, Event{Kind: EventToolCall, Part: Part{FunctionCall: &completed, ThoughtSignature: completed.ThoughtSignature}})
 		d.replyCall = nil
 		d.replyText.Reset()
 	}

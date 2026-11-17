@@ -37,7 +37,7 @@ func TestFailureRateExclusionMatchesOnlySpecified400s(t *testing.T) {
 }
 
 func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "usage.db"), func(string, string) {})
+	store, err := Open(filepath.Join(t.TempDir(), "usage.db"), func(string, string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestUsageRateExclusionsPreserveRecordsAndRollups(t *testing.T) {
 
 func TestRecordingCanPauseAndResumeWithoutLosingHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.db")
-	store, err := Open(path, func(string, string) {})
+	store, err := Open(path, func(string, string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestRecordingCanPauseAndResumeWithoutLosingHistory(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = Open(path, func(string, string) {})
+	store, err = Open(path, func(string, string, ...any) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestRecordingCanPauseAndResumeWithoutLosingHistory(t *testing.T) {
 	if count != 2 || paused != 0 {
 		t.Fatalf("unexpected request history: count=%d paused=%d", count, paused)
 	}
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM bodies").Scan(&count); err != nil {
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM request_bodies").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {

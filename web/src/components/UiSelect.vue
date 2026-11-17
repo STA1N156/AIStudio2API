@@ -1,26 +1,11 @@
-<script setup lang="ts">
-import { computed, useSlots, type VNode } from 'vue'
-import {
-  SelectContent,
-  SelectItem,
-  SelectItemIndicator,
-  SelectItemText,
-  SelectPortal,
-  SelectRoot,
-  SelectTrigger,
-  SelectViewport,
-} from 'reka-ui'
-import UiIcon from './UiIcon.vue'
-
-defineOptions({ inheritAttrs: false })
-
-const model = defineModel<string | number>()
-defineProps<{ disabled?: boolean }>()
-const slots = useSlots()
+<script lang="ts">
+import { computed, useSlots, type Ref, type VNode } from 'vue'
 
 interface SelectOption {
   value: string | number
   label: string
+  disabled: boolean
+  title: string
 }
 
 // vnodeText 拼接 option 子节点中的文本
@@ -37,7 +22,13 @@ function collectOptions(nodes: VNode[], result: SelectOption[]): SelectOption[] 
     if (node.type === 'option') {
       const label = vnodeText(node.children).trim()
       const value = (node.props?.value as string | number | undefined) ?? label
-      result.push({ value, label })
+      const disabled = node.props?.disabled
+      result.push({
+        value,
+        label,
+        disabled: disabled !== undefined && disabled !== false,
+        title: String(node.props?.title ?? ''),
+      })
     } else if (Array.isArray(node.children)) {
       collectOptions(node.children as VNode[], result)
     }
@@ -45,32 +36,68 @@ function collectOptions(nodes: VNode[], result: SelectOption[]): SelectOption[] 
   return result
 }
 
-const options = computed(() => collectOptions(slots.default?.() ?? [], []))
-const selectedIndex = computed(() =>
-  options.value.findIndex((option) => option.value === model.value),
-)
-const selectedLabel = computed(() => options.value[selectedIndex.value]?.label ?? '')
+// useSelectOptions 解析插槽选项并以索引映射字符串与数字选中值；选中值不在选项中时显示选中值本身
+export function useSelectOptions(model: Ref<string | number | undefined>) {
+  const slots = useSlots()
+  const options = computed(() => collectOptions(slots.default?.() ?? [], []))
+  const selectedIndex = computed(() =>
+    options.value.findIndex((option) => option.value === model.value),
+  )
+  const selectedLabel = computed(
+    () => options.value[selectedIndex.value]?.label ?? String(model.value ?? ''),
+  )
+  const selectedKey = computed({
+    get: () => (selectedIndex.value < 0 ? '' : String(selectedIndex.value)),
+    set: (key: string) => {
+      const option = key === '' ? undefined : options.value[Number(key)]
+      if (option) model.value = option.value
+    },
+  })
+  return { options, selectedLabel, selectedKey }
+}
+
+// keepSelected 在选项末尾补上已不在数据中的筛选值，all 为表示全部的取值
+export function keepSelected<T extends string>(values: T[], selected: string, all: string): T[] {
+  return selected === all || (values as string[]).includes(selected)
+    ? values
+    : [...values, selected as T]
+}
+
+// selectTriggerClass 是下拉框触发器的公共样式
+export const selectTriggerClass =
+  'group flex items-center justify-between gap-2 text-left transition-colors hover:border-gray-600 data-[state=open]:border-blue-500'
 
 // keepPrimarySelect 拦截非左键松开，中键滚动结束时不选中停留项
-function keepPrimarySelect(event: PointerEvent) {
+export function keepPrimarySelect(event: PointerEvent) {
   if (event.button !== 0) event.stopPropagation()
 }
-// selectedKey 以选项下标作为 Reka 选项值，使空字符串与数字值都能被选择
-const selectedKey = computed({
-  get: () => (selectedIndex.value < 0 ? '' : String(selectedIndex.value)),
-  set: (key: string) => {
-    const option = key === '' ? undefined : options.value[Number(key)]
-    if (option) model.value = option.value
-  },
-})
+</script>
+
+<script setup lang="ts">
+import {
+  SelectContent,
+  SelectItem,
+  SelectItemIndicator,
+  SelectItemText,
+  SelectPortal,
+  SelectRoot,
+  SelectTrigger,
+  SelectViewport,
+} from 'reka-ui'
+import { ref } from 'vue'
+import UiIcon from './UiIcon.vue'
+
+defineOptions({ inheritAttrs: false })
+
+const model = defineModel<string | number>()
+const { options, selectedLabel, selectedKey } = useSelectOptions(model)
+// primed 在触发器首次获得焦点或首次打开后为真，此前不挂载选项列表
+const primed = ref(false)
 </script>
 
 <template>
-  <SelectRoot v-model="selectedKey" :disabled="disabled">
-    <SelectTrigger
-      v-bind="$attrs"
-      class="group flex items-center justify-between gap-2 text-left transition-colors hover:border-gray-600 disabled:opacity-50 data-[state=open]:border-blue-500"
-    >
+  <SelectRoot v-model="selectedKey" @update:open="primed = true">
+    <SelectTrigger v-bind="$attrs" :class="selectTriggerClass" @focus="primed = true">
       <span class="min-w-0 flex-1 truncate">{{ selectedLabel }}</span>
       <UiIcon
         name="chevronDown"
@@ -78,7 +105,7 @@ const selectedKey = computed({
         class="text-gray-500 transition-transform duration-150 group-data-[state=open]:rotate-180"
       />
     </SelectTrigger>
-    <SelectPortal>
+    <SelectPortal v-if="primed">
       <SelectContent
         position="popper"
         :side-offset="4"
@@ -89,7 +116,8 @@ const selectedKey = computed({
             v-for="(option, index) in options"
             :key="`${index}:${option.value}`"
             :value="String(index)"
-            class="flex cursor-pointer items-center justify-between gap-3 px-3 py-1.5 whitespace-nowrap text-gray-300 outline-none select-none data-[highlighted]:bg-raised data-[highlighted]:text-white data-[state=checked]:font-medium data-[state=checked]:text-blue-300"
+            :disabled="option.disabled"
+            class="flex cursor-pointer items-center justify-between gap-3 px-3 py-1.5 whitespace-nowrap text-gray-300 outline-none select-none data-[disabled]:cursor-default data-[disabled]:text-gray-500 data-[highlighted]:bg-raised data-[highlighted]:text-white data-[state=checked]:font-medium data-[state=checked]:text-blue-300"
           >
             <SelectItemText v-tooltip.overflow="option.label" class="min-w-0 truncate">{{
               option.label

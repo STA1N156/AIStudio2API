@@ -2,39 +2,66 @@ package aistudio
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"mime"
-	"mime/multipart"
 	"net/http"
-	"net/textproto"
 	"net/url"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
 const driveAPIBase = "https://www.googleapis.com/drive/v3/files"
-const driveUploadURL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id"
+
+// driveUploadURL 是官网 gapi 上传 Drive 文件的地址，其后接页面的 API key
+const driveUploadURL = "https://content.googleapis.com/upload/drive/v3/files?uploadType=multipart&key="
+
+// driveDiscoveryURL 是 gapi 加载 Drive v3 时读取 discovery 文档的地址，%s 为页面的 API key
+const driveDiscoveryURL = "https://clients6.google.com/discovery/v1/apis/drive/v3/rest?pp=0&fields=kind%%2Cname%%2Cversion%%2CrootUrl%%2CservicePath%%2Cresources%%2Cparameters%%2Cmethods%%2CbatchPath%%2Cid&key=%s&%%24unique=gc953"
+
+// gapiBoundary 是官网 gapi 多部分上传的分隔串
+const gapiBoundary = "uhgzr7onafciig6fij3kisl4q"
 const driveResumableUploadURL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id"
 const driveUploadChunkSize = 8 << 20
 const driveCleanupTimeout = 5 * time.Second
 
 // UploadRequest 表示一次 Drive 文件上传
 type UploadRequest struct {
-	AccountID      string
-	Name           string
-	MIME           string
-	Purpose        string
-	Size           int64
-	MaxSize        int64
-	Reader         io.Reader
-	ResolvePurpose func(context.Context) (string, error)
+	AccountID string
+	// Alias 是客户端指定的公开文件名
+	Alias   string
+	Name    string
+	MIME    string
+	Purpose string
+	Size    int64
+	MaxSize int64
+	Reader  io.Reader
+	// ExpiresAfter 是文件自上传起的有效期，为 0 时不过期
+	ExpiresAfter time.Duration
+	// ResolveFields 在文件内容上传后返回最终的用途与有效期，非空时取代 Purpose 与 ExpiresAfter
+	ResolveFields func(context.Context) (UploadFields, error)
+	// Folder 是 GetAppFolder 返回的应用文件夹 ID，已知长度的上传放入该文件夹
+	Folder string
+}
+
+// UploadFields 是上传请求中可以位于文件内容之后的字段
+type UploadFields struct {
+	Purpose      string
+	ExpiresAfter time.Duration
 }
 
 type uploadTooLargeError struct {
@@ -53,15 +80,45 @@ func (err *uploadTooLargeError) ErrorCode() string {
 	return "file_too_large"
 }
 
+// fileAliasExistsError 表示客户端指定的公开文件名已属于另一个文件
+type fileAliasExistsError struct {
+	alias string
+}
+
+func (err *fileAliasExistsError) Error() string {
+	return err.alias + " already exists."
+}
+
+func (err *fileAliasExistsError) HTTPStatus() int {
+	return http.StatusConflict
+}
+
+// uploadCountingReader 统计读出的字节数并计算 SHA-256 与 MP4 时长
 type uploadCountingReader struct {
-	reader io.Reader
-	count  int64
+	reader   io.Reader
+	count    int64
+	digest   hash.Hash
+	duration mp4Duration
+}
+
+func newUploadCountingReader(source io.Reader) *uploadCountingReader {
+	return &uploadCountingReader{reader: source, digest: sha256.New()}
 }
 
 func (reader *uploadCountingReader) Read(target []byte) (int, error) {
 	count, err := reader.reader.Read(target)
 	reader.count += int64(count)
+	reader.digest.Write(target[:count])
+	_, _ = reader.duration.Write(target[:count])
 	return count, err
+}
+
+// metadata 返回已读出内容的大小、摘要与视频时长
+func (reader *uploadCountingReader) metadata(purpose string, alias string) FileMetadata {
+	return FileMetadata{
+		Size: reader.count, Purpose: purpose, Alias: alias,
+		SHA256: base64.StdEncoding.EncodeToString(reader.digest.Sum(nil)), VideoDuration: reader.duration.duration,
+	}
 }
 
 type boundedUploadReader struct {
@@ -95,6 +152,14 @@ type FileMetadata struct {
 	Purpose   string
 	Size      int64
 	CreatedAt time.Time
+	// Alias 是客户端上传时指定的公开文件名
+	Alias string
+	// SHA256 是文件内容的 SHA-256 摘要，Base64 编码
+	SHA256 string
+	// VideoDuration 是 MP4 与 QuickTime 视频的时长
+	VideoDuration time.Duration
+	// ExpiresAt 是文件的到期时间，零值表示不过期
+	ExpiresAt time.Time
 }
 
 // MediaStream 表示需要调用方关闭的媒体响应流
@@ -135,23 +200,21 @@ type TemporaryFileCopies struct {
 	lease   *AccountLease
 	copies  []temporaryDriveCopy
 	sources map[string]struct{}
-	once    sync.Once
-	err     error
+	// release 释放本次请求对内联附件文件的引用
+	release func()
+	// reused 是本次请求复用的已上传内联附件文件
+	reused []FileRef
+	once   sync.Once
+	err    error
 }
 
 // Count 返回本次请求创建的临时文件数
 func (copies *TemporaryFileCopies) Count() int {
-	if copies == nil {
-		return 0
-	}
 	return len(copies.copies)
 }
 
 // SourceAccountIDs 返回临时文件的来源账户
 func (copies *TemporaryFileCopies) SourceAccountIDs() []string {
-	if copies == nil {
-		return nil
-	}
 	result := make([]string, 0, len(copies.sources))
 	for accountID := range copies.sources {
 		result = append(result, accountID)
@@ -162,30 +225,67 @@ func (copies *TemporaryFileCopies) SourceAccountIDs() []string {
 
 // Cleanup 在目标账户租约释放前删除全部临时 Drive 副本
 func (copies *TemporaryFileCopies) Cleanup() error {
-	if copies == nil {
-		return nil
-	}
+	return copies.cleanup(context.Background())
+}
+
+// cleanup 以 parent 为父 context 删除全部临时 Drive 副本，删除成功或文件已不存在的副本解除绑定，删除失败的保留绑定
+func (copies *TemporaryFileCopies) cleanup(parent context.Context) error {
 	copies.once.Do(func() {
-		if copies.client == nil || copies.lease == nil || copies.lease.Account() == nil {
-			copies.err = fmt.Errorf("临时文件副本未初始化")
-			return
+		if copies.release != nil {
+			copies.release()
 		}
 		for index := len(copies.copies) - 1; index >= 0; index-- {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), driveCleanupTimeout)
+			cleanupCtx, cancel := context.WithTimeout(parent, driveCleanupTimeout)
 			cleanupCtx = ContextWithAccountLease(cleanupCtx, copies.lease)
 			copy := copies.copies[index]
 			deleteErr := copies.client.deleteDriveFile(
 				cleanupCtx, copies.lease.Account().ID, copy.token, copy.id,
 			)
-			unbindErr := error(nil)
+			if driveFileNotFound(deleteErr, "DriveDelete") {
+				deleteErr = nil
+			}
+			bindErr := error(nil)
 			if deleteErr == nil && copy.bound {
-				unbindErr = copies.lease.pool.unbindResourceContext(cleanupCtx, copy.id)
+				if bindErr = copies.lease.pool.unbindResourceContext(cleanupCtx, copy.id); errors.Is(bindErr, ErrResourceNotFound) {
+					bindErr = nil
+				}
 			}
 			cancel()
-			copies.err = errors.Join(copies.err, deleteErr, unbindErr)
+			copies.err = errors.Join(copies.err, deleteErr, bindErr)
 		}
 	})
 	return copies.err
+}
+
+// ForgetMissingInlineMedia 在生成请求返回 404 时查询本次复用的内联附件文件，解除 Drive 中已不存在的文件的绑定，返回是否有复用的文件已不存在
+func (copies *TemporaryFileCopies) ForgetMissingInlineMedia(ctx context.Context, cause error) (bool, error) {
+	var rpcError *RPCError
+	if len(copies.reused) == 0 || !errors.As(cause, &rpcError) ||
+		!modelBoundRPCMethod(rpcError.Method) || rpcError.StatusCode != http.StatusNotFound {
+		return false, nil
+	}
+	drive := copies.client.transport.(DriveFileChecker)
+	accountID := copies.lease.Account().ID
+	ctx = ContextWithAccountLease(ctx, copies.lease)
+	token, err := copies.client.GenerateAccessToken(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	forgot := false
+	for _, file := range copies.reused {
+		exists, err := drive.DriveFileExists(ctx, accountID, token, file.ID)
+		if err != nil {
+			return forgot, err
+		}
+		if exists {
+			continue
+		}
+		if err := copies.lease.pool.unbindResourceContext(ctx, file.ID); err != nil && !errors.Is(err, ErrResourceNotFound) {
+			return forgot, err
+		}
+		forgot = true
+	}
+	return forgot, nil
 }
 
 func (closer *releaseReadCloser) Read(target []byte) (int, error) {
@@ -195,9 +295,7 @@ func (closer *releaseReadCloser) Read(target []byte) (int, error) {
 func (closer *releaseReadCloser) Close() error {
 	closer.once.Do(func() {
 		closer.err = closer.body.Close()
-		if closer.release != nil {
-			closer.err = errors.Join(closer.err, closer.release())
-		}
+		closer.err = errors.Join(closer.err, closer.release())
 	})
 	return closer.err
 }
@@ -238,96 +336,88 @@ type DriveTransport interface {
 	DeleteDrive(context.Context, string, string, string) error
 }
 
+// DriveFileChecker 负责使用账户固定出口查询 Drive 文件是否存在
+type DriveFileChecker interface {
+	DriveFileExists(context.Context, string, string, string) (bool, error)
+}
+
 // GenerateAccessToken 获取网页账户授权的短期 bearer token
 func (c *Client) GenerateAccessToken(ctx context.Context, accountID string) (string, error) {
-	body, err := json.Marshal([]any{"users/me"})
-	if err != nil {
-		return "", err
-	}
-	response, err := c.do(ctx, "GenerateAccessToken", accountID, "", body, false)
+	response, err := c.do(ctx, "GenerateAccessToken", accountID, "", []byte(`["users/me"]`), false)
 	if err != nil {
 		return "", err
 	}
 	defer response.Body.Close()
-	return parseAccessToken(response.Body)
+	return parseFirstString(response.Body, "GenerateAccessToken", "bearer token")
 }
 
-func parseAccessToken(source io.Reader) (string, error) {
+// appFolder 以官网对话附件上传前的 GetAppFolder 读取账户的应用文件夹 ID
+func (c *Client) appFolder(ctx context.Context, accountID string) (string, error) {
+	response, err := c.do(ctx, "GetAppFolder", accountID, "", []byte("[]"), false)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	return parseFirstString(response.Body, "GetAppFolder", "应用文件夹 ID")
+}
+
+// parseFirstString 读取响应数组索引 0 的非空字符串，name 为错误中的字段名
+func parseFirstString(source io.Reader, method string, name string) (string, error) {
 	raw, err := io.ReadAll(newSparseJSONReader(source))
 	if err != nil {
-		return "", fmt.Errorf("读取 GenerateAccessToken: %w", err)
+		return "", fmt.Errorf("读取 %s: %w", method, err)
 	}
 	root, err := rawArray(raw, "$", raw)
 	if err != nil {
-		return "", withMethod(err, "GenerateAccessToken")
+		return "", withMethod(err, method)
 	}
 	if len(root) == 0 || isJSONNull(root[0]) {
-		return "", &ProtocolEvidenceError{Method: "GenerateAccessToken", Path: "$[0]", Detail: "缺少 bearer token", Raw: raw}
+		return "", &ProtocolEvidenceError{Method: method, Path: "$[0]", Detail: "缺少 " + name, Raw: raw}
 	}
-	token, err := rawString(root[0], "$[0]", raw)
+	value, err := rawString(root[0], "$[0]", raw)
 	if err != nil {
-		return "", withMethod(err, "GenerateAccessToken")
+		return "", withMethod(err, method)
 	}
-	if strings.TrimSpace(token) == "" {
-		return "", &ProtocolEvidenceError{Method: "GenerateAccessToken", Path: "$[0]", Detail: "bearer token 为空", Raw: raw}
+	if strings.TrimSpace(value) == "" {
+		return "", &ProtocolEvidenceError{Method: method, Path: "$[0]", Detail: name + " 为空", Raw: raw}
 	}
-	return token, nil
+	return value, nil
 }
 
-// UploadFile 上传文件并返回可用于 GenerateContent 的 Drive 引用
-func (c *Client) UploadFile(ctx context.Context, request UploadRequest) (FileRef, error) {
-	file, _, err := c.uploadFile(ctx, request)
-	return file, err
-}
-
+// uploadFile 上传文件并返回可用于 GenerateContent 的 Drive 引用与本次上传使用的 access token
 func (c *Client) uploadFile(ctx context.Context, request UploadRequest) (FileRef, string, error) {
 	if strings.TrimSpace(request.Name) == "" || strings.TrimSpace(request.MIME) == "" || request.Size == 0 || request.Reader == nil {
 		return FileRef{}, "", fmt.Errorf("上传文件需要名称、MIME 和数据")
-	}
-	if request.MaxSize < 0 {
-		return FileRef{}, "", fmt.Errorf("上传文件大小上限无效")
-	}
-	if request.Size > 0 && request.MaxSize > 0 && request.Size > request.MaxSize {
-		return FileRef{}, "", &uploadTooLargeError{limit: request.MaxSize}
 	}
 	token, err := c.GenerateAccessToken(ctx, request.AccountID)
 	if err != nil {
 		return FileRef{}, "", err
 	}
-	drive, ok := c.transport.(DriveTransport)
-	if !ok {
-		return FileRef{}, "", fmt.Errorf("AI Studio transport 不支持 Drive")
+	if request.Size > 0 {
+		if request.Folder, err = c.appFolder(ctx, request.AccountID); err != nil {
+			return FileRef{}, "", err
+		}
 	}
-	file, err := drive.UploadDrive(ctx, request.AccountID, token, request)
+	file, err := c.transport.(DriveTransport).UploadDrive(ctx, request.AccountID, token, request)
 	return file, token, err
 }
 
 func (c *Client) deleteDriveFile(ctx context.Context, accountID string, token string, fileID string) error {
-	if strings.TrimSpace(fileID) == "" {
-		return fmt.Errorf("Drive 文件 ID 为空")
-	}
-	drive, ok := c.transport.(DriveTransport)
-	if !ok {
-		return fmt.Errorf("AI Studio transport 不支持 Drive")
-	}
-	return drive.DeleteDrive(ctx, accountID, token, fileID)
+	return c.transport.(DriveTransport).DeleteDrive(ctx, accountID, token, fileID)
 }
 
 // UploadFile 使用一个独占账户完成上传并保存资源绑定
 func (s *PooledService) UploadFile(ctx context.Context, request UploadRequest) (FileRef, error) {
-	purpose := strings.TrimSpace(request.Purpose)
-	if purpose == "" && request.ResolvePurpose == nil {
-		return FileRef{}, fmt.Errorf("%w: purpose is required", ErrInvalidArgument)
-	}
-	accountID := strings.TrimSpace(request.AccountID)
-	selection := AccountSelection{AccountID: accountID}
+	fields := UploadFields{Purpose: request.Purpose, ExpiresAfter: request.ExpiresAfter}
+	resolved := request.ResolveFields == nil
+	selection := AccountSelection{AccountID: request.AccountID}
 	_, pinned := AccountLeaseFromContext(ctx)
-	automatic := accountID == "" && !pinned
+	automatic := request.AccountID == "" && !pinned
 	source := request.Reader
 	maxAttempts := 1
 	var candidateAccountIDs []string
 	if automatic {
-		candidateAccountIDs = s.pool.fileUploadAccountIDs()
+		candidateAccountIDs = s.pool.fileUploadAccountIDs(ctx)
 		if len(candidateAccountIDs) == 0 {
 			return FileRef{}, ErrNoEligibleAccount
 		}
@@ -348,19 +438,21 @@ func (s *PooledService) UploadFile(ctx context.Context, request UploadRequest) (
 		}
 		request.AccountID = lease.Account().ID
 		attemptCtx := ContextWithAccountLease(ctx, lease)
-		counter := &uploadCountingReader{reader: source}
+		counter := newUploadCountingReader(source)
 		request.Reader = counter
 		var token string
 		file, token, uploadErr = s.client.uploadFile(attemptCtx, request)
-		if uploadErr == nil && purpose == "" {
-			purpose, uploadErr = request.ResolvePurpose(attemptCtx)
-			purpose = strings.TrimSpace(purpose)
-			if uploadErr == nil && purpose == "" {
-				uploadErr = fmt.Errorf("%w: purpose is required", ErrInvalidArgument)
-			}
+		if uploadErr == nil && !resolved {
+			fields, uploadErr = request.ResolveFields(attemptCtx)
+			resolved = uploadErr == nil
 		}
 		if uploadErr == nil {
-			uploadErr = lease.BindFileResource(attemptCtx, file, counter.count, purpose)
+			metadata := counter.metadata(fields.Purpose, request.Alias)
+			metadata.CreatedAt = time.Now().UTC()
+			if fields.ExpiresAfter > 0 {
+				metadata.ExpiresAt = metadata.CreatedAt.Add(fields.ExpiresAfter)
+			}
+			uploadErr = lease.BindFileResource(attemptCtx, file, metadata)
 		}
 		if uploadErr != nil && file.ID != "" {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(attemptCtx), driveCleanupTimeout)
@@ -373,7 +465,7 @@ func (s *PooledService) UploadFile(ctx context.Context, request UploadRequest) (
 		authFailure := DefinitiveAuthenticationFailure(uploadErr)
 		stateErr := error(nil)
 		if authFailure {
-			stateErr = lease.MarkAuthenticationRequired(uploadErr.Error())
+			stateErr = lease.ConfirmAuthenticationFailure(ctx, uploadErr)
 		} else if uploadErr == nil {
 			stateErr = errors.Join(
 				lease.MarkAuthenticationValid(),
@@ -395,15 +487,17 @@ func (s *PooledService) UploadFile(ctx context.Context, request UploadRequest) (
 	return file, uploadErr
 }
 
-func (p *AccountPool) fileUploadAccountIDs() []string {
+// fileUploadAccountIDs 返回请求所用 API key 可用的上传候选账户，空闲账户在前
+func (p *AccountPool) fileUploadAccountIDs(ctx context.Context) []string {
+	selection := p.scopedSelection(ctx, AccountSelection{})
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	available := make([]string, 0, len(p.accounts))
 	busy := make([]string, 0, len(p.accounts))
-	indices, _ := p.selectionIndicesLocked(AccountSelection{})
+	indices, _ := p.selectionIndicesLocked(selection)
 	for _, index := range indices {
 		account := p.accounts[index]
-		if account == nil || !account.Config.Enabled || account.State != AccountReady {
+		if !account.Config.Enabled || account.State != AccountReady {
 			continue
 		}
 		if account.active < p.perAccountConcurrency {
@@ -417,17 +511,11 @@ func (p *AccountPool) fileUploadAccountIDs() []string {
 
 // FileMetadata 返回公开上传文件的持久元数据
 func (s *PooledService) FileMetadata(ctx context.Context, fileID string) (FileMetadata, error) {
-	if err := ctx.Err(); err != nil {
-		return FileMetadata{}, err
-	}
 	return s.pool.FileMetadata(ctx, fileID)
 }
 
-// BindFileResource 保存上传文件的账户绑定与公开元数据
-func (l *AccountLease) BindFileResource(ctx context.Context, file FileRef, size int64, purpose string) error {
-	if l == nil || l.account == nil || l.pool == nil {
-		return fmt.Errorf("账户租约未初始化")
-	}
+// BindFileResource 保存上传文件的账户绑定与公开元数据，metadata 提供大小、用途、公开文件名、摘要、视频时长、创建时间与到期时间，创建时间为零时取当前时间
+func (l *AccountLease) BindFileResource(ctx context.Context, file FileRef, metadata FileMetadata) error {
 	l.operation.Lock()
 	defer l.operation.Unlock()
 	if l.released {
@@ -435,33 +523,33 @@ func (l *AccountLease) BindFileResource(ctx context.Context, file FileRef, size 
 	}
 	l.account.storageMu.Lock()
 	defer l.account.storageMu.Unlock()
-	return l.pool.bindFileResource(ctx, file, l.account.ID, size, purpose)
+	return l.pool.bindFileResource(ctx, file, l.account.ID, metadata)
 }
 
-func (p *AccountPool) bindFileResource(
-	ctx context.Context,
-	file FileRef,
-	accountID string,
-	size int64,
-	purpose string,
-) error {
-	file.ID = strings.TrimSpace(file.ID)
-	file.Name = strings.TrimSpace(file.Name)
-	file.MIME = strings.TrimSpace(file.MIME)
-	purpose = strings.TrimSpace(purpose)
-	if file.ID == "" || file.Name == "" || file.MIME == "" || size <= 0 || purpose == "" {
-		return fmt.Errorf("文件元数据不完整")
-	}
+func (p *AccountPool) bindFileResource(ctx context.Context, file FileRef, accountID string, metadata FileMetadata) error {
+	p.fileBindMu.Lock()
+	defer p.fileBindMu.Unlock()
 	_, err := p.updateRuntimeContext(ctx, accountID, func(_ *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
 		if owner, exists := p.resources[file.ID]; exists && owner != accountID {
 			return false, nil, fmt.Errorf("资源 %s 已绑定账户 %s", file.ID, owner)
 		}
-		createdAt := time.Now().UTC()
+		if metadata.Alias != "" {
+			for resourceID, owner := range p.resources {
+				if resourceID != file.ID && p.byID[owner].runtime.Resources[resourceID].Alias == metadata.Alias {
+					return false, nil, &fileAliasExistsError{alias: metadata.Alias}
+				}
+			}
+		}
+		createdAt := metadata.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
 		if existing, exists := runtimeState.Resources[file.ID]; exists && !existing.CreatedAt.IsZero() {
 			createdAt = existing.CreatedAt
 		}
 		runtimeState.Resources[file.ID] = ResourceBinding{
-			Kind: "drive-file", Name: file.Name, MIME: file.MIME, Size: size, Purpose: purpose, CreatedAt: createdAt,
+			Kind: "drive-file", Name: file.Name, MIME: file.MIME, Size: metadata.Size, Purpose: metadata.Purpose, CreatedAt: createdAt,
+			Alias: metadata.Alias, SHA256: metadata.SHA256, VideoDuration: metadata.VideoDuration, ExpiresAt: metadata.ExpiresAt,
 		}
 		return true, nil, nil
 	})
@@ -483,18 +571,19 @@ func (p *AccountPool) FileMetadata(ctx context.Context, fileID string) (FileMeta
 	if !exists {
 		return FileMetadata{}, fmt.Errorf("%w: %s", ErrResourceNotFound, fileID)
 	}
-	account := p.byID[accountID]
-	if account == nil {
-		return FileMetadata{}, fmt.Errorf("资源账户不存在: %s", accountID)
-	}
-	binding, exists := account.runtime.Resources[fileID]
+	binding, exists := p.byID[accountID].runtime.Resources[fileID]
 	if !exists || binding.Kind != "drive-file" || binding.Name == "" || binding.MIME == "" || binding.Size <= 0 || binding.Purpose == "" {
 		return FileMetadata{}, fmt.Errorf("%w: %s", ErrResourceNotFound, fileID)
 	}
+	return binding.fileMetadata(fileID), nil
+}
+
+// fileMetadata 返回绑定记录的公开文件元数据
+func (binding ResourceBinding) fileMetadata(fileID string) FileMetadata {
 	return FileMetadata{
-		ID: fileID, Name: binding.Name, MIME: binding.MIME, Purpose: binding.Purpose,
-		Size: binding.Size, CreatedAt: binding.CreatedAt,
-	}, nil
+		ID: fileID, Name: binding.Name, MIME: binding.MIME, Purpose: binding.Purpose, Size: binding.Size, CreatedAt: binding.CreatedAt,
+		Alias: binding.Alias, SHA256: binding.SHA256, VideoDuration: binding.VideoDuration, ExpiresAt: binding.ExpiresAt,
+	}
 }
 
 // ListFiles 返回全部公开上传文件的持久元数据
@@ -531,10 +620,7 @@ func (p *AccountPool) ListFiles(ctx context.Context) ([]FileMetadata, error) {
 		if binding.Kind != "drive-file" || binding.Name == "" || binding.MIME == "" || binding.Size <= 0 || binding.Purpose == "" {
 			continue
 		}
-		files = append(files, FileMetadata{
-			ID: fileID, Name: binding.Name, MIME: binding.MIME, Purpose: binding.Purpose,
-			Size: binding.Size, CreatedAt: binding.CreatedAt,
-		})
+		files = append(files, binding.fileMetadata(fileID))
 	}
 	sort.Slice(files, func(i, j int) bool {
 		if !files[i].CreatedAt.Equal(files[j].CreatedAt) {
@@ -555,15 +641,10 @@ func (s *PooledService) DownloadFile(ctx context.Context, fileID string) (MediaS
 	token, downloadErr := s.client.GenerateAccessToken(ContextWithAccountLease(ctx, lease), accountID)
 	var media MediaStream
 	if downloadErr == nil {
-		drive, ok := s.client.transport.(DriveTransport)
-		if !ok {
-			downloadErr = fmt.Errorf("AI Studio transport 不支持 Drive")
-		} else {
-			media, downloadErr = drive.DownloadDrive(ContextWithAccountLease(ctx, lease), accountID, token, fileID)
-		}
+		media, downloadErr = s.client.transport.(DriveTransport).DownloadDrive(ContextWithAccountLease(ctx, lease), accountID, token, fileID)
 	}
 	if DefinitiveAuthenticationFailure(downloadErr) {
-		downloadErr = errors.Join(downloadErr, lease.MarkAuthenticationRequired(downloadErr.Error()))
+		downloadErr = errors.Join(downloadErr, lease.ConfirmAuthenticationFailure(ctx, downloadErr))
 	} else if downloadErr == nil {
 		downloadErr = errors.Join(
 			lease.MarkAuthenticationValid(),
@@ -610,7 +691,7 @@ func (s *PooledService) deleteDriveResource(ctx context.Context, fileID string) 
 	}
 	stateErr := error(nil)
 	if DefinitiveAuthenticationFailure(deleteErr) {
-		stateErr = lease.MarkAuthenticationRequired(deleteErr.Error())
+		stateErr = lease.ConfirmAuthenticationFailure(ctx, deleteErr)
 	} else if deleteErr == nil {
 		stateErr = errors.Join(
 			lease.MarkAuthenticationValid(),
@@ -642,12 +723,19 @@ func driveFileNotFound(err error, method string) bool {
 	return errors.As(err, &rpcError) && rpcError.Method == method && rpcError.StatusCode == http.StatusNotFound
 }
 
-// driveAuthorizationMissing 判断账户仅缺少 Google Drive 授权
+// driveAuthorizationMissing 判断 GenerateAccessToken 或 GetAppFolder 因账户仅缺少 Google Drive 授权被拒绝
 func driveAuthorizationMissing(err error) bool {
 	var rpcError *RPCError
-	return errors.As(err, &rpcError) && rpcError.Method == "GenerateAccessToken" &&
+	return errors.As(err, &rpcError) && (rpcError.Method == "GenerateAccessToken" || rpcError.Method == "GetAppFolder") &&
 		rpcError.StatusCode == http.StatusUnauthorized && rpcError.Code == 16 &&
 		strings.Contains(strings.ToLower(rpcError.Message), "unauthorized_client")
+}
+
+// driveStorageQuotaExceeded 判断 Drive 上传因账户存储空间已满被拒绝
+func driveStorageQuotaExceeded(err error) bool {
+	var rpcError *RPCError
+	return errors.As(err, &rpcError) && rpcError.Method == "DriveUpload" &&
+		rpcError.StatusCode == http.StatusForbidden && strings.Contains(rpcError.Message, `"storageQuotaExceeded"`)
 }
 
 // CopyFileReferencesToLease 将文件引用复制到目标账户并返回改写内容
@@ -656,12 +744,6 @@ func (s *PooledService) CopyFileReferencesToLease(
 	target *AccountLease,
 	contents []Content,
 ) ([]Content, *TemporaryFileCopies, error) {
-	if s == nil || s.pool == nil || s.client == nil {
-		return nil, nil, fmt.Errorf("文件引用服务未初始化")
-	}
-	if target == nil || target.Account() == nil || target.pool != s.pool {
-		return nil, nil, fmt.Errorf("目标账户租约未初始化")
-	}
 	rewritten := cloneContentsForFileCopies(contents)
 	copies := &TemporaryFileCopies{
 		client: s.client, lease: target, sources: make(map[string]struct{}),
@@ -675,11 +757,6 @@ func (s *PooledService) CopyFileReferencesToLease(
 				continue
 			}
 			fileID := strings.TrimSpace(part.File.ID)
-			if fileID == "" {
-				return nil, nil, errors.Join(
-					fmt.Errorf("%w: 文件引用缺少 ID", ErrInvalidArgument), copies.Cleanup(),
-				)
-			}
 			owner, metadata, err := s.pool.fileReferenceMetadata(ctx, fileID, targetID)
 			if err != nil {
 				return nil, nil, errors.Join(err, copies.Cleanup())
@@ -705,30 +782,21 @@ func (s *PooledService) CopyFileReferencesToLease(
 				Reader:    media.Body,
 			})
 			closeErr := media.Body.Close()
-			copy.ID = strings.TrimSpace(copy.ID)
-			copy.Name = strings.TrimSpace(copy.Name)
-			copy.MIME = strings.TrimSpace(copy.MIME)
-			if copy.Name == "" {
-				copy.Name = metadata.Name
-			}
-			if copy.MIME == "" {
-				copy.MIME = metadata.MIME
-			}
-			if uploadErr == nil && closeErr == nil && copy.ID == "" {
-				uploadErr = fmt.Errorf("临时 Drive 副本缺少 ID")
-			}
 			if copy.ID != "" {
 				copies.copies = append(copies.copies, temporaryDriveCopy{id: copy.ID, token: token})
 			}
 			if uploadErr == nil && closeErr == nil {
-				uploadErr = target.BindFileResource(targetCtx, copy, metadata.Size, metadata.Purpose)
+				createdAt := time.Now().UTC()
+				uploadErr = target.BindFileResource(targetCtx, copy, FileMetadata{
+					Size: metadata.Size, Purpose: metadata.Purpose, CreatedAt: createdAt, ExpiresAt: createdAt.Add(temporaryFileRetention),
+				})
 				if uploadErr == nil {
 					copies.copies[len(copies.copies)-1].bound = true
 				}
 			}
 			if uploadErr != nil || closeErr != nil {
 				if DefinitiveAuthenticationFailure(uploadErr) {
-					uploadErr = errors.Join(uploadErr, target.MarkAuthenticationRequired(uploadErr.Error()))
+					uploadErr = errors.Join(uploadErr, target.ConfirmAuthenticationFailure(targetCtx, uploadErr))
 				}
 				return nil, nil, errors.Join(uploadErr, closeErr, copies.Cleanup())
 			}
@@ -754,19 +822,240 @@ func (s *PooledService) CopyFileReferencesToLease(
 	return rewritten, copies, nil
 }
 
-// UploadInlineMediaToLease 将内联附件上传到目标账户并改写为临时 Drive 引用
+// inlineMediaIdle 是内联附件的 Drive 文件闲置后被删除的时长
+const inlineMediaIdle = time.Hour
+
+// inlineMediaKey 以 MIME、内容的 SHA-256 摘要与请求给出的文件名标识一个内联附件
+type inlineMediaKey struct {
+	mime   string
+	sha256 string
+	name   string
+}
+
+// inlineMediaKeyOf 返回内联附件 part 的标识
+func inlineMediaKeyOf(part Part) inlineMediaKey {
+	digest := part.InlineData.SHA256()
+	return inlineMediaKey{mime: part.InlineData.MIME, sha256: base64.StdEncoding.EncodeToString(digest[:]), name: part.DisplayName}
+}
+
+// InlineMediaAccount 返回已上传 contents 中最多内联附件的账户，没有账户上传过时返回空串
+func (p *AccountPool) InlineMediaAccount(contents []Content) string {
+	keys := make(map[inlineMediaKey]bool)
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part.InlineData != nil {
+				keys[inlineMediaKeyOf(part)] = true
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	best, bestHits := "", 0
+	for _, account := range p.accounts {
+		hits := 0
+		for _, binding := range account.runtime.Resources {
+			if binding.Kind == "inline-media" && keys[inlineMediaKey{mime: binding.MIME, sha256: binding.SHA256, name: binding.DisplayName}] {
+				hits++
+			}
+		}
+		if hits > bestHits {
+			best, bestHits = account.ID, hits
+		}
+	}
+	return best
+}
+
+// claimInlineMedia 在当前账户已上传且未到期的内联附件中查找 keys 并刷新命中项的使用时间，返回命中的文件与已到期待删除的附件
+func (l *AccountLease) claimInlineMedia(ctx context.Context, keys []inlineMediaKey, busy func(string) bool) (map[inlineMediaKey]FileRef, []string, error) {
+	l.operation.Lock()
+	defer l.operation.Unlock()
+	if l.released {
+		return nil, nil, fmt.Errorf("账户租约已释放")
+	}
+	l.account.storageMu.Lock()
+	defer l.account.storageMu.Unlock()
+	wanted := make(map[inlineMediaKey]bool, len(keys))
+	for _, key := range keys {
+		wanted[key] = true
+	}
+	var found map[inlineMediaKey]FileRef
+	var expired []string
+	_, err := l.pool.updateRuntimeContext(ctx, l.account.ID, func(_ *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
+		found, expired = make(map[inlineMediaKey]FileRef, len(keys)), nil
+		now := time.Now().UTC()
+		for id, binding := range runtimeState.Resources {
+			if binding.Kind != "inline-media" {
+				continue
+			}
+			key := inlineMediaKey{mime: binding.MIME, sha256: binding.SHA256, name: binding.DisplayName}
+			if !binding.expiresAt().After(now) {
+				if !busy(id) {
+					expired = append(expired, id)
+				}
+			} else if _, claimed := found[key]; wanted[key] && !claimed {
+				found[key] = FileRef{ID: id, Name: binding.Name, MIME: binding.MIME}
+				binding.UsedAt = now
+				runtimeState.Resources[id] = binding
+			}
+		}
+		return len(found) > 0, nil, nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return found, expired, nil
+}
+
+// claimExpiredResources 解除当前账户已到期的非 Drive 资源的绑定，返回已到期待删除的 Drive 文件，进行中的请求引用的内联附件除外
+func (l *AccountLease) claimExpiredResources(ctx context.Context, busy func(string) bool) ([]string, error) {
+	l.operation.Lock()
+	defer l.operation.Unlock()
+	if l.released {
+		return nil, fmt.Errorf("账户租约已释放")
+	}
+	l.account.storageMu.Lock()
+	defer l.account.storageMu.Unlock()
+	sources := l.pool.copySources(l.account.ID)
+	var expired []string
+	_, err := l.pool.updateRuntimeContext(ctx, l.account.ID, func(_ *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
+		expired = nil
+		changed := false
+		now := time.Now().UTC()
+		for id, binding := range runtimeState.Resources {
+			at := binding.expiresAt()
+			if binding.legacyCopy(sources) {
+				at = binding.CreatedAt.Add(temporaryFileRetention)
+			}
+			if at.IsZero() || at.After(now) || binding.Kind == "inline-media" && busy(id) {
+				continue
+			}
+			if binding.driveFile() {
+				expired = append(expired, id)
+			} else {
+				delete(runtimeState.Resources, id)
+				changed = true
+			}
+		}
+		return changed, nil, nil
+	})
+	return expired, err
+}
+
+// copySources 返回 accountID 以外的账户中带摘要的上传文件按 copySourceKey 索引的最早上传时间
+func (p *AccountPool) copySources(accountID string) map[copySourceKey]time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	sources := make(map[copySourceKey]time.Time)
+	for _, account := range p.accounts {
+		if account.ID == accountID {
+			continue
+		}
+		for _, binding := range account.runtime.Resources {
+			if binding.Kind != "drive-file" || binding.SHA256 == "" {
+				continue
+			}
+			key := copySourceKey{name: binding.Name, mime: binding.MIME, purpose: binding.Purpose, size: binding.Size}
+			if uploadedAt, exists := sources[key]; !exists || binding.CreatedAt.Before(uploadedAt) {
+				sources[key] = binding.CreatedAt
+			}
+		}
+	}
+	return sources
+}
+
+// ReclaimExpiredResources 删除各账户已到期的资源，没有空闲槽位的账户跳过本轮
+func (s *PooledService) ReclaimExpiredResources(ctx context.Context) error {
+	var reclaimErr error
+	for _, accountID := range s.pool.resourceOwners() {
+		reclaimErr = errors.Join(reclaimErr, s.reclaimExpiredResources(ctx, accountID))
+	}
+	return reclaimErr
+}
+
+// reclaimExpiredResources 解除账户中到期的非 Drive 资源的绑定，删除到期的 Drive 文件后解除其绑定，删除失败的文件保留绑定留待下一轮
+func (s *PooledService) reclaimExpiredResources(ctx context.Context, accountID string) error {
+	lease, _, _ := s.pool.TryAcquireFor(ctx, AccountSelection{AccountID: accountID})
+	if lease == nil {
+		return nil
+	}
+	leaseCtx := ContextWithAccountLease(ctx, lease)
+	expired, err := lease.claimExpiredResources(leaseCtx, s.inlineMediaBusy)
+	if err != nil || len(expired) == 0 {
+		return errors.Join(err, lease.Release())
+	}
+	token, err := s.client.GenerateAccessToken(leaseCtx, accountID)
+	if err != nil {
+		return errors.Join(err, lease.Release())
+	}
+	copies := &TemporaryFileCopies{client: s.client, lease: lease}
+	for _, id := range expired {
+		copies.copies = append(copies.copies, temporaryDriveCopy{id: id, token: token, bound: true})
+	}
+	return errors.Join(copies.cleanup(leaseCtx), lease.Release())
+}
+
+// bindInlineMedia 记录上传到当前账户的内联附件
+func (l *AccountLease) bindInlineMedia(ctx context.Context, file FileRef, key inlineMediaKey, size int64) error {
+	l.operation.Lock()
+	defer l.operation.Unlock()
+	if l.released {
+		return fmt.Errorf("账户租约已释放")
+	}
+	l.account.storageMu.Lock()
+	defer l.account.storageMu.Unlock()
+	accountID := l.account.ID
+	_, err := l.pool.updateRuntimeContext(ctx, accountID, func(_ *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
+		if owner, exists := l.pool.resources[file.ID]; exists && owner != accountID {
+			return false, nil, fmt.Errorf("资源 %s 已绑定账户 %s", file.ID, owner)
+		}
+		now := time.Now().UTC()
+		runtimeState.Resources[file.ID] = ResourceBinding{
+			Kind: "inline-media", Name: file.Name, MIME: file.MIME, Size: size, SHA256: key.sha256, CreatedAt: now, UsedAt: now, DisplayName: key.name,
+		}
+		return true, nil, nil
+	})
+	return err
+}
+
+// useInlineMedia 记录进行中的请求引用了 ids，返回释放这些引用的函数
+func (s *PooledService) useInlineMedia(ids []string) func() {
+	s.inlineMediaMu.Lock()
+	if s.inlineMediaUses == nil {
+		s.inlineMediaUses = make(map[string]int)
+	}
+	for _, id := range ids {
+		s.inlineMediaUses[id]++
+	}
+	s.inlineMediaMu.Unlock()
+	return func() {
+		s.inlineMediaMu.Lock()
+		defer s.inlineMediaMu.Unlock()
+		for _, id := range ids {
+			if s.inlineMediaUses[id]--; s.inlineMediaUses[id] <= 0 {
+				delete(s.inlineMediaUses, id)
+			}
+		}
+	}
+}
+
+// inlineMediaBusy 表示本进程进行中的请求是否引用内联附件 id
+func (s *PooledService) inlineMediaBusy(id string) bool {
+	s.inlineMediaMu.Lock()
+	defer s.inlineMediaMu.Unlock()
+	return s.inlineMediaUses[id] > 0
+}
+
+// UploadInlineMediaToLease 把内联附件改写为目标账户 Drive 文件的引用，keepImages 为真时 CreateInteractionStream 可内联的图片保持内联，同一账户已上传过的相同内容直接引用，Drive 存储空间已满时没有上传成功的附件保持内联（keepImages 为真时只接受内联图片，仍返回上传错误），闲置超过 inlineMediaIdle 的旧文件在本次请求结束时删除
 func (s *PooledService) UploadInlineMediaToLease(
 	ctx context.Context,
 	target *AccountLease,
 	contents []Content,
 	temporary *TemporaryFileCopies,
+	keepImages bool,
 ) ([]Content, *TemporaryFileCopies, error) {
-	if s == nil || s.pool == nil || s.client == nil {
-		return nil, nil, fmt.Errorf("内联附件上传服务未初始化")
-	}
-	if target == nil || target.Account() == nil || target.pool != s.pool {
-		return nil, nil, fmt.Errorf("目标账户租约未初始化")
-	}
 	if target.Channel() == ChannelBuild || target.Channel() == ChannelAssistant {
 		// Build 代理的 Gemini API 请求直接携带 inlineData，写代码助手在发送时把内联数据上传为附件引用
 		return contents, temporary, nil
@@ -775,113 +1064,202 @@ func (s *PooledService) UploadInlineMediaToLease(
 		temporary = &TemporaryFileCopies{
 			client: s.client, lease: target, sources: make(map[string]struct{}),
 		}
-	} else if temporary.client != s.client || temporary.lease != target {
-		return nil, nil, errors.Join(fmt.Errorf("临时文件账户不匹配"), temporary.Cleanup())
 	}
 	rewritten := cloneContentsForFileCopies(contents)
 	targetID := target.Account().ID
 	targetCtx := ContextWithAccountLease(ctx, target)
+	type partIndex struct {
+		content int
+		part    int
+	}
 	type uploadJob struct {
-		contentIndex int
-		partIndex    int
-		name         string
-		blob         *Blob
+		key  inlineMediaKey
+		name string
+		blob *Blob
 	}
 	type uploadResult struct {
 		index int
 		file  FileRef
 		err   error
 	}
+	parts := make(map[inlineMediaKey][]partIndex)
 	jobs := make([]uploadJob, 0)
 	mediaIndex := 0
 	for contentIndex := range rewritten {
-		for partIndex := range rewritten[contentIndex].Parts {
-			part := &rewritten[contentIndex].Parts[partIndex]
-			if part.InlineData == nil {
+		for index := range rewritten[contentIndex].Parts {
+			part := &rewritten[contentIndex].Parts[index]
+			if part.InlineData == nil || keepImages && InteractionInlineMIME(part.InlineData.MIME) {
 				continue
 			}
 			if part.InlineData.MIME == "" || len(part.InlineData.Data) == 0 {
 				return nil, nil, errors.Join(fmt.Errorf("%w: inline data 缺少 MIME 或数据", ErrInvalidArgument), temporary.Cleanup())
 			}
 			mediaIndex++
-			jobs = append(jobs, uploadJob{
-				contentIndex: contentIndex,
-				partIndex:    partIndex,
-				name:         fmt.Sprintf("inline-media-%d", mediaIndex),
-				blob:         part.InlineData,
-			})
-		}
-	}
-	token, uploadErr := s.client.GenerateAccessToken(targetCtx, targetID)
-	drive, ok := s.client.transport.(DriveTransport)
-	if uploadErr == nil && !ok {
-		uploadErr = fmt.Errorf("AI Studio transport 不支持 Drive")
-	}
-	if uploadErr != nil {
-		if driveAuthorizationMissing(uploadErr) {
-			return rewritten, temporary, nil
-		}
-		if DefinitiveAuthenticationFailure(uploadErr) {
-			uploadErr = errors.Join(uploadErr, target.MarkAuthenticationRequired(uploadErr.Error()))
-		}
-		return nil, nil, errors.Join(uploadErr, temporary.Cleanup())
-	}
-	uploadCtx, cancelUploads := context.WithCancel(targetCtx)
-	resultChannel := make(chan uploadResult, len(jobs))
-	for index, job := range jobs {
-		go func(index int, job uploadJob) {
-			file, err := drive.UploadDrive(uploadCtx, targetID, token, UploadRequest{
-				AccountID: targetID,
-				Name:      job.name,
-				MIME:      job.blob.MIME,
-				Size:      int64(len(job.blob.Data)),
-				Reader:    bytes.NewReader(job.blob.Data),
-			})
-			file.ID = strings.TrimSpace(file.ID)
-			if err == nil && file.ID == "" {
-				err = fmt.Errorf("临时 Drive 附件缺少 ID")
+			key := inlineMediaKeyOf(*part)
+			if _, seen := parts[key]; !seen {
+				jobs = append(jobs, uploadJob{key: key, name: cmp.Or(key.name, fmt.Sprintf("inline-media-%d", mediaIndex)), blob: part.InlineData})
 			}
-			resultChannel <- uploadResult{index: index, file: file, err: err}
-		}(index, job)
-	}
-	results := make([]uploadResult, len(jobs))
-	for range jobs {
-		result := <-resultChannel
-		results[result.index] = result
-		if result.err != nil {
-			cancelUploads()
+			parts[key] = append(parts[key], partIndex{content: contentIndex, part: index})
 		}
 	}
-	cancelUploads()
-	copyOffset := len(temporary.copies)
-	for _, result := range results {
-		if result.file.ID != "" {
-			temporary.copies = append(temporary.copies, temporaryDriveCopy{id: result.file.ID, token: token})
-		}
-		uploadErr = errors.Join(uploadErr, result.err)
+	keys := make([]inlineMediaKey, len(jobs))
+	for index, job := range jobs {
+		keys[index] = job.key
 	}
-	if uploadErr != nil {
+	files, expired, err := target.claimInlineMedia(targetCtx, keys, s.inlineMediaBusy)
+	if err != nil {
+		return nil, nil, errors.Join(err, temporary.Cleanup())
+	}
+	used := make([]string, 0, len(jobs))
+	for _, file := range files {
+		used = append(used, file.ID)
+		temporary.reused = append(temporary.reused, file)
+	}
+	pending := slices.DeleteFunc(slices.Clone(jobs), func(job uploadJob) bool {
+		_, claimed := files[job.key]
+		return claimed
+	})
+	var token, folder string
+	var folderErr error
+	last := len(rewritten) - 1
+	staged := slices.DeleteFunc(slices.Clone(pending), func(job uploadJob) bool {
+		return rewritten[last].Role != RoleUser || !slices.ContainsFunc(parts[job.key], func(index partIndex) bool { return index.content == last })
+	})
+	var uploader pageUploader
+	if worker := pageWorker(targetID); worker != nil {
+		page, _, pageErr := worker.usePage(targetCtx)
+		if pageErr != nil {
+			return nil, nil, errors.Join(pageErr, temporary.Cleanup())
+		}
+		uploader, _ = page.(pageUploader)
+	}
+	rerun := false
+	if uploader != nil && len(staged) > 0 {
+		runs, _ := s.client.protected.(PageRunsProtectedTransport)
+		rerun = runs != nil && runs.RanBefore(targetID, contents)
+		token = uploader.beforeUpload(targetCtx, rerun)
+	}
+	if uploader != nil && (len(pending) > 0 || len(expired) > 0) && uploader.driveDenied(targetCtx) {
+		temporary.release = s.useInlineMedia(used)
+		inline := make([]inlineFile, 0, len(staged))
+		for _, job := range staged {
+			inline = append(inline, inlineFile{name: job.name, blob: job.blob})
+		}
+		uploader.inlined(targetCtx, rerun, inline, func(ctx context.Context, body []byte) ([]byte, error) {
+			return s.client.readRPC(issuedByPage(ctx), "CountTokens", targetID, body)
+		})
+		return rewritten, temporary, nil
+	}
+	if len(pending) > 0 || len(expired) > 0 {
+		var lookup sync.WaitGroup
+		if len(pending) > 0 {
+			lookup.Go(func() { folder, folderErr = s.client.appFolder(targetCtx, targetID) })
+		}
+		if token == "" {
+			token, err = s.client.GenerateAccessToken(targetCtx, targetID)
+		}
+		lookup.Wait()
+		if err != nil {
+			temporary.release = s.useInlineMedia(used)
+			if driveAuthorizationMissing(err) {
+				return rewritten, temporary, nil
+			}
+			if DefinitiveAuthenticationFailure(err) {
+				err = errors.Join(err, target.ConfirmAuthenticationFailure(targetCtx, err))
+			}
+			return nil, nil, errors.Join(err, temporary.Cleanup())
+		}
+	}
+	for _, id := range expired {
+		temporary.copies = append(temporary.copies, temporaryDriveCopy{id: id, token: token, bound: true})
+	}
+	uploadErr := folderErr
+	if len(pending) > 0 && folderErr == nil {
+		drive := s.client.transport.(DriveTransport)
+		uploadCtx, cancelUploads := context.WithCancel(targetCtx)
+		resultChannel := make(chan uploadResult, len(pending))
+		for index, job := range pending {
+			go func(index int, job uploadJob) {
+				file, err := drive.UploadDrive(uploadCtx, targetID, token, UploadRequest{
+					AccountID: targetID,
+					Name:      job.name,
+					MIME:      job.blob.MIME,
+					Size:      int64(len(job.blob.Data)),
+					Reader:    bytes.NewReader(job.blob.Data),
+					Folder:    folder,
+				})
+				resultChannel <- uploadResult{index: index, file: file, err: err}
+			}(index, job)
+		}
+		results := make([]uploadResult, len(pending))
+		for range pending {
+			result := <-resultChannel
+			results[result.index] = result
+			if result.err != nil {
+				cancelUploads()
+			}
+		}
+		cancelUploads()
+		var failures GroupedErrors
+		for index, result := range results {
+			if result.err != nil {
+				failures.Add("", result.err)
+				continue
+			}
+			job := pending[index]
+			if bindErr := target.bindInlineMedia(targetCtx, result.file, job.key, int64(len(job.blob.Data))); bindErr != nil {
+				temporary.copies = append(temporary.copies, temporaryDriveCopy{id: result.file.ID, token: token})
+				failures.Add("", bindErr)
+				continue
+			}
+			files[job.key] = result.file
+			used = append(used, result.file.ID)
+		}
+		uploadErr = failures.Join(nil)
+	}
+	temporary.release = s.useInlineMedia(used)
+	if uploadErr != nil && (keepImages || !driveStorageQuotaExceeded(uploadErr)) {
 		if DefinitiveAuthenticationFailure(uploadErr) {
-			uploadErr = errors.Join(uploadErr, target.MarkAuthenticationRequired(uploadErr.Error()))
+			uploadErr = errors.Join(uploadErr, target.ConfirmAuthenticationFailure(targetCtx, uploadErr))
 		}
 		return nil, nil, errors.Join(uploadErr, temporary.Cleanup())
 	}
-	for index, job := range jobs {
-		file := results[index].file
-		if bindErr := target.BindFileResource(targetCtx, file, int64(len(job.blob.Data)), "assistants"); bindErr != nil {
-			return nil, nil, errors.Join(bindErr, temporary.Cleanup())
+	for key, indexes := range parts {
+		file, uploaded := files[key]
+		if !uploaded {
+			continue
 		}
-		temporary.copies[copyOffset+index].bound = true
-		part := &rewritten[job.contentIndex].Parts[job.partIndex]
-		part.InlineData = nil
-		part.File = &file
+		for _, index := range indexes {
+			part := &rewritten[index.content].Parts[index.part]
+			part.InlineData = nil
+			part.File = &file
+		}
 	}
-	stateErr := errors.Join(
-		target.MarkAuthenticationValid(),
-		s.pool.ClearCooldownIfGeneration(targetID, "", target.ModelAccessGeneration(), target.CheckedAt()),
-	)
-	if stateErr != nil {
-		return nil, nil, errors.Join(stateErr, temporary.Cleanup())
+	if uploader != nil && len(staged) > 0 {
+		refs := make([]FileRef, 0, len(staged))
+		for _, job := range staged {
+			if file, ok := files[job.key]; ok {
+				refs = append(refs, file)
+			}
+		}
+		reader := s.client.transport.(DriveFileReader)
+		uploader.uploaded(targetCtx, refs, pageDrive{
+			count: func(ctx context.Context, body []byte) ([]byte, error) {
+				return s.client.readRPC(issuedByPage(ctx), "CountTokens", targetID, body)
+			},
+			read: func(ctx context.Context, fileID string) {
+				reader.ReadDriveFile(ctx, targetID, token, fileID)
+			},
+		})
+	}
+	if len(pending) > 0 {
+		stateErr := errors.Join(
+			target.MarkAuthenticationValid(),
+			s.pool.ClearCooldownIfGeneration(targetID, "", target.ModelAccessGeneration(), target.CheckedAt()),
+		)
+		if stateErr != nil {
+			return nil, nil, errors.Join(stateErr, temporary.Cleanup())
+		}
 	}
 	return rewritten, temporary, nil
 }
@@ -896,10 +1274,6 @@ func cloneContentsForFileCopies(contents []Content) []Content {
 }
 
 func (p *AccountPool) fileReferenceMetadata(ctx context.Context, fileID, targetID string) (string, FileMetadata, error) {
-	fileID = strings.TrimSpace(fileID)
-	if fileID == "" {
-		return "", FileMetadata{}, fmt.Errorf("%w: 文件 ID 为空", ErrResourceNotFound)
-	}
 	if err := p.refreshResource(ctx, fileID); err != nil {
 		return "", FileMetadata{}, err
 	}
@@ -909,11 +1283,7 @@ func (p *AccountPool) fileReferenceMetadata(ctx context.Context, fileID, targetI
 	if !exists {
 		return "", FileMetadata{}, &fileReferenceNotFoundError{fileID: fileID}
 	}
-	account := p.byID[owner]
-	if account == nil {
-		return "", FileMetadata{}, fmt.Errorf("资源账户不存在: %s", owner)
-	}
-	binding, exists := account.runtime.Resources[fileID]
+	binding, exists := p.byID[owner].runtime.Resources[fileID]
 	if exists && owner == targetID && binding.Kind == "video-file" {
 		return owner, FileMetadata{}, nil
 	}
@@ -923,61 +1293,258 @@ func (p *AccountPool) fileReferenceMetadata(ctx context.Context, fileID, targetI
 	}
 	return owner, FileMetadata{
 		ID: fileID, Name: binding.Name, MIME: binding.MIME, Purpose: binding.Purpose,
-		Size: binding.Size, CreatedAt: binding.CreatedAt,
+		Size: binding.Size, CreatedAt: binding.CreatedAt, ExpiresAt: binding.ExpiresAt,
 	}, nil
 }
 
 // UploadDrive 通过当前账户固定出口上传 Drive 文件
-func (t *MakerSuiteHTTPTransport) UploadDrive(ctx context.Context, accountID string, token string, request UploadRequest) (FileRef, error) {
+func (t *MakerSuiteHTTPTransport) UploadDrive(ctx context.Context, accountID string, token string, request UploadRequest) (_ FileRef, err error) {
 	lease, owned, err := resolveAccountLease(ctx, t.pool, AccountSelection{AccountID: accountID})
 	if err != nil {
 		return FileRef{}, err
 	}
-	release := func(operationErr error) error {
-		if !owned {
-			return operationErr
-		}
-		return errors.Join(operationErr, lease.Release())
+	if owned {
+		defer func() { err = errors.Join(err, lease.Release()) }()
 	}
 	client, err := t.clientForProxy(lease.Account().EffectiveProxy(t.globalProxy))
 	if err != nil {
-		return FileRef{}, release(err)
+		return FileRef{}, err
 	}
 	if request.Size < 0 {
-		file, uploadErr := uploadDriveResumable(ctx, client, token, request)
-		return file, release(uploadErr)
+		return uploadDriveResumable(ctx, client, token, request)
 	}
-	file, uploadErr := uploadDriveMultipart(ctx, client, token, request)
-	return file, release(uploadErr)
+	headers, apiKey, err := t.gapiHeaders(ctx, lease.Account())
+	if err != nil {
+		return FileRef{}, err
+	}
+	if err := t.loadDriveDiscovery(ctx, lease.Account(), client, headers, apiKey); err != nil {
+		return FileRef{}, err
+	}
+	headers.Set("Authorization", "Bearer "+token)
+	return uploadDriveMultipart(ctx, client, driveUploadURL+url.QueryEscape(apiKey), headers, request)
 }
 
-func uploadDriveMultipart(ctx context.Context, client *http.Client, token string, request UploadRequest) (FileRef, error) {
-	prefix := new(bytes.Buffer)
-	writer := multipart.NewWriter(prefix)
-	metadataHeader := make(textproto.MIMEHeader)
-	metadataHeader.Set("Content-Type", "application/json; charset=UTF-8")
-	metadata, err := writer.CreatePart(metadataHeader)
+// clientDetails 返回官网页面 gapi 请求的 X-ClientDetails：按 encodeURIComponent 写出的 appVersion、platform 与 User-Agent
+func clientDetails(appVersion, platform, userAgent string) string {
+	return "appVersion=" + uriComponent(appVersion) + "&platform=" + uriComponent(platform) + "&userAgent=" + uriComponent(userAgent)
+}
+
+// gapiHeaders 返回官网页面 gapi 请求的公共头与页面的 API key，X-ClientDetails 取账户指纹的 appVersion、platform 与 User-Agent
+func (t *MakerSuiteHTTPTransport) gapiHeaders(ctx context.Context, account *Account) (http.Header, string, error) {
+	public, err := t.headers.ProtocolHeaders(ctx, account.ID)
+	if err != nil {
+		return nil, "", fmt.Errorf("读取账户动态公共头: %w", err)
+	}
+	fingerprint, err := camoufoxnative.AccountFingerprint(camoufoxnative.Options{StorageStatePath: account.StoragePath, Locale: account.Config.Locale, Timezone: account.Config.Timezone})
+	if err != nil {
+		return nil, "", fmt.Errorf("读取账户指纹: %w", err)
+	}
+	appVersion, _ := fingerprint["navigator.appVersion"].(string)
+	platform, _ := fingerprint["navigator.platform"].(string)
+	userAgent := public.Get("User-Agent")
+	headers := http.Header{}
+	headers.Set("User-Agent", userAgent)
+	headers.Set("Accept", "*/*")
+	if language := account.AcceptLanguage(); language != "" {
+		headers.Set("Accept-Language", language)
+	}
+	headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	headers.Set("Referer", aiStudioOrigin+"/")
+	headers.Set("X-JavaScript-User-Agent", "google-api-javascript-client/1.1.0")
+	headers.Set("X-Requested-With", "XMLHttpRequest")
+	headers.Set("X-Goog-Encode-Response-If-Executable", "base64")
+	headers.Set("X-ClientDetails", clientDetails(appVersion, platform, userAgent))
+	headers.Set("Origin", aiStudioOrigin)
+	headers.Set("Sec-Fetch-Dest", "empty")
+	headers.Set("Sec-Fetch-Mode", "cors")
+	return headers, public.Get("X-Goog-Api-Key"), nil
+}
+
+// uriComponent 按 JavaScript encodeURIComponent 编码
+func uriComponent(value string) string {
+	return strings.NewReplacer("+", "%20", "%21", "!", "%27", "'", "%28", "(", "%29", ")", "%2A", "*").Replace(url.QueryEscape(value))
+}
+
+// loadDriveDiscovery 在账户第一次经 gapi 上传前按官网页面读取 Drive v3 discovery 文档，每个账户读取一次，同时上传的多个文件等待同一次读取
+func (t *MakerSuiteHTTPTransport) loadDriveDiscovery(ctx context.Context, account *Account, client *http.Client, gapi http.Header, apiKey string) error {
+	_, err, _ := t.driveDiscovery.Do(account.ID, func() (any, error) {
+		return nil, t.readDriveDiscovery(ctx, account, client, gapi, apiKey)
+	})
+	return err
+}
+
+// readDriveDiscovery 读取账户尚未读取过的 Drive v3 discovery 文档
+func (t *MakerSuiteHTTPTransport) readDriveDiscovery(ctx context.Context, account *Account, client *http.Client, gapi http.Header, apiKey string) error {
+	t.driveMu.Lock()
+	loaded := t.driveDiscovered[account.ID]
+	t.driveMu.Unlock()
+	if loaded {
+		return nil
+	}
+	if err := t.getDriveDiscovery(ctx, account, client, gapi, apiKey); err != nil {
+		return err
+	}
+	t.driveMu.Lock()
+	t.driveDiscovered[account.ID] = true
+	t.driveMu.Unlock()
+	return nil
+}
+
+// getDriveDiscovery 以页面 gapi 的请求形状、页面的登录凭据读取 Drive v3 discovery 文档
+func (t *MakerSuiteHTTPTransport) getDriveDiscovery(ctx context.Context, account *Account, client *http.Client, gapi http.Header, apiKey string) error {
+	address := fmt.Sprintf(driveDiscoveryURL, url.QueryEscape(apiKey))
+	state, err := pageLoginState(ctx, account)
+	if err != nil {
+		return fmt.Errorf("读取账户登录状态: %w", err)
+	}
+	authorization, err := t.signer.Authorization(state)
+	if err != nil {
+		return err
+	}
+	cookie, err := state.CookieHeader(address, t.now())
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return err
+	}
+	request.Header = gapi.Clone()
+	request.Header.Set("X-Goog-AuthUser", strconv.Itoa(account.Config.AuthUser))
+	request.Header.Set("Authorization", authorization)
+	request.Header.Set("Cookie", cookie)
+	request.Header.Set("Sec-Fetch-Site", "same-site")
+	response, err := sendHTTP(client, request)
+	if err != nil {
+		return fmt.Errorf("读取 Drive discovery: %w", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil {
+		return errors.Join(readErr, closeErr)
+	}
+	if response.StatusCode != http.StatusOK {
+		return driveUploadRPCError("DriveDiscovery", response.StatusCode, body)
+	}
+	return nil
+}
+
+// DriveFileReader 负责像官网对话中显示附件一样读取 Drive 文件
+type DriveFileReader interface {
+	ReadDriveFile(ctx context.Context, accountID, token, fileID string)
+}
+
+// driveFileURL 是页面 gapi 读取对话附件的 ID、类型、名称与缩略图地址的 Drive v3 files.get 地址，参数依次为文件 ID 与 API key
+const driveFileURL = "https://content.googleapis.com/drive/v3/files/%s?supportsAllDrives=true&fields=id%%2C%%20mimeType%%2C%%20name%%2C%%20thumbnailLink&key=%s&%%24unique=gc719"
+
+// ReadDriveFile 像官网对话中新一轮显示附件一样经 gapi 读取 Drive v3 discovery 文档与文件的 ID、类型、名称和缩略图地址，再载入去掉尺寸后缀的缩略图；失败只记日志
+func (t *MakerSuiteHTTPTransport) ReadDriveFile(ctx context.Context, accountID, token, fileID string) {
+	if err := t.getDriveFile(ctx, accountID, token, fileID); err != nil {
+		slog.Warn("读取对话附件失败", "account", accountID, "error", err)
+	}
+}
+
+// getDriveFile 像页面显示附件一样不占用账户读取一次对话附件的 discovery 文档、元数据与缩略图
+func (t *MakerSuiteHTTPTransport) getDriveFile(ctx context.Context, accountID, token, fileID string) error {
+	account, err := t.pool.Account(accountID)
+	if err != nil {
+		return err
+	}
+	client, err := t.clientForProxy(account.EffectiveProxy(t.globalProxy))
+	if err != nil {
+		return err
+	}
+	headers, apiKey, err := t.gapiHeaders(ctx, account)
+	if err != nil {
+		return err
+	}
+	if err := t.getDriveDiscovery(ctx, account, client, headers, apiKey); err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(driveFileURL, url.PathEscape(fileID), url.QueryEscape(apiKey)), nil)
+	if err != nil {
+		return err
+	}
+	request.Header = headers.Clone()
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Sec-Fetch-Storage-Access", "none")
+	request.Header.Set("Sec-Fetch-Site", "cross-site")
+	response, err := sendHTTP(client, request)
+	if err != nil {
+		return fmt.Errorf("读取 Drive 文件: %w", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	if err := errors.Join(readErr, response.Body.Close()); err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return driveUploadRPCError("DriveGet", response.StatusCode, body)
+	}
+	var file struct {
+		Thumbnail string `json:"thumbnailLink"`
+	}
+	if json.Unmarshal(body, &file) != nil || file.Thumbnail == "" {
+		return nil
+	}
+	thumbnail, _, _ := strings.Cut(file.Thumbnail, "=")
+	image, err := http.NewRequestWithContext(ctx, http.MethodGet, thumbnail, nil)
+	if err != nil {
+		return err
+	}
+	image.Header.Set("User-Agent", headers.Get("User-Agent"))
+	image.Header.Set("Accept", "image/avif,image/jxl,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5")
+	image.Header.Set("Accept-Language", headers.Get("Accept-Language"))
+	image.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	image.Header.Set("Referer", aiStudioOrigin+"/")
+	image.Header.Set("Sec-Fetch-Storage-Access", "none")
+	image.Header.Set("Sec-Fetch-Dest", "image")
+	image.Header.Set("Sec-Fetch-Mode", "no-cors")
+	image.Header.Set("Sec-Fetch-Site", "cross-site")
+	image.Header.Set("Priority", "u=5, i")
+	response, err = sendHTTP(client, image)
+	if err != nil {
+		return fmt.Errorf("载入附件缩略图: %w", err)
+	}
+	_, readErr = io.Copy(io.Discard, response.Body)
+	return errors.Join(readErr, response.Body.Close())
+}
+
+// uploadDriveMultipart 按官网 gapi 的多部分正文上传：元数据为文件名与应用文件夹，文件部分为 base64
+func uploadDriveMultipart(ctx context.Context, client *http.Client, address string, headers http.Header, request UploadRequest) (FileRef, error) {
+	metadata, err := scriptJSON(struct {
+		Name    string   `json:"name"`
+		Parents []string `json:"parents"`
+	}{request.Name, []string{request.Folder}})
 	if err != nil {
 		return FileRef{}, err
 	}
-	if err := json.NewEncoder(metadata).Encode(map[string]string{"mimeType": request.MIME, "name": request.Name}); err != nil {
-		return FileRef{}, err
-	}
-	dataHeader := make(textproto.MIMEHeader)
-	dataHeader.Set("Content-Type", request.MIME)
-	if _, err := writer.CreatePart(dataHeader); err != nil {
-		return FileRef{}, err
-	}
-	footer := []byte("\r\n--" + writer.Boundary() + "--\r\n")
-	body := io.MultiReader(bytes.NewReader(prefix.Bytes()), request.Reader, bytes.NewReader(footer))
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, driveUploadURL, body)
+	prefix := "\r\n\r\n--" + gapiBoundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n\r\n" + metadata +
+		"\r\n\r\n\r\n--" + gapiBoundary + "\r\nContent-Type: " + request.MIME + "\r\nContent-Transfer-Encoding: base64\r\n\r\n\r\n"
+	suffix := "\r\n--" + gapiBoundary + "--"
+	encoded, writer := io.Pipe()
+	go func() {
+		encoder := base64.NewEncoder(base64.StdEncoding, writer)
+		_, err := io.Copy(encoder, request.Reader)
+		if err == nil {
+			err = encoder.Close()
+		}
+		writer.CloseWithError(err)
+	}()
+	body := struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(strings.NewReader(prefix), encoded, strings.NewReader(suffix)), encoded}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, address, body)
 	if err != nil {
+		_ = encoded.Close()
 		return FileRef{}, err
 	}
-	httpRequest.ContentLength = int64(prefix.Len()) + request.Size + int64(len(footer))
-	httpRequest.Header.Set("Authorization", "Bearer "+token)
-	httpRequest.Header.Set("Content-Type", "multipart/related; boundary="+writer.Boundary())
-	response, err := client.Do(httpRequest)
+	httpRequest.ContentLength = int64(len(prefix)) + int64(base64.StdEncoding.EncodedLen(int(request.Size))) + int64(len(suffix))
+	httpRequest.Header = headers.Clone()
+	httpRequest.Header.Set("Content-Type", `multipart/related; boundary="`+gapiBoundary+`"`)
+	httpRequest.Header.Set("Sec-Fetch-Storage-Access", "none")
+	httpRequest.Header.Set("Sec-Fetch-Site", "cross-site")
+	response, err := sendHTTP(client, httpRequest)
 	if err != nil {
 		return FileRef{}, fmt.Errorf("上传 Drive 文件: %w", err)
 	}
@@ -996,7 +1563,7 @@ func uploadDriveResumable(ctx context.Context, client *http.Client, token string
 	initRequest.Header.Set("Authorization", "Bearer "+token)
 	initRequest.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	initRequest.Header.Set("X-Upload-Content-Type", request.MIME)
-	initResponse, err := client.Do(initRequest)
+	initResponse, err := sendHTTP(client, initRequest)
 	if err != nil {
 		return FileRef{}, fmt.Errorf("创建 Drive 上传会话: %w", err)
 	}
@@ -1031,9 +1598,6 @@ func uploadDriveResumable(ctx context.Context, client *http.Client, token string
 			buffer[0] = buffer[driveUploadChunkSize]
 			buffered = 1
 		case errors.Is(readErr, io.EOF), errors.Is(readErr, io.ErrUnexpectedEOF):
-			if buffered == 0 {
-				return FileRef{}, fmt.Errorf("上传文件不能为空")
-			}
 			total := offset + int64(buffered)
 			response, err := sendDriveUploadChunk(ctx, client, token, sessionURL, request.MIME, buffer[:buffered], offset, total)
 			if err != nil {
@@ -1094,7 +1658,7 @@ func sendDriveUploadChunk(
 		totalValue = fmt.Sprintf("%d", total)
 	}
 	request.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%s", offset, end, totalValue))
-	response, err := client.Do(request)
+	response, err := sendHTTP(client, request)
 	if err != nil {
 		return nil, fmt.Errorf("上传 Drive 文件块: %w", err)
 	}
@@ -1152,7 +1716,7 @@ func (t *MakerSuiteHTTPTransport) DownloadDrive(ctx context.Context, accountID s
 	if err != nil {
 		return MediaStream{}, release(err)
 	}
-	response, err := client.Do(httpRequest)
+	response, err := sendHTTP(client, httpRequest)
 	if err != nil {
 		return MediaStream{}, release(fmt.Errorf("下载 Drive 文件: %w", err))
 	}
@@ -1162,13 +1726,7 @@ func (t *MakerSuiteHTTPTransport) DownloadDrive(ctx context.Context, accountID s
 		if readErr != nil || closeErr != nil {
 			return MediaStream{}, release(errors.Join(readErr, closeErr))
 		}
-		message := strings.TrimSpace(string(data))
-		if message == "" {
-			message = http.StatusText(response.StatusCode)
-		}
-		return MediaStream{}, release(&RPCError{
-			Method: "DriveDownload", StatusCode: response.StatusCode, Message: message,
-		})
+		return MediaStream{}, release(driveUploadRPCError("DriveDownload", response.StatusCode, data))
 	}
 	body := io.ReadCloser(response.Body)
 	if owned {
@@ -1181,40 +1739,72 @@ func (t *MakerSuiteHTTPTransport) DownloadDrive(ctx context.Context, accountID s
 }
 
 // DeleteDrive 通过当前账户固定出口删除 Drive 文件
-func (t *MakerSuiteHTTPTransport) DeleteDrive(ctx context.Context, accountID string, token string, fileID string) error {
+func (t *MakerSuiteHTTPTransport) DeleteDrive(ctx context.Context, accountID string, token string, fileID string) (err error) {
 	lease, owned, err := resolveAccountLease(ctx, t.pool, AccountSelection{AccountID: accountID})
 	if err != nil {
 		return err
 	}
-	release := func(operationErr error) error {
-		if !owned {
-			return operationErr
-		}
-		return errors.Join(operationErr, lease.Release())
+	if owned {
+		defer func() { err = errors.Join(err, lease.Release()) }()
 	}
-	endpoint := driveAPIBase + "/" + url.PathEscape(strings.TrimSpace(fileID))
-	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, driveAPIBase+"/"+url.PathEscape(fileID), nil)
 	if err != nil {
-		return release(err)
+		return err
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	client, err := t.clientForProxy(lease.Account().EffectiveProxy(t.globalProxy))
 	if err != nil {
-		return release(err)
+		return err
 	}
-	response, err := client.Do(request)
+	response, err := sendHTTP(client, request)
 	if err != nil {
-		return release(fmt.Errorf("删除 Drive 文件: %w", err))
+		return fmt.Errorf("删除 Drive 文件: %w", err)
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
-		return release(err)
+		return err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return release(driveUploadRPCError("DriveDelete", response.StatusCode, responseBody))
+		return driveUploadRPCError("DriveDelete", response.StatusCode, responseBody)
 	}
-	return release(nil)
+	return nil
+}
+
+// DriveFileExists 通过当前账户固定出口按官网视频页的元数据请求查询 Drive 文件是否存在
+func (t *MakerSuiteHTTPTransport) DriveFileExists(ctx context.Context, accountID string, token string, fileID string) (_ bool, err error) {
+	lease, owned, err := resolveAccountLease(ctx, t.pool, AccountSelection{AccountID: accountID})
+	if err != nil {
+		return false, err
+	}
+	if owned {
+		defer func() { err = errors.Join(err, lease.Release()) }()
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, driveAPIBase+"/"+url.PathEscape(fileID), nil)
+	if err != nil {
+		return false, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	client, err := t.clientForProxy(lease.Account().EffectiveProxy(t.globalProxy))
+	if err != nil {
+		return false, err
+	}
+	response, err := sendHTTP(client, request)
+	if err != nil {
+		return false, fmt.Errorf("查询 Drive 文件: %w", err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return false, err
+	}
+	switch {
+	case response.StatusCode == http.StatusNotFound:
+		return false, nil
+	case response.StatusCode < 200 || response.StatusCode >= 300:
+		return false, driveUploadRPCError("DriveGet", response.StatusCode, responseBody)
+	}
+	return true, nil
 }
 
 func driveFilename(disposition string) string {
@@ -1250,16 +1840,13 @@ func (pool *AccountPool) ResourceIDForContents(ctx context.Context, contents []C
 				continue
 			}
 			id := strings.TrimSpace(part.File.ID)
-			if id == "" {
-				return "", fmt.Errorf("%w: 文件引用缺少 ID", ErrInvalidArgument)
-			}
 			accountID, exists := pool.resources[id]
 			if !exists {
 				return "", &fileReferenceNotFoundError{fileID: id}
 			}
 			account := pool.byID[accountID]
 			binding, bound := account.runtime.Resources[id]
-			if !bound || binding.Kind != "drive-file" && binding.Kind != "video-file" {
+			if !bound || binding.Kind != "drive-file" && binding.Kind != "video-file" && binding.Kind != "inline-media" {
 				return "", fmt.Errorf("%w: 资源 %s 不能作为文件引用", ErrInvalidArgument, id)
 			}
 			if resourceID == "" {
@@ -1271,10 +1858,21 @@ func (pool *AccountPool) ResourceIDForContents(ctx context.Context, contents []C
 }
 
 func encodeFilePart(file *FileRef) ([]any, error) {
-	if file == nil || file.ID == "" {
+	if file.ID == "" {
 		return nil, fmt.Errorf("文件引用缺少 ID")
 	}
 	wire := make([]any, 6)
 	wire[5] = []any{file.ID}
 	return wire, nil
+}
+
+// scriptJSON 按页面脚本 JSON.stringify 的形式编码，保留 HTML 字符原样、不带结尾换行
+func scriptJSON(value any) (string, error) {
+	var buffer strings.Builder
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(buffer.String(), "\n"), nil
 }

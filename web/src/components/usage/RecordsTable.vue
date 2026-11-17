@@ -8,10 +8,18 @@ import UiIcon from '../UiIcon.vue'
 import UiSelect from '../UiSelect.vue'
 import RecordDrawer from './RecordDrawer.vue'
 import { useUsageFormat } from './format'
-import { latencyTone, readPreference, writePreference } from './model'
+import { readPreference, writePreference } from '@/preference'
+import { latencyTone } from './model'
 
 type Column =
-  'model' | 'account' | 'channel' | 'protocol' | 'tokens' | 'latency' | 'queue' | 'attempts'
+  | 'model'
+  | 'account'
+  | 'channel'
+  | 'protocol'
+  | 'tokens'
+  | 'latency'
+  | 'queue'
+  | 'attempts'
 
 const props = defineProps<{
   scope: string
@@ -48,13 +56,16 @@ const columnLabels: Record<Column, () => string> = {
   queue: () => t('usage.queue'),
   attempts: () => t('usage.attempts'),
 }
+// secondary 是内容区较窄时收起的列，详情悬窗中仍完整显示
+const secondary: Column[] = ['protocol', 'queue']
+const secondaryClass = 'hidden @min-[72rem]:table-cell'
 const pageSize = ref(
   readPreference('usage.pageSize', 20, (value) => pageSizes.includes(value as number)),
 )
 const visible = ref<Column[]>(
   readPreference<Column[]>(
     'usage.columns',
-    ['model', 'account', 'channel', 'tokens', 'attempts'],
+    ['model', 'account', 'channel', 'tokens', 'latency', 'attempts'],
     (value) => Array.isArray(value) && value.every((item) => allColumns.includes(item as Column)),
   ),
 )
@@ -115,11 +126,8 @@ function restart(): void {
 
 // move 前后翻页，向后翻页时记录下一页的位置
 function move(step: 1 | -1): void {
-  if (step === 1) {
-    if (nextCursor.value === undefined) return
-    cursors.value = [...cursors.value.slice(0, page.value + 1), nextCursor.value]
-  }
-  page.value = Math.max(0, page.value + step)
+  if (step === 1) cursors.value = [...cursors.value.slice(0, page.value + 1), nextCursor.value]
+  page.value += step
   void load()
 }
 
@@ -176,10 +184,10 @@ function latencyWidth(milliseconds: number): number {
 </script>
 
 <template>
-  <section class="min-w-0 rounded-lg border border-line bg-panel">
+  <section class="@container min-w-0 rounded-lg border border-line bg-panel">
     <header class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
       <div class="mr-auto min-w-0">
-        <h3 :id="`${id}-title`" class="text-sm font-medium text-gray-200">
+        <h3 :id="`${id}-title`" class="text-sm font-semibold text-gray-200">
           {{ t('usage.records') }}
         </h3>
         <p v-if="!filtered" class="text-xs text-gray-500">
@@ -191,7 +199,7 @@ function latencyWidth(milliseconds: number): number {
           }}
         </p>
       </div>
-      <label class="relative">
+      <label class="relative w-full @md:w-auto">
         <span class="sr-only">{{ t('usage.recordsSearch') }}</span>
         <UiIcon
           name="search"
@@ -202,13 +210,13 @@ function latencyWidth(milliseconds: number): number {
           v-model="searchText"
           type="search"
           :placeholder="t('usage.recordsSearch')"
-          class="w-56 rounded-md border border-line bg-canvas py-1.5 pr-2 pl-7 text-xs text-white focus:border-blue-500 focus:outline-none"
+          class="w-full rounded-md border border-line bg-canvas py-1.5 pr-2 pl-7 text-xs text-white focus:border-blue-500 focus:outline-none @md:w-80"
         />
       </label>
       <UiSelect
         :model-value="status"
         :aria-label="t('usage.dimension.status')"
-        class="w-36 rounded-md border border-line bg-canvas px-2 py-1.5 text-xs text-gray-200"
+        class="min-w-40 shrink-0 rounded-md border border-line bg-canvas px-2 py-1.5 text-xs text-gray-200"
         @update:model-value="emit('update:status', String($event))"
       >
         <option value="">{{ t('usage.recordsAllStatus') }}</option>
@@ -283,18 +291,25 @@ function latencyWidth(milliseconds: number): number {
       {{ t('usage.recordsEmpty') }}
     </div>
     <template v-else>
-      <div class="hidden overflow-x-auto md:block">
+      <div class="hidden overflow-x-auto @min-[56rem]:block">
         <table class="w-full text-left text-xs" :aria-labelledby="`${id}-title`">
           <thead class="text-gray-500">
             <tr>
-              <th scope="col" class="px-4 py-2 font-normal">{{ t('usage.time') }}</th>
-              <th scope="col" class="px-4 py-2 font-normal">{{ t('usage.result') }}</th>
+              <th scope="col" class="px-4 py-2 font-normal whitespace-nowrap">
+                {{ t('usage.time') }}
+              </th>
+              <th scope="col" class="px-4 py-2 font-normal whitespace-nowrap">
+                {{ t('usage.result') }}
+              </th>
               <th
                 v-for="column in allColumns.filter((item) => visible.includes(item))"
                 :key="column"
                 scope="col"
-                class="px-4 py-2 font-normal"
-                :class="['tokens', 'queue', 'attempts'].includes(column) ? 'text-right' : ''"
+                class="px-4 py-2 font-normal whitespace-nowrap"
+                :class="[
+                  ['tokens', 'queue', 'attempts'].includes(column) ? 'text-right' : '',
+                  secondary.includes(column) ? secondaryClass : '',
+                ]"
               >
                 {{ columnLabels[column]() }}
               </th>
@@ -319,7 +334,7 @@ function latencyWidth(milliseconds: number): number {
                 </button>
               </td>
               <td class="px-4 py-2 whitespace-nowrap">
-                <span class="rounded px-1.5 py-0.5" :class="stateClass(record)">{{
+                <span class="inline-block rounded px-1.5 py-0.5" :class="stateClass(record)">{{
                   dimensionLabel('state', record.state)
                 }}</span>
                 <span class="ml-1.5 text-gray-500 tabular-nums">{{ record.status }}</span>
@@ -328,12 +343,12 @@ function latencyWidth(milliseconds: number): number {
                 v-for="column in allColumns.filter((item) => visible.includes(item))"
                 :key="column"
               >
-                <td v-if="column === 'model'" class="max-w-48 px-4 py-2">
+                <td v-if="column === 'model'" class="w-1/2 max-w-0 px-4 py-2">
                   <span v-tooltip="record.model" class="block truncate">{{
                     record.model || '—'
                   }}</span>
                 </td>
-                <td v-else-if="column === 'account'" class="max-w-56 px-4 py-2">
+                <td v-else-if="column === 'account'" class="w-1/2 max-w-0 px-4 py-2">
                   <span v-tooltip="record.account" class="block truncate">{{
                     record.account || '—'
                   }}</span>
@@ -341,7 +356,11 @@ function latencyWidth(milliseconds: number): number {
                 <td v-else-if="column === 'channel'" class="px-4 py-2 whitespace-nowrap">
                   {{ record.channel ? dimensionLabel('channel', record.channel) : '—' }}
                 </td>
-                <td v-else-if="column === 'protocol'" class="px-4 py-2 whitespace-nowrap">
+                <td
+                  v-else-if="column === 'protocol'"
+                  class="px-4 py-2 whitespace-nowrap"
+                  :class="secondaryClass"
+                >
                   {{ dimensionLabel('protocol', record.protocol) }}
                 </td>
                 <td
@@ -349,16 +368,17 @@ function latencyWidth(milliseconds: number): number {
                   class="px-4 py-2 text-right whitespace-nowrap tabular-nums"
                 >
                   <div class="text-gray-200">{{ compact(record.total_tokens) }}</div>
-                  <div class="text-[11px] text-gray-500">
+                  <div class="text-xs text-gray-500">
                     {{ compact(record.input_tokens) }} / {{ compact(record.reasoning_tokens) }} /
                     {{ compact(record.reply_tokens) }}
                   </div>
                 </td>
-                <td v-else-if="column === 'latency'" class="w-44 px-4 py-2">
-                  <div class="flex items-center justify-between gap-2 tabular-nums">
+                <td v-else-if="column === 'latency'" class="px-4 py-2">
+                  <div class="flex w-36 items-center justify-between gap-2 tabular-nums">
                     <span class="text-gray-200">{{ duration(record.duration_ms) }}</span>
+                    <span class="text-xs text-gray-500">{{ duration(record.first_event_ms) }}</span>
                   </div>
-                  <div class="mt-1 h-1 rounded-full bg-raised">
+                  <div class="mt-1 h-1 w-36 rounded-full bg-raised">
                     <div
                       class="h-1 rounded-full"
                       :class="latencyTone(record.duration_ms, 'duration')"
@@ -366,7 +386,11 @@ function latencyWidth(milliseconds: number): number {
                     ></div>
                   </div>
                 </td>
-                <td v-else-if="column === 'queue'" class="px-4 py-2 text-right tabular-nums">
+                <td
+                  v-else-if="column === 'queue'"
+                  class="px-4 py-2 text-right tabular-nums"
+                  :class="secondaryClass"
+                >
                   {{ duration(record.queue_ms) }}
                 </td>
                 <td v-else-if="column === 'attempts'" class="px-4 py-2 text-right tabular-nums">
@@ -379,7 +403,7 @@ function latencyWidth(milliseconds: number): number {
           </tbody>
         </table>
       </div>
-      <ul class="divide-y divide-line/60 md:hidden">
+      <ul class="divide-y divide-line/60 @min-[56rem]:hidden">
         <li v-for="record in items" :key="record.id">
           <button
             type="button"

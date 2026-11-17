@@ -50,10 +50,10 @@ func prepareAntiTruncation(request *aistudio.GenerateRequest) bool {
 	request.Tools.ToolConfig.Mode = "required"
 	if len(request.Tools.Functions) == 1 {
 		request.Tools.ToolConfig.AllowedFunctionNames = []string{replyToolName}
-		request.Tools.StreamReplyArguments = !request.Unary && (strings.HasPrefix(request.Model, "gemini-3") || strings.HasPrefix(request.Model, "gemini-4"))
+		request.Tools.ToolConfig.StreamReplyArguments = !request.Unary && (strings.HasPrefix(request.Model, "gemini-3") || strings.HasPrefix(request.Model, "gemini-4"))
 	}
-	if !strings.Contains(request.System, replyToolInstruction) {
-		request.System += "\n\n" + replyToolInstruction
+	if !strings.Contains(aistudio.SystemText(request.System), replyToolInstruction) {
+		request.System = append(slices.Clone(request.System), replyToolInstruction)
 	}
 	if last := latestUserInput(request.Contents); last >= 0 {
 		request.Contents = slices.Clone(request.Contents)
@@ -80,24 +80,24 @@ func antiTruncationEvents(ctx context.Context, source <-chan aistudio.Event) <-c
 				}
 				event = next
 			}
-			if event.Kind == aistudio.EventToolCallDelta && event.ToolCall != nil && event.ToolCall.Name == replyToolName {
-				id := event.ToolCall.ID
+			if event.Kind == aistudio.EventToolCallDelta && event.FunctionCall != nil && event.FunctionCall.Name == replyToolName {
+				id := event.FunctionCall.ID
 				if streamed[id] == nil {
 					streamed[id] = &strings.Builder{}
 				}
 				streamed[id].WriteString(event.Text)
-				event.Kind, event.ToolCall = aistudio.EventText, nil
+				event.Kind, event.FunctionCall = aistudio.EventText, nil
 			}
-			if event.Kind == aistudio.EventToolCall && event.ToolCall != nil && event.ToolCall.Name == replyToolName {
+			if event.Kind == aistudio.EventToolCall && event.FunctionCall != nil && event.FunctionCall.Name == replyToolName {
 				var reply struct {
 					Content *string `json:"content"`
 				}
-				if json.Unmarshal(event.ToolCall.Arguments, &reply) != nil || reply.Content == nil || strings.TrimSpace(*reply.Content) == "" {
+				if json.Unmarshal(event.FunctionCall.Arguments, &reply) != nil || reply.Content == nil || strings.TrimSpace(*reply.Content) == "" {
 					continue
 				}
 				text := *reply.Content
-				if previous := streamed[event.ToolCall.ID]; previous != nil {
-					delete(streamed, event.ToolCall.ID)
+				if previous := streamed[event.FunctionCall.ID]; previous != nil {
+					delete(streamed, event.FunctionCall.ID)
 					if !strings.HasPrefix(text, previous.String()) {
 						// 已发送的分片无法撤回，保留它们，不再重复输出冲突正文。
 						continue
@@ -107,7 +107,7 @@ func antiTruncationEvents(ctx context.Context, source <-chan aistudio.Event) <-c
 						continue
 					}
 				}
-				event.Kind, event.Text, event.ToolCall = aistudio.EventText, text, nil
+				event.Kind, event.Text, event.FunctionCall = aistudio.EventText, text, nil
 				event.ThoughtSignature = ""
 			}
 			select {

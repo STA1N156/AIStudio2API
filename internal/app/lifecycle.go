@@ -2,8 +2,8 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -12,7 +12,9 @@ import (
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 	"github.com/Mag1cFall/AIStudio2API/internal/config"
+	"github.com/Mag1cFall/AIStudio2API/internal/promptdb"
 	"github.com/Mag1cFall/AIStudio2API/internal/requestdb"
 )
 
@@ -21,28 +23,55 @@ type managedService interface {
 	aistudio.Service
 	State() string
 	ApplyCapacity(warmTarget int, maxActive int, startupConcurrency int, perAccountConcurrency int)
+	SetAPIKeyAccounts(map[string][]string)
+}
+
+// generationAdmin 表示进程级管理器转交给当前生成服务的管理操作
+type generationAdmin interface {
+	Status(context.Context) (api.AdminStatus, error)
+	CatalogModels(context.Context) ([]aistudio.Model, error)
+	Accounts(context.Context) ([]api.AdminAccount, error)
+	AccountExits(context.Context) ([]api.AccountExit, error)
+	CreateAccount(context.Context, api.AccountCreateInput, *camoufoxnative.LiveView) (api.AdminAccount, error)
+	ChromeImportProfiles(context.Context) ([]api.ChromeImportProfile, error)
+	CookieBrowsers(ctx context.Context, proxy string) ([]api.CookieBrowser, error)
+	DiscoverCookieAccounts(context.Context, api.CookieImportInput) ([]api.CookieBrowser, error)
+	ImportChromeAccounts(context.Context, api.ChromeImportInput) ([]api.AdminAccount, error)
+	ImportAccountState(context.Context, api.AccountStateInput) (api.AdminAccount, error)
+	RenewAccountCookies(ctx context.Context, accountID string, token string, cookies []aistudio.StateCookie) (api.AdminAccount, error)
+	UpdateAccount(context.Context, string, api.AccountInput) (api.AdminAccount, error)
+	DeleteAccount(context.Context, string) error
+	LoginAccount(context.Context, string, *camoufoxnative.LiveView) (api.AdminAccount, error)
+	RefreshAccount(context.Context, string) (api.AdminAccountRefresh, error)
+	StartService(context.Context) (api.AdminStatus, error)
+	StopService(context.Context) (api.AdminStatus, error)
+	RuntimeConfig(context.Context) (api.RuntimeConfig, error)
+	UpdateRuntimeConfig(context.Context, api.RuntimeConfig) (api.RuntimeConfig, error)
+	Cooldowns(context.Context) ([]api.AdminCooldown, error)
+	ClearCooldown(ctx context.Context, accountID string, scope string) error
+	Requests(context.Context) ([]api.AdminRequest, error)
+	CancelRequest(context.Context, string) error
+	RecordAccessStart(api.AccessLog)
+	RecordAccessLog(api.AccessLog)
 }
 
 // runtimeGeneration 保存同一份配置装配的完整运行时
 type runtimeGeneration struct {
 	service         managedService
-	admin           api.AdminService
+	admin           generationAdmin
 	config          config.Config
 	lifecycleCancel context.CancelFunc
 	closeRuntime    func() error
+	// camoufoxWait 在启动开始等待 Camoufox 下载时关闭，不需要 Camoufox 时为 nil
+	camoufoxWait <-chan struct{}
 }
 
 // runtimeFactory 创建一个完整生成服务实例
 type runtimeFactory func(context.Context, context.Context, config.Config, *requestRegistry) (*runtimeGeneration, error)
 
-// cancelLifecycle 取消当前生成服务实例的全部后台操作
-func (generation *runtimeGeneration) cancelLifecycle() {
-	generation.lifecycleCancel()
-}
-
 // Close 取消当前生成服务实例并释放运行时
 func (generation *runtimeGeneration) Close() error {
-	generation.cancelLifecycle()
+	generation.lifecycleCancel()
 	return generation.closeRuntime()
 }
 
@@ -67,14 +96,30 @@ type runtimeManager struct {
 	lifecycle        context.Context
 	configPath       string
 	activeManagement config.Config
-	overrides        dataConfigOverrides
-	requests         *requestRegistry
-	factory          runtimeFactory
-	startMu          sync.Mutex
-	mu               sync.RWMutex
-	current          *runtimeGeneration
-	startCancel      context.CancelFunc
+	// reservedListenAddr 是被 Windows 保留而改用 activeManagement.ListenAddr 监听的配置地址，没有改用时为空
+	reservedListenAddr string
+	previewAddress     string
+	overrides          dataConfigOverrides
+	requests           *requestRegistry
+	factory            runtimeFactory
+	startMu            sync.Mutex
+	mu                 sync.RWMutex
+	current            *runtimeGeneration
+	// accountsMu 由账户的新增、导入、续签、更新、删除、登录与刷新在操作期间持读锁，生成服务换代从停止旧生成服务到发布新生成服务持写锁
+	accountsMu sync.RWMutex
+	// initial 是进程启动时装配、尚未启动过的生成服务，自动启动时配置未变就直接启动它而不重新载入账户
+	initial *runtimeGeneration
+	// launchMu 保护 startCancel、launching、launchReleased 与 autoStartCancel
+	launchMu    sync.Mutex
+	startCancel context.CancelFunc
+	// launching 在生成服务启动期间存在，启动结束时关闭
+	launching chan struct{}
+	// launchReleased 在本轮启动开始等待 Camoufox 下载时关闭，Camoufox 就绪前等待启动的公开请求不再等待
+	launchReleased   chan struct{}
+	autoStartCancel  context.CancelFunc
 	ledger           *requestdb.Store
+	prompts          *promptdb.Store
+	states           api.StateStore
 	logs             *logOutput
 	requestCapacity  atomic.Int64
 	requestTimeout   atomic.Int64
@@ -97,10 +142,11 @@ func newRuntimeManager(
 	if err != nil {
 		return nil, err
 	}
+	generation.service.SetAPIKeyAccounts(apiKeyAccounts(cfg.ProxyAPIKey, cfg.APIKeyAccounts, cfg))
 	manager.current = generation
-	manager.requestCapacity.Store(int64(cfg.MaxActiveWorkers * cfg.PerAccountConcurrency))
-	manager.requestTimeout.Store(int64(cfg.RequestTimeout))
-	manager.allowEmptyOutput.Store(!cfg.EmptyOutputError)
+	if cfg.AutoStart {
+		manager.initial = generation
+	}
 	return manager, nil
 }
 
@@ -129,30 +175,34 @@ func buildRuntimeGeneration(
 	}
 	return &runtimeGeneration{
 		service: service, admin: admin, config: cfg,
-		lifecycleCancel: lifecycleCancel, closeRuntime: closeRuntime,
+		lifecycleCancel: lifecycleCancel, closeRuntime: closeRuntime, camoufoxWait: service.camoufoxWait,
 	}, nil
 }
 
-// StartService 从最新配置创建并启动新生成服务
+// StartService 取消自动启动的重试后从最新配置启动生成服务
 func (manager *runtimeManager) StartService(ctx context.Context) (api.AdminStatus, error) {
+	manager.stopAutoStart()
+	return manager.startService(ctx)
+}
+
+// startService 从最新配置创建并启动新生成服务
+func (manager *runtimeManager) startService(ctx context.Context) (api.AdminStatus, error) {
 	manager.startMu.Lock()
 	defer manager.startMu.Unlock()
 
-	manager.mu.Lock()
+	manager.mu.RLock()
 	current := manager.current
+	manager.mu.RUnlock()
 	if current.service.State() != "STOPPED" {
-		status, err := current.admin.StartService(ctx)
-		manager.mu.Unlock()
-		return status, err
-	}
-	if _, err := current.admin.StopService(ctx); err != nil {
-		manager.mu.Unlock()
-		return api.AdminStatus{}, err
+		return current.admin.StartService(ctx)
 	}
 	launchCtx, launchCancel := context.WithCancel(manager.lifecycle)
-	manager.startCancel = launchCancel
-	manager.mu.Unlock()
-
+	launching, released := make(chan struct{}), make(chan struct{})
+	manager.launchMu.Lock()
+	manager.startCancel, manager.launching, manager.launchReleased = launchCancel, launching, released
+	manager.launchMu.Unlock()
+	initial := manager.initial
+	manager.initial = nil
 	cfg, err := config.Load(manager.configPath)
 	if err != nil {
 		manager.finishStart(launchCancel)
@@ -164,17 +214,33 @@ func (manager *runtimeManager) StartService(ctx context.Context) (api.AdminStatu
 		return api.AdminStatus{}, err
 	}
 
-	next, err := manager.factory(launchCtx, manager.lifecycle, cfg, manager.requests)
-	if err != nil {
-		manager.finishStart(launchCancel)
-		return api.AdminStatus{}, err
+	next := current
+	release := func() {}
+	if initial != current || !reflect.DeepEqual(cfg, current.config) {
+		manager.accountsMu.Lock()
+		release = manager.accountsMu.Unlock
+		if _, err := current.admin.StopService(ctx); err != nil {
+			release()
+			manager.finishStart(launchCancel)
+			return api.AdminStatus{}, err
+		}
+		next, err = manager.factory(launchCtx, manager.lifecycle, cfg, manager.requests)
+		if err != nil {
+			release()
+			manager.finishStart(launchCancel)
+			return api.AdminStatus{}, err
+		}
 	}
 	if launchCtx.Err() != nil {
+		release()
 		manager.finishStart(launchCancel)
-		_ = next.Close()
+		if next != current {
+			_ = next.Close()
+		}
 		return manager.Status(ctx)
 	}
 
+	next.service.SetAPIKeyAccounts(apiKeyAccounts(cfg.ProxyAPIKey, cfg.APIKeyAccounts, manager.activeManagement))
 	manager.mu.Lock()
 	current = manager.current
 	manager.current = next
@@ -184,28 +250,71 @@ func (manager *runtimeManager) StartService(ctx context.Context) (api.AdminStatu
 	manager.ledger.SetRecording(cfg.EmptyOutputError || cfg.LogConsole)
 	manager.ledger.SetBodyCapture(cfg.RequestBodyLog)
 	manager.mu.Unlock()
+	release()
+	if next.camoufoxWait != nil {
+		go func() {
+			select {
+			case <-next.camoufoxWait:
+				close(released)
+			case <-launching:
+			}
+		}()
+	}
 
-	current.cancelLifecycle()
+	if next != current {
+		current.lifecycleCancel()
+	}
 	status, startErr := next.admin.StartService(launchCtx)
 	manager.finishStart(launchCancel)
-	if err := current.Close(); err != nil {
-		manager.requests.log("service", "WARN", "旧生成服务关闭失败 | 错误="+err.Error())
+	if next != current {
+		if err := current.Close(); err != nil {
+			manager.requests.log("service", "WARN", "旧生成服务关闭失败", "error", err)
+		}
 	}
 	return status, startErr
 }
 
-// finishStart 清理本轮生成服务启动取消句柄
+// finishStart 清理本轮生成服务启动取消句柄并放行等待启动结束的请求
 func (manager *runtimeManager) finishStart(cancel context.CancelFunc) {
-	manager.mu.Lock()
+	manager.launchMu.Lock()
 	manager.startCancel = nil
-	manager.mu.Unlock()
+	close(manager.launching)
+	manager.launching, manager.launchReleased = nil, nil
+	manager.launchMu.Unlock()
 	cancel()
+}
+
+// WaitLaunch 在生成服务启动期间等到启动结束或 ctx 结束，启动正在等待 Camoufox 下载时立即返回
+func (manager *runtimeManager) WaitLaunch(ctx context.Context) {
+	manager.launchMu.Lock()
+	launching, released := manager.launching, manager.launchReleased
+	manager.launchMu.Unlock()
+	if launching == nil {
+		return
+	}
+	select {
+	case <-launching:
+		return
+	case <-released:
+	case <-ctx.Done():
+		return
+	}
+	if !camoufoxnative.PreparationState().Ready {
+		return
+	}
+	select {
+	case <-launching:
+	case <-ctx.Done():
+	}
 }
 
 // StopService 停止当前生成服务并保持管理监听器运行
 func (manager *runtimeManager) StopService(ctx context.Context) (api.AdminStatus, error) {
-	manager.mu.RLock()
+	manager.stopAutoStart()
+	manager.launchMu.Lock()
 	cancel := manager.startCancel
+	manager.launchMu.Unlock()
+	manager.mu.RLock()
 	current := manager.current
 	manager.mu.RUnlock()
 	if cancel != nil {
@@ -214,11 +323,58 @@ func (manager *runtimeManager) StopService(ctx context.Context) (api.AdminStatus
 	return current.admin.StopService(ctx)
 }
 
+// DownloadCamoufox 在 Camoufox 未就绪且没有进行中的下载时经出口代理在后台开始下载
+func (manager *runtimeManager) DownloadCamoufox(ctx context.Context) (api.AdminStatus, error) {
+	camoufoxnative.PrepareInBackground(manager.egressProxy())
+	return manager.Status(ctx)
+}
+
+// autoStartContext 返回手动启动或停止生成服务时取消的自动启动上下文
+func (manager *runtimeManager) autoStartContext(parent context.Context) context.Context {
+	ctx, cancel := context.WithCancel(parent)
+	manager.launchMu.Lock()
+	manager.autoStartCancel = cancel
+	manager.launchMu.Unlock()
+	return ctx
+}
+
+// stopAutoStart 取消自动启动及其重试
+func (manager *runtimeManager) stopAutoStart() {
+	manager.launchMu.Lock()
+	cancel := manager.autoStartCancel
+	manager.autoStartCancel = nil
+	manager.launchMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // Close 释放当前生成服务
 func (manager *runtimeManager) Close() error {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	return manager.current.Close()
+}
+
+// responseModes 返回当前生成服务的非流式保活与假流式设置
+func (manager *runtimeManager) responseModes() api.ResponseModes {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return api.ResponseModes{NonstreamKeepalive: manager.current.config.NonstreamKeepalive, FakeStream: manager.current.config.FakeStream}
+}
+
+// searchSettings 返回当前生成服务的搜索开关
+func (manager *runtimeManager) searchSettings() (modelAliases, googleSearch bool) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.config.SearchModelAliases, manager.current.config.GoogleSearch
+}
+
+// mediaLinks 返回当前生成服务的媒体输出是否使用 URL 与设置的服务地址
+func (manager *runtimeManager) mediaLinks() (bool, string) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.config.MediaOutput == config.MediaOutputURL, manager.current.config.MediaBaseURL
 }
 
 // Models 返回当前生成服务模型
@@ -275,125 +431,109 @@ func (manager *runtimeManager) Generate(ctx context.Context, request aistudio.Ge
 	return generateWithEmptyRetry(ctx, request, generate)
 }
 
+// GenerateTitle 由当前生成服务生成试用页页头标题
+func (manager *runtimeManager) GenerateTitle(ctx context.Context, request aistudio.TitleRequest) (string, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.service.(aistudio.TitleService).GenerateTitle(ctx, request)
+}
+
+// GenerateImage 由当前生成服务生成 Imagen 图片
+func (manager *runtimeManager) GenerateImage(ctx context.Context, request aistudio.ImageRequest) ([]aistudio.GeneratedImage, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.service.(aistudio.ImageService).GenerateImage(ctx, request)
+}
+
+// CreateDecision 由当前生成服务回答决策问题
+func (manager *runtimeManager) CreateDecision(ctx context.Context, request aistudio.DecisionRequest) (aistudio.DecisionResult, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.service.(aistudio.DecisionService).CreateDecision(ctx, request)
+}
+
 // GenerateVideo 由当前生成服务创建视频任务
 func (manager *runtimeManager) GenerateVideo(ctx context.Context, request aistudio.VideoRequest) (aistudio.VideoOperation, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.VideoService)
-	if !ok {
-		return aistudio.VideoOperation{}, fmt.Errorf("video service 不可用")
-	}
-	return service.GenerateVideo(ctx, request)
+	return manager.current.service.(aistudio.VideoService).GenerateVideo(ctx, request)
 }
 
 // GetGenerateVideoOperation 由当前生成服务读取视频任务
 func (manager *runtimeManager) GetGenerateVideoOperation(ctx context.Context, id string) (aistudio.VideoOperation, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.VideoService)
-	if !ok {
-		return aistudio.VideoOperation{}, fmt.Errorf("video service 不可用")
-	}
-	return service.GetGenerateVideoOperation(ctx, id)
+	return manager.current.service.(aistudio.VideoService).GetGenerateVideoOperation(ctx, id)
 }
 
 // ListVideos 由当前生成服务列出视频任务
 func (manager *runtimeManager) ListVideos(ctx context.Context) ([]aistudio.VideoOperation, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.VideoService)
-	if !ok {
-		return nil, fmt.Errorf("video service 不可用")
-	}
-	return service.ListVideos(ctx)
+	return manager.current.service.(aistudio.VideoService).ListVideos(ctx)
 }
 
 // DeleteVideo 由当前生成服务删除视频任务
 func (manager *runtimeManager) DeleteVideo(ctx context.Context, id string) error {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.VideoService)
-	if !ok {
-		return fmt.Errorf("video service 不可用")
-	}
-	return service.DeleteVideo(ctx, id)
+	return manager.current.service.(aistudio.VideoService).DeleteVideo(ctx, id)
 }
 
 // DownloadFile 由当前生成服务下载文件
 func (manager *runtimeManager) DownloadFile(ctx context.Context, id string) (aistudio.MediaStream, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.VideoService)
-	if !ok {
-		return aistudio.MediaStream{}, fmt.Errorf("video service 不可用")
-	}
-	return service.DownloadFile(ctx, id)
+	return manager.current.service.(aistudio.VideoService).DownloadFile(ctx, id)
 }
 
 // UploadFile 由当前生成服务上传文件
 func (manager *runtimeManager) UploadFile(ctx context.Context, request aistudio.UploadRequest) (aistudio.FileRef, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.FileService)
-	if !ok {
-		return aistudio.FileRef{}, fmt.Errorf("file service 不可用")
-	}
-	return service.UploadFile(ctx, request)
+	return manager.current.service.(aistudio.FileService).UploadFile(ctx, request)
+}
+
+// VideoFrameTokens 由当前生成服务统计视频文件按视频设置抽帧后的 token 数
+func (manager *runtimeManager) VideoFrameTokens(ctx context.Context, request aistudio.VideoFramesRequest) (int64, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.service.(aistudio.VideoFrameService).VideoFrameTokens(ctx, request)
 }
 
 // FileMetadata 由当前生成服务读取文件元数据
 func (manager *runtimeManager) FileMetadata(ctx context.Context, id string) (aistudio.FileMetadata, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.FileService)
-	if !ok {
-		return aistudio.FileMetadata{}, fmt.Errorf("file service 不可用")
-	}
-	return service.FileMetadata(ctx, id)
+	return manager.current.service.(aistudio.FileService).FileMetadata(ctx, id)
 }
 
 // ListFiles 由当前生成服务列出上传文件
 func (manager *runtimeManager) ListFiles(ctx context.Context) ([]aistudio.FileMetadata, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.FileService)
-	if !ok {
-		return nil, fmt.Errorf("file service 不可用")
-	}
-	return service.ListFiles(ctx)
+	return manager.current.service.(aistudio.FileService).ListFiles(ctx)
 }
 
 // DeleteFile 由当前生成服务删除文件
 func (manager *runtimeManager) DeleteFile(ctx context.Context, id string) error {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.FileService)
-	if !ok {
-		return fmt.Errorf("file service 不可用")
-	}
-	return service.DeleteFile(ctx, id)
+	return manager.current.service.(aistudio.FileService).DeleteFile(ctx, id)
 }
 
 // OpenBidi 由当前生成服务创建实时会话
 func (manager *runtimeManager) OpenBidi(ctx context.Context, request aistudio.BidiRequest) (*aistudio.BidiSession, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.BidiService)
-	if !ok {
-		return nil, fmt.Errorf("bidi service 不可用")
-	}
-	return service.OpenBidi(ctx, request)
+	return manager.current.service.(aistudio.BidiService).OpenBidi(ctx, request)
 }
 
 // Transcribe 由当前生成服务执行音频转录
 func (manager *runtimeManager) Transcribe(ctx context.Context, request aistudio.TranscriptionRequest) (aistudio.TranscriptionResult, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	service, ok := manager.current.service.(aistudio.TranscriptionService)
-	if !ok {
-		return aistudio.TranscriptionResult{}, fmt.Errorf("transcription service 不可用")
-	}
-	return service.Transcribe(ctx, request)
+	return manager.current.service.(aistudio.TranscriptionService).Transcribe(ctx, request)
 }
 
 // egressProxy 返回管理进程访问外网的代理：PROXY 的第一个代理，未设置时为系统代理
@@ -421,11 +561,30 @@ func (manager *runtimeManager) Accounts(ctx context.Context) ([]api.AdminAccount
 	return manager.current.admin.Accounts(ctx)
 }
 
-// CreateAccount 在当前生成服务创建账户
-func (manager *runtimeManager) CreateAccount(ctx context.Context, input api.AccountCreateInput) (api.AdminAccount, error) {
+// AccountExits 查询当前生成服务各账户出口的公网 IP 与地理位置，查询期间不占用生成服务
+func (manager *runtimeManager) AccountExits(ctx context.Context) ([]api.AccountExit, error) {
+	manager.mu.RLock()
+	admin := manager.current.admin
+	manager.mu.RUnlock()
+	return admin.AccountExits(ctx)
+}
+
+// accountAdmin 返回当前生成服务的管理接口与结束本次账户操作的函数，结束前生成服务不换代
+func (manager *runtimeManager) accountAdmin() (generationAdmin, func()) {
+	manager.accountsMu.RLock()
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.current.admin.CreateAccount(ctx, input)
+	return manager.current.admin, manager.accountsMu.RUnlock
+}
+
+// CreateAccount 等 Camoufox 就绪后在当前生成服务以浏览器登录创建账户，等待下载期间不占用生成服务
+func (manager *runtimeManager) CreateAccount(ctx context.Context, input api.AccountCreateInput, view *camoufoxnative.LiveView) (api.AdminAccount, error) {
+	if err := manager.prepareLoginCamoufox(ctx, "auth"); err != nil {
+		return api.AdminAccount{}, err
+	}
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.CreateAccount(ctx, input, view)
 }
 
 // ChromeImportProfiles 返回当前生成服务可导入的 Chrome 账号
@@ -435,46 +594,86 @@ func (manager *runtimeManager) ChromeImportProfiles(ctx context.Context) ([]api.
 	return manager.current.admin.ChromeImportProfiles(ctx)
 }
 
-// ImportChromeAccounts 在当前生成服务批量导入 Chrome 账号
-func (manager *runtimeManager) ImportChromeAccounts(ctx context.Context, input api.ChromeImportInput) ([]api.AdminAccount, error) {
+// CookieBrowsers 返回当前生成服务发现的本机调试浏览器，proxy 为识别账户的请求出口
+func (manager *runtimeManager) CookieBrowsers(ctx context.Context, proxy string) ([]api.CookieBrowser, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.current.admin.ImportChromeAccounts(ctx, input)
+	return manager.current.admin.CookieBrowsers(ctx, proxy)
 }
 
-// ImportAccountState 在当前生成服务导入远程配对账户
-func (manager *runtimeManager) ImportAccountState(ctx context.Context, input api.AccountStateInput) (api.AdminAccount, error) {
+// DiscoverCookieAccounts 返回粘贴 Cookie 中各会话序号登录的账户并标记已导入的账户
+func (manager *runtimeManager) DiscoverCookieAccounts(ctx context.Context, input api.CookieImportInput) ([]api.CookieBrowser, error) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.current.admin.ImportAccountState(ctx, input)
+	return manager.current.admin.DiscoverCookieAccounts(ctx, input)
+}
+
+// ImportChromeAccounts 在当前生成服务批量导入 Chrome 账号
+func (manager *runtimeManager) ImportChromeAccounts(ctx context.Context, input api.ChromeImportInput) ([]api.AdminAccount, error) {
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.ImportChromeAccounts(ctx, input)
+}
+
+// ImportAccountState 在当前生成服务导入远程配对或 Cookie 导入的账户
+func (manager *runtimeManager) ImportAccountState(ctx context.Context, input api.AccountStateInput) (api.AdminAccount, error) {
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.ImportAccountState(ctx, input)
+}
+
+// RenewAccountCookies 在当前生成服务以配对续签凭据替换账户的会话 Cookie
+func (manager *runtimeManager) RenewAccountCookies(ctx context.Context, accountID string, token string, cookies []aistudio.StateCookie) (api.AdminAccount, error) {
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.RenewAccountCookies(ctx, accountID, token, cookies)
 }
 
 // UpdateAccount 在当前生成服务更新账户
 func (manager *runtimeManager) UpdateAccount(ctx context.Context, id string, input api.AccountInput) (api.AdminAccount, error) {
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return manager.current.admin.UpdateAccount(ctx, id, input)
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.UpdateAccount(ctx, id, input)
 }
 
 // DeleteAccount 在当前生成服务删除账户
 func (manager *runtimeManager) DeleteAccount(ctx context.Context, id string) error {
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return manager.current.admin.DeleteAccount(ctx, id)
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.DeleteAccount(ctx, id)
 }
 
-// LoginAccount 在当前生成服务登录账户
-func (manager *runtimeManager) LoginAccount(ctx context.Context, id string) (api.AdminAccount, error) {
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return manager.current.admin.LoginAccount(ctx, id)
+// LoginAccount 等 Camoufox 就绪后在当前生成服务重新登录账户，等待下载期间不占用生成服务
+func (manager *runtimeManager) LoginAccount(ctx context.Context, id string, view *camoufoxnative.LiveView) (api.AdminAccount, error) {
+	if err := manager.prepareLoginCamoufox(ctx, id); err != nil {
+		return api.AdminAccount{}, err
+	}
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.LoginAccount(ctx, id, view)
+}
+
+// prepareLoginCamoufox 在浏览器登录前等 Camoufox 就绪，需要下载时记录等待，失败时记录原因
+func (manager *runtimeManager) prepareLoginCamoufox(ctx context.Context, source string) error {
+	if !camoufoxnative.PreparationState().Ready {
+		manager.requests.log(source, "INFO", "浏览器登录等待 Camoufox 下载")
+		camoufoxnative.PrepareInBackground(manager.egressProxy())
+		if status, err := manager.Status(ctx); err == nil {
+			manager.requests.publish(api.AdminEvent{Type: "status", Data: status})
+		}
+	}
+	_, err := camoufoxnative.Prepare(ctx, manager.egressProxy())
+	if err != nil {
+		manager.requests.log(source, "ERROR", "浏览器登录失败", "error", err)
+	}
+	return err
 }
 
 // RefreshAccount 在当前生成服务立即刷新账户状态
 func (manager *runtimeManager) RefreshAccount(ctx context.Context, id string) (api.AdminAccountRefresh, error) {
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return manager.current.admin.RefreshAccount(ctx, id)
+	admin, done := manager.accountAdmin()
+	defer done()
+	return admin.RefreshAccount(ctx, id)
 }
 
 // ClearLogs 清空进程级管理日志
@@ -499,6 +698,7 @@ func (manager *runtimeManager) UpdateRuntimeConfig(ctx context.Context, value ap
 	manager.mu.Lock()
 	updated, err := manager.current.admin.UpdateRuntimeConfig(ctx, value)
 	if err == nil {
+		manager.current.service.SetAPIKeyAccounts(apiKeyAccounts(updated.APIKey, updated.APIKeyAccounts, manager.activeManagement))
 		manager.current.service.ApplyCapacity(
 			updated.WarmWorkerLimit, updated.MaxActiveWorkers, updated.WarmStartupConcurrency, updated.PerAccountConcurrency,
 		)
@@ -518,6 +718,13 @@ func (manager *runtimeManager) Cooldowns(ctx context.Context) ([]api.AdminCooldo
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	return manager.current.admin.Cooldowns(ctx)
+}
+
+// ClearCooldown 手动清除账户在一个作用域上的冷却
+func (manager *runtimeManager) ClearCooldown(ctx context.Context, accountID string, scope string) error {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.admin.ClearCooldown(ctx, accountID, scope)
 }
 
 // Requests 返回进程级活动请求
@@ -559,10 +766,11 @@ func (manager *runtimeManager) RecordAccessLog(entry api.AccessLog) {
 // decorateRuntimeConfig 标记配置所属的进程级与生成服务生效时机
 func (manager *runtimeManager) decorateRuntimeConfig(value api.RuntimeConfig, active config.Config) api.RuntimeConfig {
 	value.ActiveListenAddr = manager.activeManagement.ListenAddr
+	value.ReservedListenAddr = manager.reservedListenAddr
 	value.ActiveAPIKey = manager.activeManagement.ProxyAPIKey
-	value.ActivePublicBaseURL = manager.activeManagement.PublicBaseURL
-	value.ManagementRestartRequired = value.ListenAddr != value.ActiveListenAddr || value.APIKey != value.ActiveAPIKey ||
-		value.PublicBaseURL != value.ActivePublicBaseURL
+	value.ActivePreviewListenAddr = manager.previewAddress
+	value.ManagementRestartRequired = value.ListenAddr != value.ActiveListenAddr && value.ListenAddr != value.ReservedListenAddr || value.APIKey != value.ActiveAPIKey ||
+		value.PreviewListenAddr != manager.activeManagement.PreviewListenAddr
 	value.ManagementRestartRequired = value.ManagementRestartRequired ||
 		value.AdminAuthEnabled != manager.activeManagement.AdminAuthEnabled ||
 		value.AdminUsername != manager.activeManagement.AdminUsername ||
@@ -573,26 +781,41 @@ func (manager *runtimeManager) decorateRuntimeConfig(value api.RuntimeConfig, ac
 
 // sameDataConfig 比较已保存配置与当前生成服务配置
 func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dataConfigOverrides) bool {
-	initTimeout, initErr := time.ParseDuration(value.InitTimeout)
-	requestTimeout, requestErr := time.ParseDuration(value.RequestTimeout)
-	if initErr != nil || requestErr != nil {
-		return false
-	}
+	initTimeout, _ := time.ParseDuration(value.InitTimeout)
+	requestTimeout, _ := time.ParseDuration(value.RequestTimeout)
 	saved := config.Config{
 		AuthStates: value.AuthStates, Proxy: value.Proxy,
-		InitTimeout: initTimeout, RequestTimeout: requestTimeout, TemporaryChat: value.TemporaryChat,
-		UpstreamChannels:     value.UpstreamChannels,
-		ModelMapping:         value.ModelMapping,
-		WAABackend:           value.WAABackend,
-		BuildNativeNonstream: value.BuildNativeNonstream,
+		InitTimeout: initTimeout, RequestTimeout: requestTimeout, StripThoughtSignatures: value.StripThoughtSignatures,
+		UpstreamChannels:      value.UpstreamChannels,
+		ModelMapping:          value.ModelMapping,
+		MaxAccountSwitches:    value.MaxAccountSwitches,
+		WAABackend:            value.WAABackend,
+		BuildNativeNonstream:  value.BuildNativeNonstream,
+		NonstreamKeepalive:    value.NonstreamKeepalive,
+		FakeStream:            value.FakeStream,
+		YouTubeLinks:          value.YouTubeLinks,
+		SearchModelAliases:    value.SearchModelAliases,
+		DiscoverHiddenModels:  value.DiscoverHiddenModels,
+		GoogleSearch:          value.GoogleSearch,
+		FirstEventHedge:       value.FirstEventHedge,
+		FirstEventHedgeModels: value.FirstEventHedgeModels,
+		ContinuationRewrite:   value.ContinuationRewrite,
+		ContinuationPrompt:    value.ContinuationPrompt,
+		MediaOutput:           value.MediaOutput,
+		MediaBaseURL:          value.MediaBaseURL,
 	}
 	overrides.Apply(&saved)
 	return saved.AuthStates == active.AuthStates && saved.Proxy == active.Proxy &&
 		saved.InitTimeout == active.InitTimeout && saved.RequestTimeout == active.RequestTimeout &&
-		saved.TemporaryChat == active.TemporaryChat &&
 		slices.Equal(saved.UpstreamChannels, active.UpstreamChannels) && saved.ModelMapping == active.ModelMapping &&
+		saved.MaxAccountSwitches == active.MaxAccountSwitches &&
 		saved.WAABackend == active.WAABackend &&
-		saved.BuildNativeNonstream == active.BuildNativeNonstream
+		saved.BuildNativeNonstream == active.BuildNativeNonstream &&
+		saved.NonstreamKeepalive == active.NonstreamKeepalive && saved.FakeStream == active.FakeStream &&
+		saved.YouTubeLinks == active.YouTubeLinks && saved.StripThoughtSignatures == active.StripThoughtSignatures && saved.FirstEventHedge == active.FirstEventHedge && saved.FirstEventHedgeModels == active.FirstEventHedgeModels &&
+		saved.SearchModelAliases == active.SearchModelAliases && saved.DiscoverHiddenModels == active.DiscoverHiddenModels && saved.GoogleSearch == active.GoogleSearch &&
+		saved.ContinuationRewrite == active.ContinuationRewrite && saved.ContinuationPrompt == active.ContinuationPrompt &&
+		saved.MediaOutput == active.MediaOutput && saved.MediaBaseURL == active.MediaBaseURL
 }
 
 var _ aistudio.Service = (*runtimeManager)(nil)

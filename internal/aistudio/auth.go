@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
 // StateCookie 表示 Playwright storage state 中的 Cookie
@@ -25,6 +27,29 @@ type StateCookie struct {
 	Secure       bool    `json:"secure"`
 	SameSite     string  `json:"sameSite"`
 	PartitionKey string  `json:"partitionKey,omitempty"`
+}
+
+// rotatingCookieNames 是 Google 每次响应都会轮换的 Cookie 名
+var rotatingCookieNames = map[string]bool{"SIDCC": true, "__Secure-1PSIDCC": true, "__Secure-3PSIDCC": true}
+
+// rotatingCookieWriteInterval 是只有轮换 Cookie 变化时磁盘状态的最短写入间隔
+const rotatingCookieWriteInterval = 30 * time.Second
+
+// onlyRotatingCookiesChanged 判断 next 与 previous 是否只在轮换 Cookie 的值与过期时间上不同
+func onlyRotatingCookiesChanged(previous []StateCookie, next []StateCookie) bool {
+	if len(previous) != len(next) {
+		return false
+	}
+	for index, cookie := range next {
+		old := previous[index]
+		if rotatingCookieNames[cookie.Name] {
+			old.Value, old.Expires = cookie.Value, cookie.Expires
+		}
+		if old != cookie {
+			return false
+		}
+	}
+	return true
 }
 
 // StorageItem 表示浏览器本地存储项
@@ -49,39 +74,41 @@ type StorageState struct {
 // AuthSource 记录认证状态的来源
 type AuthSource struct {
 	Browser string `json:"browser"`
+	Root    string `json:"root,omitempty"`
 	Profile string `json:"profile,omitempty"`
 	Email   string `json:"email,omitempty"`
 }
 
-// ChromeOAuthMaterial 保存 Chrome DBSC 续签材料
+// ChromeOAuthMaterial 保存 Chrome OAuth 续签材料，设备绑定密钥可为空
 type ChromeOAuthMaterial struct {
 	GaiaID            string `json:"gaia_id"`
 	RefreshToken      string `json:"refresh_token"`
-	WrappedBindingKey []byte `json:"wrapped_binding_key"`
+	WrappedBindingKey []byte `json:"wrapped_binding_key,omitempty"`
+}
+
+// BoundSession 是 OAuthMultilogin 登记的 Google DBSC 会话，以 OAuth 材料的设备绑定密钥刷新
+type BoundSession struct {
+	ID          string   `json:"id"`
+	RefreshURL  string   `json:"refresh_url"`
+	Credentials []string `json:"credentials"`
 }
 
 // AuthExtension 保存 aistudio2api 认证扩展
 type AuthExtension struct {
 	Source AuthSource           `json:"source"`
 	OAuth  *ChromeOAuthMaterial `json:"oauth,omitempty"`
+	Bound  *BoundSession        `json:"bound_session,omitempty"`
 }
 
 const authExtensionKey = "aistudio2api"
 
 // SetAuthExtension 写入 aistudio2api 认证扩展
-func (s *StorageState) SetAuthExtension(extension AuthExtension) error {
-	if s == nil {
-		return fmt.Errorf("storage state 为空")
-	}
-	raw, err := json.Marshal(extension)
-	if err != nil {
-		return fmt.Errorf("编码认证扩展: %w", err)
-	}
+func (s *StorageState) SetAuthExtension(extension AuthExtension) {
+	raw, _ := json.Marshal(extension)
 	if s.extra == nil {
 		s.extra = make(map[string]json.RawMessage)
 	}
 	s.extra[authExtensionKey] = raw
-	return nil
 }
 
 // AuthExtension 返回 aistudio2api 认证扩展
@@ -97,13 +124,33 @@ func (s StorageState) AuthExtension() (AuthExtension, bool, error) {
 	return extension, true, nil
 }
 
-// IsolatedLoginRequest 描述独立浏览器登录所需的稳定环境
+// BoundCookieLifetime 按 Chromium MinimumBoundCookieLifetime 返回 DBSC 会话绑定 Cookie 中最早到期者的剩余时间，缺少或已到期时为 0
+func (s StorageState) BoundCookieLifetime(session BoundSession, now time.Time) time.Duration {
+	lifetime := time.Duration(1<<63 - 1)
+	for _, name := range session.Credentials {
+		remaining := time.Duration(0)
+		for _, cookie := range s.Cookies {
+			if cookie.Name != name || cookie.Domain != ".google.com" || cookie.Value == "" {
+				continue
+			}
+			if cookie.Expires < 0 {
+				remaining = lifetime
+			} else {
+				remaining = max(time.Unix(0, int64(cookie.Expires*1e9)).Sub(now), 0)
+			}
+		}
+		lifetime = min(lifetime, remaining)
+	}
+	return lifetime
+}
+
+// IsolatedLoginRequest 描述独立浏览器登录所需的稳定环境，View 不为空时登录画面显示在管理页登录窗口
 type IsolatedLoginRequest struct {
-	AccountID string
 	Directory string
 	Proxy     string
 	Locale    string
 	Timezone  string
+	View      *camoufoxnative.LiveView
 }
 
 // IsolatedLoginResult 返回独立浏览器导出的认证状态
@@ -112,6 +159,7 @@ type IsolatedLoginResult struct {
 	Email        string
 	VerifiedAt   time.Time
 	DriveError   string
+	CloseError   string
 }
 
 // IsolatedLoginDriver 定义独立浏览器登录
@@ -175,8 +223,8 @@ func (s StorageState) Validate() error {
 // CookieHeader 为目标 URL 构造当前有效的 Cookie 请求头
 func (s StorageState) CookieHeader(targetURL string, now time.Time) (string, error) {
 	target, err := url.Parse(targetURL)
-	if err != nil || target.Scheme == "" || target.Hostname() == "" {
-		return "", fmt.Errorf("目标 URL 无效")
+	if err != nil {
+		return "", err
 	}
 	type candidate struct {
 		cookie StateCookie
@@ -237,11 +285,11 @@ func (s StorageState) CookieValue(name string, targetURL string, now time.Time) 
 	return selected, selectedPath >= 0
 }
 
-// MergeSetCookieHeaders 将响应轮换的 Cookie 合并到 storage state
+// MergeSetCookieHeaders 将响应轮换的 Cookie 合并到 storage state，替换的 Cookie 保留原有位置
 func (s *StorageState) MergeSetCookieHeaders(headers []string, sourceURL string, now time.Time) error {
 	source, err := url.Parse(sourceURL)
-	if err != nil || source.Scheme == "" || source.Hostname() == "" {
-		return fmt.Errorf("来源 URL 无效")
+	if err != nil {
+		return err
 	}
 	for _, header := range headers {
 		response := http.Response{Header: http.Header{"Set-Cookie": []string{header}}}
@@ -265,10 +313,10 @@ func (s *StorageState) MergeSetCookieHeaders(headers []string, sourceURL string,
 				break
 			}
 		}
-		if index >= 0 {
-			s.Cookies = append(s.Cookies[:index], s.Cookies[index+1:]...)
-		}
 		if incoming.MaxAge < 0 || !incoming.Expires.IsZero() && !incoming.Expires.After(now) {
+			if index >= 0 {
+				s.Cookies = append(s.Cookies[:index], s.Cookies[index+1:]...)
+			}
 			continue
 		}
 		expires := float64(-1)
@@ -277,7 +325,7 @@ func (s *StorageState) MergeSetCookieHeaders(headers []string, sourceURL string,
 		} else if !incoming.Expires.IsZero() {
 			expires = float64(incoming.Expires.UnixNano()) / 1e9
 		}
-		s.Cookies = append(s.Cookies, StateCookie{
+		cookie := StateCookie{
 			Name:     incoming.Name,
 			Value:    incoming.Value,
 			Domain:   domain,
@@ -286,7 +334,12 @@ func (s *StorageState) MergeSetCookieHeaders(headers []string, sourceURL string,
 			HTTPOnly: incoming.HttpOnly,
 			Secure:   incoming.Secure,
 			SameSite: sameSiteText(incoming.SameSite),
-		})
+		}
+		if index >= 0 {
+			s.Cookies[index] = cookie
+		} else {
+			s.Cookies = append(s.Cookies, cookie)
+		}
 	}
 	return nil
 }
@@ -364,14 +417,10 @@ func cookiePathMatches(cookiePath string, requestPath string) bool {
 }
 
 func defaultCookiePath(requestPath string) string {
-	if requestPath == "" || requestPath[0] != '/' || requestPath == "/" {
+	if requestPath == "" || requestPath[0] != '/' {
 		return "/"
 	}
-	directory := path.Dir(requestPath)
-	if directory == "." {
-		return "/"
-	}
-	return directory
+	return path.Dir(requestPath)
 }
 
 func sameSiteText(value http.SameSite) string {

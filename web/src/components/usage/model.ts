@@ -1,16 +1,18 @@
-import { onUnmounted, reactive, watch } from 'vue'
+import { onActivated, onUnmounted, reactive, watch } from 'vue'
 import type { UsageDimension, UsageFilters, UsageStats } from '@/types'
 
 // relativePresets 与 calendarPresets 是相对时间与日历两类快捷范围
 export const relativePresets = ['1h', '6h', '24h', '7d', '30d', '90d'] as const
 export const calendarPresets = ['today', 'yesterday', 'week', 'month', 'lastMonth'] as const
 export type RangePreset =
-  (typeof relativePresets)[number] | (typeof calendarPresets)[number] | 'custom'
+  | (typeof relativePresets)[number]
+  | (typeof calendarPresets)[number]
+  | 'custom'
 
 export const dimensions: UsageDimension[] = ['model', 'account', 'channel', 'protocol', 'state']
 
 // maxSpan 与服务端校验一致
-export const maxSpan = 93 * 86_400_000
+const maxSpan = 93 * 86_400_000
 export const retention = 90 * 86_400_000
 
 const relativeSpans: Record<(typeof relativePresets)[number], number> = {
@@ -23,7 +25,7 @@ const relativeSpans: Record<(typeof relativePresets)[number], number> = {
 }
 
 // UsageViewState 是用量页写入地址栏的视图状态
-export interface UsageViewState {
+interface UsageViewState {
   range: RangePreset
   from: string
   to: string
@@ -42,6 +44,9 @@ const defaults: UsageViewState = {
   status: '',
   search: '',
 }
+
+// rememberedState 保存当前会话的用量视图状态
+let rememberedState: UsageViewState | undefined
 
 // readState 从地址栏读取视图状态，非法取值使用默认值
 function readState(): UsageViewState {
@@ -82,15 +87,31 @@ function writeState(state: UsageViewState): void {
   if (url.href !== window.location.href) window.history.replaceState(null, '', url)
 }
 
-// useUsageState 返回与地址栏双向同步的视图状态
+// viewKeys 是视图状态在地址栏中的参数名
+const viewKeys = ['range', 'from', 'to', 'stack', ...dimensions, 'status', 'q']
+
+// hasViewQuery 判断地址栏是否带有视图状态
+function hasViewQuery(): boolean {
+  const query = new URLSearchParams(window.location.search)
+  return viewKeys.some((key) => query.has(key))
+}
+
+// useUsageState 返回会话内保留并与地址栏双向同步的视图状态
 export function useUsageState(): UsageViewState {
-  const state = reactive(readState())
+  const state = reactive(hasViewQuery() || !rememberedState ? readState() : rememberedState)
+  rememberedState = state
+  writeState(state)
+  onActivated(() => {
+    if (hasViewQuery()) Object.assign(state, readState())
+    else writeState(state)
+  })
   watch(
     () => JSON.stringify(state),
     () => writeState(state),
   )
   const sync = (): void => {
-    Object.assign(state, readState())
+    if (new URLSearchParams(window.location.search).get('tab') === 'usage')
+      Object.assign(state, readState())
   }
   window.addEventListener('popstate', sync)
   onUnmounted(() => window.removeEventListener('popstate', sync))
@@ -154,14 +175,14 @@ export function liveRange(range: RangePreset): boolean {
   return range !== 'yesterday' && range !== 'lastMonth' && range !== 'custom'
 }
 
-// successRate 排除客户端取消及指定的空回/提示词拦截 400，不把它们视为成功。
+// successRate 返回排除客户端取消后的成功比例
 export function successRate(stats: UsageStats): number | null {
-  const counted = stats.requests - stats.canceled - (stats.rate_excluded ?? 0)
+  const counted = stats.requests - stats.canceled
   return counted > 0 ? stats.succeeded / counted : null
 }
 
-// palette 是分类序列使用的颜色，按取值哈希分配使同一取值在各图中颜色一致
-export const palette = [
+// palette 是分类序列使用的颜色，按取值哈希分配
+const palette = [
   '#60a5fa',
   '#34d399',
   '#f59e0b',
@@ -186,7 +207,7 @@ export function assignColors(keys: string[]): Map<string, string> {
     for (let probe = 0; probe < palette.length && used.has(index); probe++)
       index = (index + 1) % palette.length
     used.add(index)
-    result.set(key, palette[index] ?? otherColor)
+    result.set(key, palette[index]!)
   }
   return result
 }
@@ -219,25 +240,4 @@ export function rateTone(rate: number | null): string {
   if (rate >= 0.95) return 'text-green-400'
   if (rate >= 0.8) return 'text-yellow-400'
   return 'text-red-400'
-}
-
-// readPreference 读取浏览器保存的界面偏好，存储不可用时返回默认值
-export function readPreference<T>(key: string, fallback: T, valid: (value: unknown) => boolean): T {
-  try {
-    const raw = window.localStorage.getItem(key)
-    if (raw === null) return fallback
-    const value: unknown = JSON.parse(raw)
-    return valid(value) ? (value as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-// writePreference 保存界面偏好，存储不可用时忽略
-export function writePreference(key: string, value: unknown): void {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    return
-  }
 }

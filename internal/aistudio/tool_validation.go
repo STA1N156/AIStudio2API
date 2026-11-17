@@ -48,6 +48,9 @@ func supportedTools(tools Tools, model Model) (Tools, error) {
 		hasURLContext = hasURLContext || tool == "url_context"
 	}
 	tools.Google = google
+	if !hasURLContext {
+		tools.URLContext = nil
+	}
 	if hasMaps && (hasCode || hasURLContext) {
 		return Tools{}, fmt.Errorf("google_maps 不能与 code_execution 或 url_context 同时使用")
 	}
@@ -57,20 +60,18 @@ func supportedTools(tools Tools, model Model) (Tools, error) {
 	return tools, nil
 }
 
-// transcribeFunctionParts 把函数调用与函数结果 part 改写为文本转录，缺少名称的函数结果按待返回调用补齐名称
+// transcribeFunctionParts 把函数调用与函数结果 part 改写为文本转录，函数结果按 linkFunctionResults 的规则关联调用
 func transcribeFunctionParts(contents []Content) ([]Content, error) {
-	transcribed := cloneContentsForFileCopies(contents)
-	var pendingCalls []FunctionCall
+	transcribed, err := linkedContents(cloneContentsForFileCopies(contents))
+	if err != nil {
+		return nil, err
+	}
 	for contentIndex, content := range transcribed {
-		linked, err := linkFunctionResults(content, &pendingCalls)
-		if err != nil {
-			return nil, fmt.Errorf("contents[%d]: %w", contentIndex, err)
-		}
-		for partIndex, part := range linked.Parts {
+		for partIndex, part := range content.Parts {
 			if part.FunctionCall == nil && part.FunctionResult == nil {
 				continue
 			}
-			transcript, err := toolPartTranscript(part)
+			transcript, err := ToolPartTranscript(part)
 			if err != nil {
 				return nil, fmt.Errorf("contents[%d].parts[%d]: %w", contentIndex, partIndex, err)
 			}
@@ -80,8 +81,8 @@ func transcribeFunctionParts(contents []Content) ([]Content, error) {
 	return transcribed, nil
 }
 
-// toolPartTranscript 返回函数调用、函数结果与代码执行 part 的 Gemini API JSON 文本
-func toolPartTranscript(part Part) (string, error) {
+// ToolPartTranscript 返回函数调用、函数结果与代码执行 part 的 Gemini API JSON 文本
+func ToolPartTranscript(part Part) (string, error) {
 	var value map[string]any
 	switch {
 	case part.FunctionCall != nil:

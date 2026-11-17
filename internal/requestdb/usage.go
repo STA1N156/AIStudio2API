@@ -225,6 +225,9 @@ func localDay(at int64) (int64, int64) {
 
 // bucketStarts 返回覆盖 [from, to) 的对齐分桶起点；按天分桶按时区自然日对齐，其余按查询起点的时区偏移对齐
 func bucketStarts(from, to time.Time, size time.Duration, location *time.Location) []int64 {
+	if location == nil {
+		location = time.UTC
+	}
 	var starts []int64
 	if size >= 24*time.Hour {
 		year, month, day := from.In(location).Date()
@@ -359,8 +362,6 @@ func (store *Store) scan(ctx context.Context, part segment, filters api.UsageFil
 		if value.firstEventMS > 0 {
 			firstEvent[0] = bucketCount{bucket: histogramBucket(value.firstEventMS), count: 1}
 			value.firstEvent, value.firstEvents = firstEvent[:], 1
-		} else {
-			value.firstEventMS = 0
 		}
 		visit(value)
 	}
@@ -396,28 +397,49 @@ type cost struct {
 	unpriced map[string]bool
 }
 
-// scanCost 从原始记录逐条按模型单价累加 [from, to) 内符合筛选的费用，starts 非空时同时累加到各分桶
+// scanCost 在 SQL 中按分桶、模型与长上下文分档汇总 [from, to) 内符合筛选的原始记录 token，再按单价累加费用，starts 非空时同时累加到各分桶
 func (store *Store) scanCost(ctx context.Context, from, to int64, starts []int64, filters api.UsageFilters) (cost, error) {
 	clause, filterArgs := filterSQL(filters)
-	rows, err := store.db.QueryContext(ctx, `SELECT time, model, input_tokens, cached_tokens, reasoning_tokens + reply_tokens
- FROM requests WHERE time >= ? AND time < ?`+clause, append([]any{from, to}, filterArgs...)...)
+	var slots strings.Builder
+	var args []any
+	for index := range max(len(starts), 1) {
+		start, stop := from, to
+		if starts != nil {
+			start = max(starts[index], from)
+			if index+1 < len(starts) {
+				stop = starts[index+1]
+			}
+		}
+		if index > 0 {
+			slots.WriteByte(',')
+		}
+		slots.WriteString("(?,?,?)")
+		args = append(args, index, start, stop)
+	}
+	tier := "input_tokens > " + strconv.Itoa(pricing.LongContext)
+	rows, err := store.db.QueryContext(ctx, `WITH slots(slot, start, stop) AS (VALUES `+slots.String()+`)
+ SELECT slot, model, `+tier+`, SUM(input_tokens), SUM(cached_tokens), SUM(reasoning_tokens + reply_tokens)
+ FROM slots JOIN requests ON time >= start AND time < stop`+clause+`
+ GROUP BY slot, model, `+tier, append(args, filterArgs...)...)
 	if err != nil {
 		return cost{}, err
 	}
 	result := cost{buckets: make([]float64, len(starts)), unpriced: map[string]bool{}}
-	var at, input, cached, output int64
+	var slot int
+	var long bool
+	var input, cached, output int64
 	var model string
 	for rows.Next() {
-		if err := rows.Scan(&at, &model, &input, &cached, &output); err != nil {
+		if err := rows.Scan(&slot, &model, &long, &input, &cached, &output); err != nil {
 			return cost{}, errors.Join(err, rows.Close())
 		}
 		if input+output > 0 && !pricing.Priced(model) {
 			result.unpriced[model] = true
 		}
-		value := pricing.Cost(model, input, cached, output)
+		value := pricing.TierCost(model, long, input, cached, output)
 		result.total += value
 		if starts != nil {
-			result.buckets[bucketIndex(starts, at)] += value
+			result.buckets[slot] += value
 		}
 	}
 	return result, errors.Join(rows.Err(), rows.Close())
@@ -428,13 +450,9 @@ var usageDimensions = append(slices.Clone(api.UsageDimensions), "status")
 
 // Usage 返回时间范围内的汇总、上一周期、估算费用、逐桶趋势、堆叠序列、分项与筛选候选
 func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageReport, error) {
-	location := query.Location
-	if location == nil {
-		location = time.UTC
-	}
 	now := time.Now()
 	from, to := query.From.UnixMilli(), query.To.UnixMilli()
-	starts := bucketStarts(query.From, query.To, query.Bucket, location)
+	starts := bucketStarts(query.From, query.To, query.Bucket, query.Location)
 	totals := &aggregate{}
 	buckets := make([]*aggregate, len(starts))
 	for index := range buckets {

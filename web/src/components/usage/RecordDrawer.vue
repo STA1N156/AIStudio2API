@@ -11,6 +11,7 @@ import {
 } from 'reka-ui'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
+import { byteLength, prettyBody } from '@/logs'
 import type { RequestBody, UsageRecord } from '@/types'
 import UiIcon from '../UiIcon.vue'
 import { formatBytes, useUsageFormat } from './format'
@@ -19,7 +20,7 @@ import { latencyTone } from './model'
 const props = defineProps<{ record: UsageRecord | null }>()
 const emit = defineEmits<{ close: [] }>()
 
-const { t, errorText } = useI18n()
+const { t, errorText, logText } = useI18n()
 const { integer, duration, dateTime, dimensionLabel } = useUsageFormat()
 const body = ref<RequestBody | null>(null)
 const bodyState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -57,10 +58,23 @@ const summary = computed(() => {
     { label: t('usage.dimension.account'), value: record.account || '—' },
     { label: t('usage.dimension.channel'), value: dimensionLabel('channel', record.channel) },
     { label: t('usage.dimension.protocol'), value: dimensionLabel('protocol', record.protocol) },
-    { label: t('usage.path'), value: record.path },
+    { label: t('usage.path'), value: record.path, wide: true },
     { label: t('usage.dimension.status'), value: String(record.status) },
     { label: t('usage.duration'), value: duration(record.duration_ms) },
+    { label: t('usage.firstEvent'), value: duration(record.first_event_ms) },
     { label: t('usage.queue'), value: duration(record.queue_ms) },
+    ...(record.proof_ms > 0
+      ? [
+          { label: t('logs.field.waa'), value: duration(record.proof_ms) },
+          { label: t('logs.proofLock'), value: duration(record.proof_phases.lock_ms) },
+          {
+            label: t('logs.proofInteraction'),
+            value: duration(record.proof_phases.interaction_ms),
+          },
+          { label: t('logs.proofRefresh'), value: duration(record.proof_phases.refresh_ms) },
+          { label: t('logs.proofCompute'), value: duration(record.proof_phases.compute_ms) },
+        ]
+      : []),
     { label: t('usage.toolCalls'), value: integer(record.tool_calls) },
     { label: t('usage.input'), value: integer(record.input_tokens) },
     { label: t('usage.cached'), value: integer(record.cached_tokens) },
@@ -69,20 +83,6 @@ const summary = computed(() => {
     { label: t('usage.tokens'), value: integer(record.total_tokens) },
   ]
 })
-
-// byteLength 返回文本的 UTF-8 字节数
-function byteLength(text: string): number {
-  return new TextEncoder().encode(text).length
-}
-
-// pretty 格式化 JSON 正文，无法解析时原样返回
-function pretty(text: string): string {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2)
-  } catch {
-    return text
-  }
-}
 
 // copy 复制文本并短暂显示已复制
 async function copy(kind: string, text: string): Promise<void> {
@@ -158,6 +158,7 @@ async function copy(kind: string, text: string): Promise<void> {
                 v-for="item in summary"
                 :key="item.label"
                 class="flex min-w-0 justify-between gap-3"
+                :class="item.wide ? 'sm:col-span-2' : ''"
               >
                 <dt class="shrink-0 text-gray-500">{{ item.label }}</dt>
                 <dd v-tooltip="item.value" class="truncate text-right text-gray-200 tabular-nums">
@@ -172,7 +173,7 @@ async function copy(kind: string, text: string): Promise<void> {
             </h3>
             <pre
               class="rounded-md border border-red-500/30 bg-red-500/5 p-3 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere] text-red-200"
-              >{{ record.error }}</pre>
+              >{{ logText(record.error) }}</pre>
           </section>
           <section>
             <h3 class="mb-2 text-xs font-medium tracking-wide text-gray-500 uppercase">
@@ -197,7 +198,7 @@ async function copy(kind: string, text: string): Promise<void> {
                   }}</span>
                 </div>
                 <p class="mt-0.5 font-mono [overflow-wrap:anywhere] text-red-300/90">
-                  {{ attempt.error }}
+                  {{ logText(attempt.error) }}
                 </p>
               </li>
             </ol>
@@ -253,7 +254,7 @@ async function copy(kind: string, text: string): Promise<void> {
                 </div>
                 <pre
                   class="max-h-80 overflow-auto rounded-md border border-line bg-canvas p-3 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere] text-gray-300"
-                  >{{ pretty(part.text) }}</pre>
+                  >{{ prettyBody(part.text) }}</pre>
               </div>
             </template>
           </section>

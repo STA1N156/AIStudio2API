@@ -11,7 +11,10 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
-type emptySettingsService struct{ calls int }
+type emptySettingsService struct {
+	managedService
+	calls int
+}
 
 func (*emptySettingsService) Models(context.Context) ([]aistudio.Model, error) { return nil, nil }
 func (*emptySettingsService) CountTokens(context.Context, aistudio.TokenCountRequest) (aistudio.TokenCount, error) {

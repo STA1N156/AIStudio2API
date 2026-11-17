@@ -2,25 +2,88 @@ package camoufoxnative
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
 
-// FindExecutable 定位源码环境或 Release 自带的 Camoufox，都没有时经 proxy 下载，proxy 为空时直连
+// FindExecutable 定位与 camoufoxRelease 同版本的 Camoufox，都没有时经 proxy 下载，proxy 为空时直连
 func FindExecutable(ctx context.Context, proxy string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	if configured := strings.TrimSpace(os.Getenv("CAMOUFOX_PATH")); configured != "" {
-		return validateCamoufoxExecutable(configured)
+		path, err := validateCamoufoxExecutable(configured)
+		if err != nil {
+			return "", fmt.Errorf("CAMOUFOX_PATH: %w", err)
+		}
+		return path, nil
 	}
 	name, err := camoufoxExecutablePath()
 	if err != nil {
 		return "", err
 	}
+	path, ok := installedExecutable(ctx, name)
+	if !ok {
+		if path, err = installCamoufox(ctx, name, proxy); err != nil {
+			return "", fmt.Errorf("自动准备 Camoufox: %w", err)
+		}
+	}
+	if err := trimBundledFonts(path); err != nil {
+		slog.Warn("清理 Camoufox 内置字体失败", "error", err)
+	}
+	return path, nil
+}
+
+// bundledTwemojiFont 是 Firefox 自带的彩色 emoji 字体
+const bundledTwemojiFont = "TwemojiMozilla.ttf"
+
+// trimBundledFonts 在 Windows 上删除 Camoufox fonts 目录中 Twemoji 以外的内置字体，Firefox 启动时把这些字体全部注册到 DirectWrite
+func trimBundledFonts(executable string) error {
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	directory := filepath.Join(filepath.Dir(executable), "fonts")
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, entry := range entries {
+		if entry.Name() == bundledTwemojiFont {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(directory, entry.Name())); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// Installed 表示本机已有与 camoufoxRelease 同版本的 Camoufox，不触发下载
+func Installed() bool {
+	if configured := strings.TrimSpace(os.Getenv("CAMOUFOX_PATH")); configured != "" {
+		_, err := validateCamoufoxExecutable(configured)
+		return err == nil
+	}
+	name, err := camoufoxExecutablePath()
+	if err != nil {
+		return false
+	}
+	_, ok := installedExecutable(context.Background(), name)
+	return ok
+}
+
+// installedExecutable 在运行目录、可执行文件旁与系统缓存中查找已安装的 Camoufox
+func installedExecutable(ctx context.Context, name string) (string, bool) {
 	candidates := []string{filepath.Join("runtime", "camoufox", name)}
 	if executable, executableErr := os.Executable(); executableErr == nil {
 		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "runtime", "camoufox", name))
@@ -31,19 +94,14 @@ func FindExecutable(ctx context.Context, proxy string) (string, error) {
 		}
 	}
 	for _, candidate := range candidates {
-		if err := ctx.Err(); err != nil {
-			return "", err
+		if ctx.Err() != nil {
+			return "", false
 		}
-		path, err := validateCamoufoxExecutable(candidate)
-		if err == nil {
-			return path, nil
+		if path, err := validateCamoufoxExecutable(candidate); err == nil {
+			return path, true
 		}
 	}
-	path, err := installCamoufox(ctx, name, proxy)
-	if err != nil {
-		return "", fmt.Errorf("自动准备 Camoufox: %w", err)
-	}
-	return path, nil
+	return "", false
 }
 
 func camoufoxExecutablePath() (string, error) {
@@ -71,5 +129,35 @@ func validateCamoufoxExecutable(path string) (string, error) {
 	if info.IsDir() {
 		return "", fmt.Errorf("Camoufox 路径是目录")
 	}
+	version, err := camoufoxVersion(absolute)
+	if err != nil {
+		return "", err
+	}
+	if version != camoufoxRelease {
+		return "", fmt.Errorf("Camoufox 版本 %s 与要求的 %s 不一致", version, camoufoxRelease)
+	}
 	return absolute, nil
+}
+
+// camoufoxVersion 读取发行目录 application.ini 中的 Camoufox 版本
+func camoufoxVersion(executable string) (string, error) {
+	directory := filepath.Dir(executable)
+	for _, candidate := range []string{
+		filepath.Join(directory, "application.ini"),
+		filepath.Join(filepath.Dir(directory), "Resources", "application.ini"),
+	} {
+		data, err := os.ReadFile(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("读取 Camoufox 版本: %w", err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if version, found := strings.CutPrefix(strings.TrimSpace(line), "Version="); found {
+				return strings.TrimSpace(version), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("Camoufox 缺少 application.ini 版本")
 }

@@ -5,6 +5,7 @@ import (
 	"runtime/debug"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/app"
+	_ "golang.org/x/crypto/x509roots/fallback" // 系统没有根证书时使用的 Mozilla 根证书
 )
 
 // defaultGCPercent 为未设置 GOGC 时的回收阈值，堆增长到存活量的 1.5 倍即回收，压低常驻 WAA VM 带来的峰值内存

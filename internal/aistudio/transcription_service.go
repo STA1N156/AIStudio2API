@@ -46,6 +46,8 @@ type TranscriptionRequest struct {
 	CandidateAccountIDs   []string
 	RecoverWAARuntime     func(context.Context, string, error) (bool, error)
 	ObserveAccountFailure func(string, error)
+	// Emit 不为空时按到达顺序接收每个正文事件，已交出正文的请求失败后不再换账户重试
+	Emit func(Event) error
 }
 
 // TranscriptionResult 表示完整转录及其上游元数据
@@ -71,9 +73,6 @@ func (s *PooledService) Transcribe(ctx context.Context, request TranscriptionReq
 	if modelID == "" {
 		modelID = DefaultTranscriptionModel
 	}
-	if strings.TrimSpace(request.Name) == "" || strings.TrimSpace(request.MIME) == "" || request.Size <= 0 || request.Reader == nil {
-		return TranscriptionResult{}, fmt.Errorf("%w: 转录文件需要名称、MIME 和数据", ErrInvalidArgument)
-	}
 	request.Model = modelID
 	selection := AccountSelection{
 		ModelID: modelID, ModelAccessScope: modelID, Method: "generateContent", Capability: "transcription_output",
@@ -92,7 +91,7 @@ func (s *PooledService) Transcribe(ctx context.Context, request TranscriptionReq
 		}
 		selection.AccountID = recoveryAccountID
 		recoveryAccountID = ""
-		lease, owned, err := resolveAccountLease(ctx, s.pool, selection)
+		lease, owned, err := acquireQueuedLease(ctx, s.pool, selection)
 		if err != nil {
 			if requestErr != nil && errors.Is(err, ErrNoEligibleAccount) {
 				break
@@ -142,7 +141,7 @@ func (s *PooledService) Transcribe(ctx context.Context, request TranscriptionReq
 				continue
 			}
 		}
-		if !transcriptionRetryableAccountError(ctx, requestErr) {
+		if !transcriptionRetryableAccountError(ctx, requestErr) || request.Emit != nil && result.FirstContent != 0 {
 			return result, requestErr
 		}
 		if request.ObserveAccountFailure != nil {
@@ -150,9 +149,9 @@ func (s *PooledService) Transcribe(ctx context.Context, request TranscriptionReq
 		}
 		var stateErr error
 		if TranscriptionGenerationFailure(requestErr) {
-			stateErr = s.markRetryableFailure(lease, modelID, requestErr)
+			stateErr = s.markRetryableFailure(ctx, lease, modelID, requestErr)
 		} else if DefinitiveAuthenticationFailure(requestErr) {
-			stateErr = lease.MarkAuthenticationRequired(requestErr.Error())
+			stateErr = lease.ConfirmAuthenticationFailure(ctx, requestErr)
 		} else {
 			stateErr = s.pool.MarkCooldownIfGeneration(
 				accountID, "", accessGeneration, checkedAt,
@@ -194,9 +193,13 @@ func (s *PooledService) transcribeWithLease(
 	if err != nil {
 		return TranscriptionResult{}, &transcriptionStageError{stage: "upload", err: err}
 	}
+	bound := false
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(attemptCtx), driveCleanupTimeout)
 		cleanupErr := s.client.deleteDriveFile(cleanupCtx, accountID, token, file.ID)
+		if cleanupErr == nil && bound {
+			cleanupErr = s.pool.unbindResourceContext(cleanupCtx, file.ID)
+		}
 		cancel()
 		if cleanupErr == nil {
 			return
@@ -208,6 +211,11 @@ func (s *PooledService) transcribeWithLease(
 		}
 		resultErr = cleanupErr
 	}()
+	createdAt := time.Now().UTC()
+	if err := lease.BindFileResource(attemptCtx, file, FileMetadata{Size: request.Size, CreatedAt: createdAt, ExpiresAt: createdAt.Add(temporaryFileRetention)}); err != nil {
+		return TranscriptionResult{}, &transcriptionStageError{stage: "upload", err: err}
+	}
+	bound = true
 	events, err := s.client.Generate(attemptCtx, GenerateRequest{
 		ID:        request.ID,
 		Model:     request.Model,
@@ -218,14 +226,15 @@ func (s *PooledService) transcribeWithLease(
 	if err != nil {
 		return TranscriptionResult{}, &transcriptionStageError{stage: "generate", err: err}
 	}
-	result, err = collectTranscription(ctx, events, startedAt)
+	result, err = collectTranscription(ctx, events, startedAt, request.Emit)
 	if err != nil {
 		return result, &transcriptionStageError{stage: "generate", err: err}
 	}
 	return result, nil
 }
 
-func collectTranscription(ctx context.Context, events <-chan Event, startedAt time.Time) (result TranscriptionResult, resultErr error) {
+// collectTranscription 收集转录事件，emit 不为空时逐个交出正文事件
+func collectTranscription(ctx context.Context, events <-chan Event, startedAt time.Time, emit func(Event) error) (result TranscriptionResult, resultErr error) {
 	var text strings.Builder
 	defer func() {
 		result.Text = text.String()
@@ -255,17 +264,17 @@ func collectTranscription(ctx context.Context, events <-chan Event, startedAt ti
 				if event.Transcript != nil {
 					result.Segments = append(result.Segments, *event.Transcript)
 				}
-			case EventUsage:
-				if event.Usage != nil {
-					result.Usage = *event.Usage
+				if emit != nil {
+					if err := emit(event); err != nil {
+						return result, err
+					}
 				}
+			case EventUsage:
+				result.Usage = *event.Usage
 			case EventFinish:
 				result.FinishReason = event.FinishReason
 				finished = true
 			case EventError:
-				if event.Err == nil {
-					return result, errors.New("AI Studio transcription returned an empty error event")
-				}
 				return result, event.Err
 			}
 		case <-ctx.Done():
@@ -289,14 +298,14 @@ func remainingTranscriptionCandidates(candidates []string, attempted map[string]
 }
 
 func transcriptionRetryableAccountError(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	var stageError *transcriptionStageError
 	if errors.As(err, &stageError) && stageError.stage == "cleanup" {
 		return false
 	}
-	if errors.Is(err, errTranscriptionStreamClosed) || incompleteTranscriptionStream(err) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, errTranscriptionStreamClosed) || errors.Is(err, errMissingFinishFrame) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 	if retryableAccountError(err) || DefinitiveWAARuntimeFailure(err) {
@@ -304,12 +313,6 @@ func transcriptionRetryableAccountError(ctx context.Context, err error) bool {
 	}
 	var networkError net.Error
 	return errors.As(err, &networkError)
-}
-
-func incompleteTranscriptionStream(err error) bool {
-	var protocolError *ProtocolEvidenceError
-	return errors.As(err, &protocolError) && protocolError.Method == "GenerateContent" && protocolError.Path == "$" &&
-		protocolError.Detail == "流结束前没有完成帧"
 }
 
 var _ TranscriptionService = (*PooledService)(nil)

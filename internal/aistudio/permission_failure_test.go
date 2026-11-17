@@ -18,6 +18,9 @@ func permissionTestLeases(t *testing.T) (*AccountPool, func(string) *AccountLeas
 		})
 	}
 	pool := NewAccountPool(accounts, 4)
+	for _, account := range accounts {
+		account.Config.Locale, account.Config.Timezone = "en-US", "UTC"
+	}
 	checkedAt := time.Now().Add(-time.Hour)
 	return pool, func(id string) *AccountLease {
 		checkedAt = checkedAt.Add(time.Second)

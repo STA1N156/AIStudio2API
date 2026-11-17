@@ -1,0 +1,273 @@
+<script setup lang="ts">
+import { onActivated, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useConsole } from '@/console'
+import { useI18n } from '@/i18n'
+import ChatSession from './ChatSession.vue'
+import ComparePane from './ComparePane.vue'
+import PlaygroundToolbar from './PlaygroundToolbar.vue'
+import PromptBox from './PromptBox.vue'
+import RunSettings from './RunSettings.vue'
+import ZeroState from './ZeroState.vue'
+import UiGradientSpinner from './ui/UiGradientSpinner.vue'
+import { defaultChatModel, defaultImageModel, isChatModel, modelMatches } from './catalog'
+import type { ZeroStarter } from './zero-configs'
+import { useCompare, usePlayground } from './session'
+import { useRunSettingsPanel } from './shortcuts'
+import type { PromptData } from './types'
+import type { SavedPrompt } from '@/types'
+
+defineOptions({ name: 'PlaygroundPage' })
+
+const props = defineProps<{ prompt?: SavedPrompt<PromptData> | undefined }>()
+// emit 的 retry 请求重新打开读取失败的已保存会话
+const emit = defineEmits<{ retry: [] }>()
+
+const route = useRoute()
+const router = useRouter()
+const { t } = useI18n()
+const store = useConsole()
+const playground = usePlayground()
+const { session } = playground
+const { panes, comparing, toggleRaw, flush } = useCompare()
+
+const promptBox = ref<InstanceType<typeof PromptBox>>()
+// narrow 与 settingsOpen 是运行设置面板的状态，/ 聚焦输入框，Shift+R 切换原始模式
+const { narrow, settingsOpen } = useRunSettingsPanel(
+  () => {
+    promptBox.value!.focus()
+    return true
+  },
+  (event) => {
+    if (event.shiftKey && event.key === 'R') {
+      event.preventDefault()
+      toggleRaw()
+    }
+  },
+)
+
+// useStarter 用空态示例填写输入框并聚焦
+function useStarter(item: ZeroStarter): void {
+  promptBox.value!.focus()
+  void playground.applyStarter(item)
+}
+// otherModel 返回地址不带 model 的新对话页上，空白对话是否仍是目录默认模型以外的模型
+function otherModel(): boolean {
+  const model = defaultChatModel(store.models.value)
+  return (
+    route.name === 'prompt' &&
+    route.query.model === undefined &&
+    model !== undefined &&
+    session.settings.model !== model.id
+  )
+}
+watch(
+  () => route.params.id,
+  async (id) => {
+    if (typeof id === 'string' && id !== '') await playground.open(id, props.prompt)
+    else if (session.id !== null || session.turns.length > 0 || session.loadError || otherModel())
+      playground.newChat(session.settings.systemInstruction)
+  },
+  { immediate: true },
+)
+watch(
+  () => store.models.value,
+  () => playground.ensureModel(),
+  { immediate: true },
+)
+// 地址中的模型为目录别名时与官网一样把地址改写为目录中的模型名
+watch(
+  () => [route.query.model, store.models.value] as const,
+  ([id, models]) => {
+    if (typeof id !== 'string' || route.params.id !== undefined || session.turns.length > 0) return
+    const model = models.find((model) => modelMatches(model, id) && isChatModel(model))
+    if (model === undefined) return
+    if (model.id !== id) void router.replace({ query: { ...route.query, model: model.id } })
+    if (session.settings.model !== model.id) playground.selectModel(model.id)
+  },
+  { immediate: true },
+)
+// 图片页没有指定模型时与官网一样使用目录中的图片模型；从空白图片页回到对话页时恢复对话模型
+watch(
+  () => [route.name, route.query.model, store.models.value] as const,
+  ([name, id, models], previous) => {
+    if (id !== undefined || session.turns.length > 0) return
+    if (name !== 'image') {
+      if (previous?.[0] === 'image') playground.newChat()
+      return
+    }
+    const model = defaultImageModel(models)
+    if (model !== undefined && session.settings.model !== model.id) playground.selectModel(model.id)
+  },
+  { immediate: true },
+)
+// active 表示试用页正在显示，管理端显示期间保存得到的对话 ID 留到回到试用页时写入地址
+let active = true
+function syncRoute(): void {
+  if (active && session.id !== null && route.params.id !== session.id)
+    void router.replace(`/prompts/${session.id}`)
+}
+watch(() => session.id, syncRoute)
+
+onActivated(() => {
+  active = true
+  syncRoute()
+})
+onDeactivated(() => {
+  active = false
+  flush()
+})
+onBeforeUnmount(flush)
+
+// newChat 与官网一致打开保留当前系统指令的新对话
+function newChat(): void {
+  playground.newChat(session.settings.systemInstruction)
+  void router.push('/prompts/new_chat')
+}
+</script>
+
+<template>
+  <div class="playground">
+    <div class="chat-column">
+      <PlaygroundToolbar
+        :settings-open="settingsOpen"
+        :narrow="narrow"
+        @new-chat="newChat"
+        @toggle-settings="settingsOpen = !settingsOpen"
+      />
+      <div v-if="comparing" class="chat-container">
+        <ComparePane v-for="(pane, index) in panes" :key="index" :pane="pane" :index="index" />
+      </div>
+      <div v-else class="chat-area">
+        <div
+          v-if="session.loading"
+          class="chat-loading"
+          role="status"
+          :aria-label="t('common.loading')"
+        >
+          <UiGradientSpinner />
+        </div>
+        <div v-else-if="session.loadError === 'not_found'" class="load-error">
+          <h2>{{ t('pg.notFoundTitle') }}</h2>
+          <p>{{ t('pg.notFoundBody') }}</p>
+          <button type="button" ms-button class="ms-button-primary" @click="newChat">
+            {{ t('pg.newChat') }}
+          </button>
+        </div>
+        <div v-else-if="session.loadError === 'not_chat'" class="load-error">
+          <h2>{{ t('pg.loadFailedTitle') }}</h2>
+          <p>{{ t('pg.notChatBody') }}</p>
+          <button type="button" ms-button class="ms-button-primary" @click="newChat">
+            {{ t('pg.newChat') }}
+          </button>
+        </div>
+        <div v-else-if="session.loadError" class="load-error">
+          <h2>{{ t('pg.loadFailedTitle') }}</h2>
+          <p>{{ session.loadError }}</p>
+          <div class="load-error-actions">
+            <button type="button" ms-button class="ms-button-borderless" @click="emit('retry')">
+              {{ t('pg.retry') }}
+            </button>
+            <button type="button" ms-button class="ms-button-primary" @click="newChat">
+              {{ t('pg.newChat') }}
+            </button>
+          </div>
+        </div>
+        <ZeroState v-else-if="session.turns.length === 0" @starter="useStarter" />
+        <ChatSession v-else />
+      </div>
+      <PromptBox ref="promptBox" />
+    </div>
+    <template v-if="!comparing">
+      <div
+        v-if="narrow && settingsOpen"
+        class="settings-overlay"
+        @click="settingsOpen = false"
+      ></div>
+      <RunSettings :open="settingsOpen" :narrow="narrow" @close="settingsOpen = false" />
+    </template>
+  </div>
+</template>
+
+<style scoped>
+.playground {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--color-v3-surface);
+}
+
+.chat-column {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-area {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chat-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-overlay {
+  position: fixed;
+  z-index: 4;
+  inset: 0;
+  background-color: var(--color-overlay-background);
+}
+
+.chat-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  animation: chat-loading-in 0.2s ease-out 0.3s both;
+}
+
+@keyframes chat-loading-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.load-error {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.load-error h2 {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+
+.load-error p {
+  margin: 0;
+  color: var(--color-v3-text-var);
+}
+
+.load-error-actions {
+  display: flex;
+  gap: 12px;
+}
+</style>

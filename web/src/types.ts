@@ -1,20 +1,26 @@
 export type Locale = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko' | 'fr' | 'de'
 
-export interface AccountImportResult {
-  file: string
-  account?: string
-  status: 'imported' | 'skipped' | 'failed'
-  error?: string
-}
-
 export type TabID =
-  'logs' | 'accounts' | 'models' | 'requests' | 'usage' | 'settings' | 'playground' | 'version'
+  | 'logs'
+  | 'accounts'
+  | 'access'
+  | 'models'
+  | 'requests'
+  | 'usage'
+  | 'settings'
+  | 'playground'
+  | 'version'
 
 export type AccountState =
-  'ready' | 'busy' | 'cooldown' | 'auth_required' | 'unavailable' | 'disabled'
+  | 'ready'
+  | 'busy'
+  | 'cooldown'
+  | 'auth_required'
+  | 'restricted'
+  | 'unavailable'
+  | 'disabled'
 
 export interface Account {
-  denied_models?: Record<string, string>
   id: string
   label: string
   enabled: boolean
@@ -26,9 +32,23 @@ export interface Account {
   models: string[]
   benefit_tier: string
   message: string
+  // pairing_renewed_at 是远程添加的账户最近一次由原电脑续签的时间
+  pairing_renewed_at?: string
+  // transition 是账户启停的后台收尾阶段：draining 等待在途请求结束并关闭 Worker，syncing 同步模型目录
+  transition?: 'draining' | 'syncing'
 }
 
-export interface ProxyPoolEntry {
+// AccountExit 是一个账户出口代理的公网 IP 与按 IP 定位的国家，proxy 为空时是直连，查询失败时 error 为原因
+export interface AccountExit {
+  proxy: string
+  ip?: string
+  country?: string
+  timezone?: string
+  locale?: string
+  error?: string
+}
+
+interface ProxyPoolEntry {
   proxy: string
   available: boolean
   accounts: number
@@ -63,7 +83,8 @@ export interface ChromeImportProfile {
   profile: string
   display_name: string
   email: string
-  locale: string
+  // restricted 是账户服务受限的原因，受限的账户不能导入
+  restricted: string
 }
 
 export interface PairingToken {
@@ -72,15 +93,74 @@ export interface PairingToken {
 }
 
 export interface ChromeImportInput extends AccountLoginInput {
-  account_ids: string[]
+  accounts: { id: string; email: string }[]
 }
 
-export interface AccountCounters {
+// CookieAccountItem 是一次 Cookie 导入中的一个账户：识别出的邮箱、Cookie 文本或调试浏览器地址与会话序号
+export interface CookieAccountItem {
+  email: string
+  cookies: string
+  cdp: string
+  auth_user: number
+}
+
+// CookieAccountsInput 是一次导入的 Cookie 账户与共用的账户环境，语言与时区为空时按出口位置填写
+export interface CookieAccountsInput extends AccountLoginInput {
+  items: CookieAccountItem[]
+}
+
+// AccountTaskItem 是账户任务中的一个账户，label 为邮箱，浏览器登录完成前为空
+export interface AccountTaskItem {
+  label: string
+  state: 'pending' | 'running' | 'done' | 'failed'
+  code?: string
+  error?: string
+}
+
+// AccountTask 是在服务端运行的添加或重新登录账户任务，view 为显示登录画面的登录窗口 ID
+export interface AccountTask {
+  id: string
+  kind: 'login' | 'relogin' | 'chrome' | 'cookies' | 'browser'
+  view?: string
+  state: 'running' | 'done' | 'failed'
+  items: AccountTaskItem[]
+  started_at: string
+}
+
+// CookieImportInput 是识别 Cookie 中账户时提交的 Cookie 文本与出口代理
+export interface CookieImportInput {
+  cookies: string
+  proxy: string
+}
+
+export interface CookieBrowser {
+  address: string
+  browser: string
+  email: string
+  auth_user: number
+  imported: boolean
+  signed_out: boolean
+  // device_bound 为真时 Cookie 带 __Secure-1PSIDRTS，会话绑定原浏览器所在的设备
+  device_bound: boolean
+  error: string
+  // restricted 是账户服务受限的原因，受限的账户不能导入
+  restricted: string
+}
+
+interface AccountCounters {
   total: number
   ready: number
   busy: number
   cooldown: number
   auth_required: number
+}
+
+// PreparationStatus 是 Camoufox 或出口 IP 库是否就绪、是否正在下载或解压、正在进行的下载与最近一次准备失败的原因
+export interface PreparationStatus {
+  ready: boolean
+  preparing: boolean
+  download?: { received: number; total: number }
+  error?: string
 }
 
 export interface ServiceStatus {
@@ -90,34 +170,64 @@ export interface ServiceStatus {
   version: string
   active_requests: number
   accounts: AccountCounters
+  camoufox: PreparationStatus
+  // geoip 是识别出口所在地的 IP 库的准备状态，结构与 camoufox 相同
+  geoip: PreparationStatus
+  chrome_import: boolean
 }
 
 export interface UpdateStatus {
   current: string
   latest?: string
   available: boolean
-  mode: 'binary' | 'container' | 'development'
+  mode: 'binary' | 'container' | 'development' | 'managed'
+  managed_by?: string
   notes?: string
   url?: string
   published_at?: string
   checked_at?: string
   error?: string
   updating: boolean
+  progress?: UpdateProgress
+}
+
+// UpdateProgress 是进行中的在线更新的阶段与发行包的已下载和总字节数，总字节数未知时为 0
+export interface UpdateProgress {
+  stage: 'download' | 'verify' | 'install' | 'restart'
+  downloaded: number
+  total: number
 }
 
 export interface AdminLog {
   time: string
-  level: string
+  level: 'INFO' | 'WARN' | 'ERROR'
   source: string
   message: string
+  fields?: LogField[]
+  stage?: AdminLogStage
   event: string
   request?: RequestLog
 }
 
+// LogField 是日志按顺序排列的一个字段，key 为英文标识
+export interface LogField {
+  key: string
+  value: string
+}
+
+// AdminLogStage 是分阶段运行日志所属的阶段，step 与 steps 为当前步骤与总步骤数，state 为结束状态
+interface AdminLogStage {
+  name: string
+  step?: number
+  steps?: number
+  state?: 'completed' | 'failed' | 'cancelled'
+}
+
 // RequestLog 对应请求日志的结构化载荷
-export interface RequestLog {
+interface RequestLog {
   id: string
   state: 'running' | 'completed' | 'tool_calls' | 'limited' | 'blocked' | 'failed' | 'cancelled'
+  started_at?: string
   model?: string
   method?: string
   path?: string
@@ -133,6 +243,8 @@ export interface RequestLog {
   input_files?: number
   parameters?: Record<string, string>
   first_event_ms?: number
+  proof_ms?: number
+  proof_phases?: ProofPhases
   upstream_bytes?: number
   channel?: UpstreamChannel
   usage?: {
@@ -142,8 +254,53 @@ export interface RequestLog {
     reply_tokens: number
     output_tokens: number
     total_tokens: number
-    average_tokens_per_second: number
+    average_tokens_per_second?: number
   }
+}
+
+// ModelPrice 是模型价格表中的一行，input 与 output 为每百万 token 美元，按次计价时对应 per_request 为真
+export interface ModelPrice {
+  text?: string
+  label?: string
+  up_to?: number
+  thinking?: boolean
+  input?: number
+  input_per_request?: boolean
+  output?: number
+  output_per_request?: boolean
+}
+
+// ModelDetails 是官网模型卡片中的说明、别名、提醒、价格与日期，日期为 Unix 秒
+interface ModelDetails {
+  summary?: string
+  alias?: string
+  warning?: string
+  docs_url?: string
+  model_card_url?: string
+  release_date?: number
+  knowledge_cutoff?: number
+  pricing?: ModelPrice[]
+  pricing_url?: string
+  pricing_note?: string
+}
+
+// Language 是模型可选语言的代码与显示名
+interface Language {
+  code: string
+  name: string
+}
+
+// VoiceDetail 是音色的试听地址、音高、描述、口音、性别、特质与用途
+export interface VoiceDetail {
+  name: string
+  sample_url?: string
+  pitch?: string
+  descriptions?: string[]
+  locale?: string
+  accent?: string
+  gender?: string
+  trait?: string
+  use_case?: string
 }
 
 export interface Model {
@@ -154,21 +311,46 @@ export interface Model {
   methods: string[]
   input_token_limit?: number
   output_token_limit?: number
+  temperature?: number
+  max_temperature?: number
+  top_p?: number
+  top_k?: number
+  thinking_levels?: ThinkingLevel[]
+  default_thinking_level?: ThinkingLevel
+  thinking_budget?: ThinkingBudget
+  tool_compatibility?: [string, string][]
+  details?: ModelDetails
   capabilities?: Record<string, boolean>
   capability_options?: Record<string, string[]>
+  voice_details?: VoiceDetail[]
+  languages?: Language[]
   access_modes?: number[]
   paid?: boolean
+  // hidden 表示官网前端已配置、ListModels 尚未列出、经上游确认可用的模型
+  hidden?: boolean
+  // agent_model 是 agent 默认使用的模型 ID
+  agent_model?: string
   channels?: UpstreamChannel[]
+}
+
+export type ThinkingLevel = 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'EXTRA_HIGH'
+
+// ThinkingBudget 是可设思考预算的模型的预算默认值、上下限与能否关闭思考
+export interface ThinkingBudget {
+  default?: number
+  max?: number
+  min?: number
+  can_disable?: boolean
 }
 
 export type UpstreamChannel = 'playground' | 'build' | 'assistant'
 
 export interface Cooldown {
-  eligible_accounts: number
   account_id: string
   account_label: string
   channel: UpstreamChannel
   model_id: string
+  scope: string
   until: string
   reason?: string
 }
@@ -185,11 +367,28 @@ export interface RequestSummary {
   started_at: string
 }
 
+// FirstEventLatency 是一个模型与通道近期原请求首事件等待的 p95 与样本数
+export interface FirstEventLatency {
+  model: string
+  channel: UpstreamChannel
+  samples: number
+  p95_ms: number
+}
+
+// PathListing 是路径选择器当前位置的内容，path 为空表示文件系统根列表
+export interface PathListing {
+  path: string
+  parent: string
+  entries: { name: string; path: string; dir: boolean }[]
+}
+
 export interface ServiceConfig {
-  auto_start: boolean
-  request_body_log: boolean
+  model_tiers?: Record<string, string[]>
   empty_output_error: boolean
   log_console: boolean
+  auto_start: boolean
+  hide_dock_icon: boolean
+  request_body_log: boolean
   log_file: boolean
   log_max_total_mb: number
   admin_auth_enabled: boolean
@@ -197,13 +396,25 @@ export interface ServiceConfig {
   admin_password?: string
   admin_password_set: boolean
   build_native_nonstream: boolean
+  nonstream_keepalive: boolean
+  fake_stream: boolean
+  youtube_links: boolean
+  search_model_aliases: boolean
+  discover_hidden_models: boolean
+  google_search: boolean
+  continuation_rewrite: boolean
+  continuation_prompt: string
+  strip_thought_signatures: boolean
+  first_event_hedge: string
+  first_event_hedge_models: string
   auth_states: string
   listen_addr: string
+  preview_listen_addr: string
   proxy_api_key: string
   active_listen_addr: string
+  reserved_listen_addr: string
+  active_preview_listen_addr: string
   active_proxy_api_key: string
-  public_base_url: string
-  active_public_base_url: string
   management_restart_required: boolean
   service_restart_required: boolean
   proxy: string
@@ -215,18 +426,33 @@ export interface ServiceConfig {
   max_active_workers: number
   warm_startup_concurrency: number
   per_account_concurrency: number
+  max_account_switches: number
   routing_strategy: 'round-robin' | 'fill-first'
+  account_order: string
   upstream_channels: UpstreamChannel[]
   model_mapping: string
-  waa_backend: 'camoufox' | 'go'
-  temporary_chat: boolean
+  model_channels: string
+  model_accounts: string
+  api_key_accounts: string
+  waa_backend: 'camoufox' | 'spidermonkey'
+  media_output: 'inline' | 'url'
+  media_base_url: string
+  environment: string[]
+  invalid: InvalidConfigValue[]
+}
+
+// InvalidConfigValue 是加载时取值无效、按默认值生效的配置项
+export interface InvalidConfigValue {
+  key: string
+  value: string
+  reason: string
 }
 
 export type UsageDimension = 'model' | 'account' | 'channel' | 'protocol' | 'state'
 
 export type UsageFilters = Partial<Record<UsageDimension, string[]>>
 
-export interface UsageLatency {
+interface UsageLatency {
   avg_ms: number
   p50_ms: number
   p95_ms: number
@@ -238,7 +464,6 @@ export interface UsageStats {
   succeeded: number
   failed: number
   canceled: number
-  rate_excluded?: number
   rate_limited: number
   input_tokens: number
   cached_tokens: number
@@ -251,21 +476,21 @@ export interface UsageStats {
   last_at?: string
 }
 
-export interface UsageBucket extends UsageStats {
+interface UsageBucket extends UsageStats {
   at: string
   cost: number
 }
 
-export interface UsageGroup extends UsageStats {
+interface UsageGroup extends UsageStats {
   key: string
 }
 
-export interface UsagePair extends UsageStats {
+interface UsagePair extends UsageStats {
   account: string
   model: string
 }
 
-export interface UsageSeries {
+interface UsageSeries {
   key: string
   other?: boolean
   requests: number[]
@@ -292,11 +517,19 @@ export interface UsageReport {
   options: Record<UsageDimension, string[]>
 }
 
-export interface RequestAttempt {
+interface RequestAttempt {
   account: string
   channel: string
   error: string
   duration_ms: number
+}
+
+// ProofPhases 是 WAA 耗时的分项毫秒数
+export interface ProofPhases {
+  lock_ms: number
+  interaction_ms: number
+  refresh_ms: number
+  compute_ms: number
 }
 
 export interface UsageRecord {
@@ -312,6 +545,8 @@ export interface UsageRecord {
   duration_ms: number
   first_event_ms: number
   queue_ms: number
+  proof_ms: number
+  proof_phases: ProofPhases
   input_tokens: number
   cached_tokens: number
   reasoning_tokens: number
@@ -343,75 +578,41 @@ export type AdminEvent =
   | { type: 'accounts'; data: { accounts: Account[] } }
   | { type: 'models'; data: { models: Model[] } }
   | { type: 'cooldowns'; data: Cooldown[] }
+  | { type: 'account_tasks'; data: { tasks: AccountTask[] } }
   | { type: 'request'; data: RequestSummary }
 
-// PlaygroundProtocol 是试用请求使用的公开端点协议
-export type PlaygroundProtocol =
-  | 'openai-chat'
-  | 'openai-responses'
-  | 'anthropic'
-  | 'gemini'
-  | 'openai-images'
-  | 'openai-speech'
-  | 'openai-videos'
-
-export type PlaygroundMode = 'text' | 'image' | 'speech' | 'music' | 'video'
-
-export type PlaygroundReasoning = '' | 'minimal' | 'low' | 'medium' | 'high'
-
-export type PlaygroundTool =
-  'web_search' | 'image_search' | 'code_interpreter' | 'url_context' | 'google_maps'
-
-// PlaygroundSpeaker 是多说话人语音中的说话人名称与声音
-export interface PlaygroundSpeaker {
-  name: string
-  voice: string
-}
-
-// PlaygroundInput 是试用页的请求参数，数值为 null 时使用模型默认值
-export interface PlaygroundInput {
-  mode: PlaygroundMode
-  protocol: PlaygroundProtocol
+// PromptSummary 是对话库列表中的一项
+export interface PromptSummary {
+  id: string
+  title: string
   model: string
-  prompt: string
-  system: string
-  stream: boolean
-  reasoning: PlaygroundReasoning
-  tools: PlaygroundTool[]
-  temperature: number | null
-  topP: number | null
-  topK: number | null
-  maxOutputTokens: number | null
-  seed: number | null
-  stopSequences: string[]
-  structuredOutput: boolean
-  jsonSchema: string
-  functionCalling: boolean
-  functions: string
-  imageSize: 'auto' | '1024x1024' | '1536x1024' | '1024x1536'
-  imageQuality: 'auto' | 'low' | 'medium' | 'high'
-  aspectRatio: string
-  resolution: string
-  videoSeconds: string
-  voice: string
-  speakers: PlaygroundSpeaker[]
-  safety: Record<string, string>
-  mediaResolution: string
-  imageOnly: boolean
-  apiKey: string
+  description: string
+  created_at: string
+  updated_at: string
+  // turns 是保存时对话的消息条数，没有记录时缺省
+  turns?: number
+  // tokens 是保存时整段对话的 token 数，没有记录时缺省
+  tokens?: number
 }
 
-export interface PlaygroundMedia {
-  mime: string
-  url: string
+// PromptInput 是保存对话时提交的内容
+export interface PromptInput<T> {
+  title: string
+  model: string
+  description: string
+  turns?: number
+  tokens?: number
+  data: T
 }
 
-export interface PlaygroundResult {
+// SavedPrompt 是从对话库读取的完整对话
+export interface SavedPrompt<T> extends PromptSummary {
+  data: T
+}
+
+// SystemInstructionPreset 是保存在服务端对话库中的系统指令预设
+export interface SystemInstructionPreset {
+  id: string
+  title: string
   text: string
-  reasoning: string
-  tools: string
-  media: PlaygroundMedia[]
-  raw: string
-  durationMs: number
-  status: number
 }

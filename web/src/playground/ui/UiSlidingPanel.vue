@@ -1,0 +1,145 @@
+<script setup lang="ts">
+import {
+  DialogClose,
+  DialogContent,
+  DialogOverlay,
+  DialogPortal,
+  DialogRoot,
+  DialogTitle,
+} from 'reka-ui'
+import { ref, watch } from 'vue'
+import { useI18n } from '@/i18n'
+import UiIcon from './UiIcon.vue'
+
+const open = defineModel<boolean>('open', { required: true })
+// back 表示标题前显示返回按钮，点按时发出 back
+withDefaults(defineProps<{ title: string; width?: string; back?: boolean }>(), {
+  width: '550px',
+  back: false,
+})
+const emit = defineEmits<{ back: [] }>()
+const { t } = useI18n()
+// shown 在首次打开后保持为真，面板首次打开前不挂载浮层与内容
+const shown = ref(open.value)
+watch(open, (value) => (shown.value ||= value))
+
+// focusInitial 打开面板时把焦点交给内容中带 autofocus 的元素，没有时保留默认的首个可聚焦元素
+function focusInitial(event: Event): void {
+  const field = (event.target as HTMLElement).querySelector<HTMLElement>('[autofocus]')
+  if (!field) return
+  event.preventDefault()
+  field.focus()
+}
+</script>
+
+<template>
+  <DialogRoot v-model:open="open">
+    <DialogPortal v-if="shown">
+      <DialogOverlay class="ms-panel-overlay" />
+      <DialogContent
+        class="ms-panel"
+        :style="{ width }"
+        :aria-describedby="undefined"
+        @open-auto-focus="focusInitial"
+      >
+        <div class="ms-panel-header" :class="{ 'has-back': back }">
+          <button
+            v-if="back"
+            v-tooltip.below="t('common.goBack')"
+            type="button"
+            ms-button
+            class="ms-button-borderless ms-button-icon ms-button-small"
+            :aria-label="t('common.goBack')"
+            @click="emit('back')"
+          >
+            <UiIcon name="arrowBack" :size="20" />
+          </button>
+          <DialogTitle class="ms-panel-title">{{ title }}</DialogTitle>
+          <slot name="status" />
+          <DialogClose
+            type="button"
+            ms-button
+            class="ms-button-borderless ms-button-icon ms-button-small"
+            :aria-label="t('common.closePanel')"
+          >
+            <UiIcon name="close" :size="20" />
+          </DialogClose>
+        </div>
+        <div class="ms-panel-content"><slot /></div>
+      </DialogContent>
+    </DialogPortal>
+  </DialogRoot>
+</template>
+
+<style scoped>
+.ms-panel-overlay {
+  position: fixed;
+  z-index: 900;
+  inset: 0;
+  backdrop-filter: blur(8px);
+  background-color: var(--color-v3-overlay-background);
+}
+
+.ms-panel {
+  position: fixed;
+  z-index: 901;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  max-width: 100dvw;
+  border: 1px solid var(--color-v3-outline-var);
+  background-color: var(--color-v3-surface);
+  color: var(--color-v3-text);
+  box-shadow: var(--shadow-v3-md);
+  animation: ms-panel-enter 300ms ease-in-out;
+}
+
+.ms-panel[data-state='closed'] {
+  animation: ms-panel-exit 300ms ease-in-out forwards;
+}
+
+.ms-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 12px 18px 20px;
+}
+
+/* has-back 为带返回按钮的标题栏：按钮距面板左边 12px，与官网 Selected model 面板相同 */
+.ms-panel-header.has-back {
+  padding-left: 12px;
+}
+
+.ms-panel-title {
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.ms-panel-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px 24px;
+  color: var(--mat-sys-on-surface-variant);
+  line-height: 17.5px;
+}
+
+@keyframes ms-panel-enter {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes ms-panel-exit {
+  to {
+    transform: translateX(100%);
+  }
+}
+</style>

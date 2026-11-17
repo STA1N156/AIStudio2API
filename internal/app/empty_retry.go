@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/api"
 	"github.com/google/uuid"
 )
 
@@ -213,6 +214,10 @@ func generateWithEmptyRetry(ctx context.Context, request aistudio.GenerateReques
 				return
 			}
 			if finish != nil {
+				if !hasOutput {
+					send(aistudio.Event{Kind: aistudio.EventError, Err: api.ErrEmptyOutput})
+					return
+				}
 				send(*finish)
 			}
 			return

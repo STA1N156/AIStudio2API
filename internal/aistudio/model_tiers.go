@@ -23,7 +23,14 @@ func (p *AccountPool) allowedModelTiersLocked(modelID string) []string {
 }
 
 func (p *AccountPool) modelTierAllowedLocked(account *Account, modelID string) bool {
-	modelID = canonicalAccountModelID(account, strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
+	if len(p.modelTiers) == 0 {
+		return true
+	}
+	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+	if tiers, exists := p.modelTiers[modelID]; exists {
+		return slices.Contains(tiers, account.BenefitTier.String())
+	}
+	modelID = canonicalAccountModelID(account, modelID)
 	tiers, exists := p.modelTiers[modelID]
 	return !exists || slices.Contains(tiers, account.BenefitTier.String())
 }

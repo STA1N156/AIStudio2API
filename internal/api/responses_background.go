@@ -32,19 +32,28 @@ func (s *server) startBackground(r *http.Request, id string) (context.Context, f
 	}
 }
 
-// storeBackgroundEnd 保存后台响应的结束状态：被 cancel 接口终止时为 cancelled，生成出错时为 failed
+// stopBackground 终止进行中的后台响应并等待生成结束
+func (s *server) stopBackground(id string) {
+	if value, running := s.background.Load(id); running {
+		run := value.(backgroundRun)
+		run.cancel()
+		<-run.done
+	}
+}
+
+// storeBackgroundEnd 保存后台响应的结束状态：被 cancel 接口终止时为 cancelled，生成出错时为 failed，error 按 responsesError
 func (s *server) storeBackgroundEnd(ctx context.Context, id string, created int64, request responsesRequest, prepared responsesPreparation, err error) {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		s.storeResponse(id, request, prepared, generationResult{}, responseShell(id, created, "cancelled", request))
 	case err != nil:
 		failed := responseShell(id, created, "failed", request)
-		failed["error"] = map[string]any{"code": responsesErrorCode(err), "message": err.Error()}
+		failed["error"] = responsesError(err)
 		s.storeResponse(id, request, prepared, generationResult{}, failed)
 	}
 }
 
-// respondBackground 保存并返回 queued 状态的响应对象，随后在本请求内完成生成：响应带 Content-Length 与 Connection: close 使客户端立即收到完整响应，生成开始后保存为 in_progress，结束后保存最终对象
+// respondBackground 保存并返回 queued 状态的响应对象，随后在本请求内完成生成，开始后保存为 in_progress，结束后保存最终对象
 func (s *server) respondBackground(w http.ResponseWriter, r *http.Request, request responsesRequest, prepared responsesPreparation, id string) {
 	ctx, finish := s.startBackground(r, id)
 	defer finish()
@@ -63,16 +72,17 @@ func (s *server) respondBackground(w http.ResponseWriter, r *http.Request, reque
 	if err == nil {
 		generate := prepared.generate
 		generate.Unary = true
+		generate.Background = true
 		events, err = s.service.Generate(ctx, generate)
 	}
 	var result generationResult
 	if err == nil {
 		s.storeResponse(id, request, prepared, generationResult{}, responseShell(id, created, "in_progress", request))
-		result, err = consumeEvents(ctx, events, nil)
+		result, err = consumeEvents(ctx, events)
 	}
 	var response map[string]any
 	if err == nil {
-		response, err = buildResponsesObject(id, created, request, result, compaction)
+		response, err = buildResponsesObject(id, created, request, result, outputPrefix(compaction, prepared))
 	}
 	if err == nil && ctx.Err() == nil {
 		s.storeResponse(id, request, prepared, result, response)
@@ -81,7 +91,7 @@ func (s *server) respondBackground(w http.ResponseWriter, r *http.Request, reque
 	s.storeBackgroundEnd(ctx, id, created, request, prepared, err)
 }
 
-// streamBackground 以后台模式发送流式响应：事件依次为 queued 状态的 response.created 与 response.queued、生成开始后的 response.in_progress、输出项与终止事件，都写入事件记录；本请求从头跟随事件记录，客户端断开后生成继续，GET ?stream=true&starting_after= 从指定序号之后续传；被 cancel 接口终止时保存为 cancelled 并结束流，其他错误写出 response.failed
+// streamBackground 以后台模式发送流式响应，事件写入事件记录，客户端断开后生成继续；被 cancel 接口终止时保存为 cancelled，其他错误写出 response.failed
 func (s *server) streamBackground(w http.ResponseWriter, r *http.Request, request responsesRequest, prepared responsesPreparation, id string) {
 	ctx, finish := s.startBackground(r, id)
 	stream := newStreamLog()
@@ -89,8 +99,10 @@ func (s *server) streamBackground(w http.ResponseWriter, r *http.Request, reques
 	following := make(chan struct{})
 	go func() {
 		defer close(following)
-		if streamHeaders(w) == nil {
-			_ = stream.follow(r.Context(), w, -1)
+		out, err := openStream(w, sseHeartbeat)
+		defer out.stop()
+		if err == nil {
+			_ = stream.follow(r.Context(), out, -1)
 		}
 	}()
 	defer func() {
@@ -107,6 +119,7 @@ func (s *server) streamBackground(w http.ResponseWriter, r *http.Request, reques
 
 	compaction, err := s.compactOverThreshold(ctx, &request, &prepared, id)
 	prepared.stream = stream
+	prepared.generate.Background = true
 	var events <-chan aistudio.Event
 	if err == nil {
 		events, err = s.service.Generate(ctx, prepared.generate)
@@ -125,7 +138,7 @@ func (s *server) streamBackground(w http.ResponseWriter, r *http.Request, reques
 	}
 }
 
-// streamLog 是后台流式响应写出的事件帧，下标即 sequence_number；作为 http.ResponseWriter 接收写出器的帧，心跳注释帧不记录
+// streamLog 是后台流式响应写出的事件帧，下标即 sequence_number；作为 http.ResponseWriter 接收写出器的帧
 type streamLog struct {
 	header http.Header
 	mu     sync.Mutex
@@ -150,9 +163,6 @@ func (l *streamLog) Flush() {}
 
 // Write 记录一个事件帧并唤醒跟随者
 func (l *streamLog) Write(frame []byte) (int, error) {
-	if bytes.HasPrefix(frame, []byte(":")) {
-		return len(frame), nil
-	}
 	l.mu.Lock()
 	l.frames = append(l.frames, bytes.Clone(frame))
 	close(l.wake)
@@ -164,19 +174,14 @@ func (l *streamLog) Write(frame []byte) (int, error) {
 // finish 标记事件已全部写出并唤醒跟随者
 func (l *streamLog) finish() {
 	l.mu.Lock()
-	if !l.done {
-		l.done = true
-		close(l.wake)
-		l.wake = make(chan struct{})
-	}
+	l.done = true
+	close(l.wake)
 	l.mu.Unlock()
 }
 
-// follow 把序号 after 之后的事件帧写给客户端并跟随到事件写完、客户端断开或写出失败，等待新事件时按心跳间隔写注释帧
+// follow 把序号 after 之后的事件帧写给客户端并跟随到事件写完、客户端断开或写出失败
 func (l *streamLog) follow(ctx context.Context, w http.ResponseWriter, after int) error {
-	next := max(after+1, 0)
-	heartbeat := time.NewTimer(streamHeartbeatInterval)
-	defer heartbeat.Stop()
+	next := after + 1
 	for {
 		l.mu.Lock()
 		frames, done, wake := l.frames[min(next, len(l.frames)):], l.done, l.wake
@@ -195,15 +200,10 @@ func (l *streamLog) follow(ctx context.Context, w http.ResponseWriter, after int
 		if done {
 			return nil
 		}
-		heartbeat.Reset(streamHeartbeatInterval)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-wake:
-		case <-heartbeat.C:
-			if err := writeSSEHeartbeat(w); err != nil {
-				return err
-			}
 		}
 	}
 }

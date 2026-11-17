@@ -51,7 +51,7 @@ func TestCompactChatPreservesReasoningToolsAndUsage(t *testing.T) {
 	input := []aistudio.Event{
 		{Kind: aistudio.EventReasoning, Text: "thinking"},
 		{Kind: aistudio.EventText, Text: "hello"},
-		{Kind: aistudio.EventToolCall, ToolCall: &aistudio.FunctionCall{Name: "tool", Arguments: []byte(`{}`)}},
+		{Kind: aistudio.EventToolCall, Part: aistudio.Part{FunctionCall: &aistudio.FunctionCall{Name: "tool", Arguments: []byte(`{}`)}}},
 		{Kind: aistudio.EventUsage, Usage: &aistudio.Usage{InputTokens: 7, OutputTokens: 2, TotalTokens: 9}},
 		{Kind: aistudio.EventFinish, FinishReason: "stop"},
 	}
@@ -60,14 +60,14 @@ func TestCompactChatPreservesReasoningToolsAndUsage(t *testing.T) {
 	}
 	close(events)
 	emitted := 0
-	result, err := consumeChatStreamEvents(context.Background(), events, func(aistudio.Event) error { emitted++; return nil }, nil)
+	result, err := consumeChatStreamEvents(context.Background(), events, func(aistudio.Event) error { emitted++; return nil })
 	if err != nil || emitted != len(input) || len(result.toolCalls) != 1 || result.usage.TotalTokens != 9 {
 		t.Fatalf("lost stream data: %+v, %v", result, err)
 	}
 	if result.text.Len() != 0 || result.reasoning.Len() != 0 {
 		t.Fatal("stream duplicated text in builders")
 	}
-	text, _ := renderedContent(result.events, nil)
+	text, _ := renderedContent(result.events, mediaOutput{})
 	if text != "hello" {
 		t.Fatalf("citation text changed: %q", text)
 	}

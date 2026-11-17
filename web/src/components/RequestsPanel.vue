@@ -6,9 +6,8 @@ import { usePaged } from '@/paging'
 import type { Account, Cooldown, RequestState, RequestSummary } from '@/types'
 import DetailDialog from './DetailDialog.vue'
 import UiIcon from './UiIcon.vue'
-import PageHeader from './PageHeader.vue'
-import RelativeTime from './RelativeTime.vue'
 import UiPager from './UiPager.vue'
+import UiSelect, { keepSelected } from './UiSelect.vue'
 
 const props = defineProps<{
   accounts: Account[]
@@ -25,12 +24,30 @@ const emit = defineEmits<{
 }>()
 
 const { locale, t, errorText, logText } = useI18n()
-const coolingAccounts = computed(() => new Set(props.cooldowns.map((item) => item.account_id)).size)
 const cancelling = ref('')
 const refreshing = ref(false)
-// selectedCategory 为 null 表示全部；空字符串是没有类型的冷却
-const selectedCategory = ref<string | null>(null)
+const selectedCategory = ref('')
+const cooldownModel = ref('')
+const requestModel = ref('')
+const cooldownModels = computed(() =>
+  keepSelected([...new Set(props.cooldowns.map((item) => item.model_id))], cooldownModel.value, ''),
+)
+const requestModels = computed(() =>
+  keepSelected([...new Set(props.requests.map((item) => item.model))], requestModel.value, ''),
+)
+const modelCooldowns = computed(() =>
+  props.cooldowns.filter(
+    (item) => cooldownModel.value === '' || item.model_id === cooldownModel.value,
+  ),
+)
+// visibleRequests 是所选模型的请求，最近开始的在前
+const visibleRequests = computed(() =>
+  props.requests
+    .filter((item) => requestModel.value === '' || item.model === requestModel.value)
+    .sort((left, right) => Date.parse(right.started_at) - Date.parse(left.started_at)),
+)
 const detail = ref<Cooldown | null>(null)
+const clearing = ref(false)
 
 // splitReason 把冷却原因拆成冷却类型与上游错误原文
 function splitReason(reason: string | undefined): { category: string; text: string } {
@@ -48,7 +65,7 @@ function categoryLabel(category: string): string {
 // categories 是全部与各冷却类型的数量，类型按数量从多到少排列
 const categories = computed(() => {
   const counts = new Map<string, number>()
-  for (const cooldown of props.cooldowns) {
+  for (const cooldown of modelCooldowns.value) {
     const category = splitReason(cooldown.reason).category
     counts.set(category, (counts.get(category) ?? 0) + 1)
   }
@@ -60,49 +77,39 @@ const activeCategory = computed(() =>
   categories.value.length > 1 &&
   categories.value.some(([category]) => category === selectedCategory.value)
     ? selectedCategory.value
-    : null,
+    : '',
 )
 
 // visibleCooldowns 是所选类型的冷却，按恢复时间先后排列
 const visibleCooldowns = computed(() =>
-  props.cooldowns
+  modelCooldowns.value
     .filter(
       (cooldown) =>
-        activeCategory.value === null ||
+        activeCategory.value === '' ||
         splitReason(cooldown.reason).category === activeCategory.value,
     )
     .sort((left, right) => Date.parse(left.until) - Date.parse(right.until)),
 )
 
-// modelGroups 按模型汇总所选类型的冷却，冷却账号多的模型在前；earliest 是最早恢复时间
-const modelGroups = computed(() => {
-  const groups = new Map<
-    string,
-    { model: string; items: Cooldown[]; accounts: Set<string>; earliest: string; total: number }
-  >()
-  for (const cooldown of visibleCooldowns.value) {
-    const group = groups.get(cooldown.model_id) ?? {
-      model: cooldown.model_id,
-      items: [],
-      accounts: new Set<string>(),
-      earliest: cooldown.until,
-      total: cooldown.eligible_accounts,
-    }
-    group.items.push(cooldown)
-    group.accounts.add(cooldown.account_id)
-    groups.set(cooldown.model_id, group)
-  }
-  return [...groups.values()].sort(
-    (left, right) =>
-      right.accounts.size - left.accounts.size || left.model.localeCompare(right.model),
-  )
-})
-const expandedModel = ref('')
-const expandedCooldowns = computed(
-  () => modelGroups.value.find((group) => group.model === expandedModel.value)?.items ?? [],
-)
-const { page, pages, paged: pagedCooldowns } = usePaged(expandedCooldowns, 50)
-watch([expandedModel, activeCategory], () => (page.value = 1))
+// 冷却与请求列表每页 50 条，筛选变化时回到第一页
+const pageSize = 50
+const {
+  page: cooldownPage,
+  pages: cooldownPages,
+  paged: pagedCooldowns,
+} = usePaged(visibleCooldowns, pageSize)
+const {
+  page: requestPage,
+  pages: requestPages,
+  paged: pagedRequests,
+} = usePaged(visibleRequests, pageSize)
+watch([cooldownModel, activeCategory], () => (cooldownPage.value = 1))
+watch(requestModel, () => (requestPage.value = 1))
+const cooldownList = ref<HTMLElement>()
+const requestList = ref<HTMLElement>()
+// 翻页后列表回到顶部
+watch(cooldownPage, () => cooldownList.value?.scrollTo({ top: 0 }))
+watch(requestPage, () => requestList.value?.scrollTo({ top: 0 }))
 
 const requestStateKeys: Record<RequestState, TranslationKey> = {
   queued: 'state.queued',
@@ -112,63 +119,12 @@ const requestStateKeys: Record<RequestState, TranslationKey> = {
   failed: 'state.failed',
 }
 
-const requestStateTones: Record<RequestState, string> = {
-  queued: 'text-gray-400',
-  running: 'text-blue-400',
-  completed: 'text-green-400',
-  cancelled: 'text-gray-500',
-  failed: 'text-red-400',
-}
-
-// isActive 判断请求是否仍在排队或运行
-function isActive(request: RequestSummary): boolean {
-  return request.state === 'queued' || request.state === 'running'
-}
-
-// activeRequests 是进行中的请求，最早开始的在前，便于发现卡住的请求
-const activeRequests = computed(() =>
-  props.requests
-    .filter(isActive)
-    .sort((left, right) => Date.parse(left.started_at) - Date.parse(right.started_at)),
+const activeCount = computed(
+  () =>
+    visibleRequests.value.filter(
+      (request) => request.state === 'queued' || request.state === 'running',
+    ).length,
 )
-// finishedRequests 是已结束的请求，最近开始的在前
-const finishedRequests = computed(() =>
-  props.requests
-    .filter((request) => !isActive(request))
-    .sort((left, right) => Date.parse(right.started_at) - Date.parse(left.started_at)),
-)
-const activeCount = computed(() => activeRequests.value.length)
-const queuedCount = computed(
-  () => activeRequests.value.filter((request) => request.state === 'queued').length,
-)
-const failedCount = computed(
-  () => finishedRequests.value.filter((request) => request.state === 'failed').length,
-)
-const { page: activePage, pages: activePages, paged: pagedActive } = usePaged(activeRequests, 50)
-const {
-  page: finishedPage,
-  pages: finishedPages,
-  paged: pagedFinished,
-} = usePaged(finishedRequests, 30)
-// requestSections 是请求摘要的两段列表：进行中与最近结束
-const requestSections = computed(() => [
-  {
-    id: 'active',
-    title: t('requests.live'),
-    total: activeRequests.value.length,
-    items: pagedActive.value,
-    page: activePage,
-    pages: activePages.value,
-  },
-  {
-    id: 'finished',
-    title: t('requests.finished'),
-    total: finishedRequests.value.length,
-    items: pagedFinished.value,
-    page: finishedPage,
-    pages: finishedPages.value,
-  },
-])
 
 const accountLabels = computed(
   () => new Map(props.accounts.map((account) => [account.id, account.label])),
@@ -179,6 +135,7 @@ function accountLabel(id: string, label: string): string {
   return label || accountLabels.value.get(id) || '—'
 }
 
+// timeFormat 是当前语言的请求时间格式
 const timeFormat = computed(
   () =>
     new Intl.DateTimeFormat(locale.value, {
@@ -214,250 +171,218 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
     cancelling.value = ''
   }
 }
+
+// clearCooldown 手动清除详情中的冷却，成功后关闭详情并刷新列表
+async function clearCooldown(cooldown: Cooldown): Promise<void> {
+  clearing.value = true
+  try {
+    await api.clearCooldown(cooldown.account_id, cooldown.scope)
+    detail.value = null
+    emit('notice', t('cooldowns.cleared'), 'success')
+    emit('refresh')
+  } catch (error) {
+    emit('notice', errorText(error), 'error')
+  } finally {
+    clearing.value = false
+  }
+}
 </script>
 
 <template>
-  <section class="page-panel flex min-h-0 flex-1 flex-col overflow-auto">
-    <PageHeader
-      :title="t('section.requests.title')"
-      :description="t('section.requests.description')"
+  <section
+    class="flex min-h-0 flex-1 flex-col overflow-auto max-md:[scrollbar-gutter:stable] md:overflow-hidden"
+  >
+    <header
+      class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4 md:overflow-hidden md:[scrollbar-gutter:stable]"
     >
-      <button class="ui-button" type="button" :aria-busy="refreshing" @click="refresh">
+      <div class="min-w-0 flex-1">
+        <h2 class="text-xl font-semibold text-white">{{ t('section.requests.title') }}</h2>
+        <p class="mt-1 text-sm text-gray-500">{{ t('section.requests.description') }}</p>
+      </div>
+      <button
+        class="flex items-center gap-2 rounded border border-line bg-raised px-4 py-2 text-sm font-medium text-gray-200 transition hover:bg-line disabled:opacity-50"
+        type="button"
+        :aria-busy="refreshing"
+        @click="refresh"
+      >
         <UiIcon name="refresh" :size="15" :class="{ 'animate-spin': refreshing }" />
         {{ t('app.refresh') }}
       </button>
-    </PageHeader>
-    <div class="mx-auto w-full max-w-6xl p-4 md:p-8">
-      <div class="summary-grid">
-        <div>
-          <span>{{ t('cooldowns.title') }}</span
-          ><strong :class="{ '!text-yellow-400': cooldowns.length }">{{ cooldowns.length }}</strong>
-        </div>
-        <div>
-          <span>{{ t('requests.account') }}</span
-          ><strong>{{ coolingAccounts }}</strong>
-        </div>
-        <div>
-          <span>{{ t('requests.live') }}</span
-          ><strong class="!text-blue-400">{{ activeCount }}</strong>
-        </div>
-      </div>
-      <div class="grid gap-5 lg:grid-cols-2">
-        <article
-          class="flex min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-panel"
-        >
-          <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
-            <h3 class="font-bold text-gray-300">{{ t('cooldowns.title') }}</h3>
-            <span class="font-mono text-xs text-gray-500">{{ cooldowns.length }}</span>
-            <div v-if="categories.length > 1" class="ml-auto flex flex-wrap gap-1">
-              <button
-                v-for="[category, count] in [[null, cooldowns.length] as const, ...categories]"
-                :key="category === null ? 'all' : `c:${category}`"
-                type="button"
-                class="rounded px-2 py-0.5 text-xs transition"
-                :class="
-                  activeCategory === category
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-raised text-gray-400 hover:text-gray-200'
-                "
-                :aria-pressed="activeCategory === category"
-                @click="selectedCategory = category"
-              >
-                {{ category === null ? t('cooldowns.all') : categoryLabel(category) }} {{ count }}
-              </button>
-            </div>
-          </div>
-          <p class="border-b border-line px-4 py-3 text-xs leading-5 text-gray-400">
-            {{ t('ui.cooldownScope') }}
-          </p>
-          <div
-            v-if="cooldownError"
-            class="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-red-300"
+    </header>
+    <div
+      class="page-x grid min-h-0 flex-1 gap-4 py-4 max-md:shrink-0 max-md:basis-auto md:grid-rows-[minmax(0,3fr)_minmax(0,2fr)] md:overflow-hidden md:py-8 md:[scrollbar-gutter:stable] lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:grid-rows-1"
+    >
+      <article
+        class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-line bg-panel max-md:max-h-[70vh]"
+      >
+        <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
+          <h3 class="text-sm font-semibold text-gray-200">{{ t('cooldowns.title') }}</h3>
+          <span class="min-w-[2ch] font-mono text-xs text-gray-500">{{
+            visibleCooldowns.length
+          }}</span>
+          <UiSelect
+            v-model="cooldownModel"
+            :aria-label="t('requests.filterModel')"
+            class="min-w-0 max-w-64 rounded-md border border-line bg-canvas px-2 py-1 text-xs text-gray-200"
           >
-            {{ cooldownError }}
+            <option value="">{{ t('requests.allModels') }}</option>
+            <option v-for="model in cooldownModels" :key="model" :value="model">{{ model }}</option>
+          </UiSelect>
+          <div v-if="categories.length > 1" class="ml-auto flex flex-wrap gap-1">
+            <button
+              v-for="[category, count] in [['', modelCooldowns.length] as const, ...categories]"
+              :key="category || 'all'"
+              type="button"
+              class="rounded px-2 py-0.5 text-xs transition"
+              :class="
+                activeCategory === category
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-raised text-gray-400 hover:text-gray-200'
+              "
+              :aria-pressed="activeCategory === category"
+              @click="selectedCategory = category"
+            >
+              {{ category === '' ? t('cooldowns.all') : categoryLabel(category) }} {{ count }}
+            </button>
           </div>
-          <div v-else-if="loading" class="py-8 text-center text-gray-500">
-            {{ t('common.loading') }}
-          </div>
-          <div
-            v-else-if="cooldowns.length === 0"
-            class="flex flex-col items-center gap-3 px-4 py-12 text-center text-sm text-gray-400"
-          >
-            <UiIcon name="success" :size="28" class="text-green-400" />
-            {{ t('cooldowns.empty') }}
-          </div>
-          <div v-else class="max-h-[65vh] min-h-0 flex-1 overflow-y-auto">
-            <template v-for="group in modelGroups" :key="group.model">
-              <button
-                type="button"
-                class="flex w-full items-center gap-3 border-b border-line/60 px-4 py-3 text-left transition hover:bg-raised"
-                :aria-expanded="expandedModel === group.model"
-                @click="expandedModel = expandedModel === group.model ? '' : group.model"
-              >
-                <UiIcon
-                  :name="expandedModel === group.model ? 'chevronDown' : 'chevronRight'"
-                  :size="14"
-                  class="shrink-0 text-gray-500"
-                />
-                <div class="min-w-0 flex-1">
-                  <span
-                    v-tooltip.overflow="group.model"
-                    class="block truncate text-sm font-medium text-gray-200"
-                    >{{ group.model || t('ui.all') }}</span
-                  >
-                  <span class="mt-2 block h-1 overflow-hidden rounded-full bg-raised">
-                    <span
-                      class="block h-full rounded-full bg-yellow-400/70"
-                      :style="{
-                        width: `${Math.min(100, (group.accounts.size / Math.max(group.total, 1)) * 100)}%`,
-                      }"
-                    />
-                  </span>
-                </div>
-                <div class="shrink-0 text-right">
-                  <span class="block text-sm font-semibold text-yellow-400 tabular-nums">{{
-                    t('cooldowns.accountCount').replace('{count}', String(group.accounts.size))
-                  }}</span>
-                  <span class="block text-xs text-gray-500"
-                    >{{ t('cooldowns.earliest') }} <RelativeTime :until="group.earliest"
-                  /></span>
-                </div>
-              </button>
-              <div
-                v-if="expandedModel === group.model"
-                class="border-b border-line/60 bg-canvas/40"
-              >
-                <button
-                  v-for="cooldown in pagedCooldowns"
-                  :key="`${cooldown.account_id}:${cooldown.channel}`"
-                  type="button"
-                  class="flex w-full items-center gap-3 py-2.5 pr-4 pl-11 text-left text-xs transition hover:bg-raised"
-                  @click="detail = cooldown"
-                >
-                  <span
-                    v-tooltip.overflow="
-                      `${accountLabel(cooldown.account_id, cooldown.account_label)} · ${t(channelLabelKey(cooldown.channel))}`
-                    "
-                    class="min-w-0 flex-1 truncate text-gray-300"
-                    >{{ accountLabel(cooldown.account_id, cooldown.account_label) }} ·
-                    {{ t(channelLabelKey(cooldown.channel)) }}</span
-                  >
-                  <span class="shrink-0 text-gray-500">{{
-                    categoryLabel(splitReason(cooldown.reason).category)
-                  }}</span>
-                  <time
-                    :title="formatTime(cooldown.until)"
-                    class="w-20 shrink-0 text-right text-yellow-400"
-                    ><RelativeTime :until="cooldown.until"
-                  /></time>
-                </button>
-                <div class="px-4 pb-3">
-                  <UiPager v-model="page" :pages="pages" :total="group.items.length" />
-                </div>
-              </div>
-            </template>
-          </div>
-        </article>
-
-        <article
-          class="flex min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-panel"
+        </div>
+        <div
+          v-if="cooldownError"
+          class="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-red-300"
         >
-          <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
-            <h3 class="mr-auto font-bold text-gray-300">{{ t('requests.history') }}</h3>
-            <span class="status-pill text-blue-400 tabular-nums">
+          {{ cooldownError }}
+        </div>
+        <div v-else-if="loading" class="py-8 text-center text-gray-500">
+          {{ t('common.loading') }}
+        </div>
+        <div
+          v-else-if="visibleCooldowns.length === 0"
+          class="py-8 text-center text-xs text-gray-600"
+        >
+          {{ t('cooldowns.empty') }}
+        </div>
+        <div
+          v-else
+          ref="cooldownList"
+          class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+        >
+          <button
+            v-for="cooldown in pagedCooldowns"
+            :key="`${cooldown.account_id}:${cooldown.channel}:${cooldown.model_id}`"
+            type="button"
+            class="flex w-full items-center gap-3 border-b border-line/60 px-4 py-2 text-left transition hover:bg-raised"
+            @click="detail = cooldown"
+          >
+            <div class="min-w-0 flex-1">
               <span
-                class="size-1.5 rounded-full bg-current"
-                :class="{ 'animate-pulse': activeCount > queuedCount }"
-              />{{ t('state.running') }} {{ activeCount - queuedCount }}
-            </span>
-            <span v-if="queuedCount" class="status-pill text-gray-400 tabular-nums"
-              >{{ t('state.queued') }} {{ queuedCount }}</span
-            >
-            <span v-if="failedCount" class="status-pill text-red-400 tabular-nums"
-              >{{ t('state.failed') }} {{ failedCount }}</span
-            >
-          </div>
-          <div
-            v-if="requestError"
-            class="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-red-300"
+                v-tooltip.overflow="cooldown.model_id"
+                class="block truncate text-sm text-gray-200"
+                >{{ cooldown.model_id }}</span
+              >
+              <span
+                v-tooltip.overflow="
+                  `${accountLabel(cooldown.account_id, cooldown.account_label)} · ${t(channelLabelKey(cooldown.channel))}`
+                "
+                class="block truncate text-xs text-gray-500"
+                >{{ accountLabel(cooldown.account_id, cooldown.account_label) }} ·
+                {{ t(channelLabelKey(cooldown.channel)) }}</span
+              >
+            </div>
+            <div class="flex shrink-0 flex-col items-end gap-1">
+              <span class="rounded bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-300">{{
+                categoryLabel(splitReason(cooldown.reason).category)
+              }}</span>
+              <time class="font-mono text-xs whitespace-nowrap text-gray-400">{{
+                formatTime(cooldown.until)
+              }}</time>
+            </div>
+            <UiIcon name="chevronRight" :size="14" class="shrink-0 text-gray-600" />
+          </button>
+        </div>
+        <UiPager v-if="!cooldownError && !loading" v-model="cooldownPage" :pages="cooldownPages" />
+      </article>
+
+      <article
+        class="flex min-h-0 flex-col overflow-hidden rounded-lg border border-line bg-panel max-md:max-h-[70vh]"
+      >
+        <div
+          class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3"
+        >
+          <h3 class="text-sm font-semibold text-gray-200">{{ t('requests.history') }}</h3>
+          <span class="text-xs text-green-400"> {{ t('requests.live') }}: {{ activeCount }} </span>
+          <UiSelect
+            v-model="requestModel"
+            :aria-label="t('requests.filterModel')"
+            class="min-w-0 max-w-64 rounded-md border border-line bg-canvas px-2 py-1 text-xs text-gray-200"
           >
-            {{ requestError }}
+            <option value="">{{ t('requests.allModels') }}</option>
+            <option v-for="model in requestModels" :key="model" :value="model">{{ model }}</option>
+          </UiSelect>
+        </div>
+        <div
+          v-if="requestError"
+          class="m-4 rounded border border-red-500/40 bg-red-500/10 p-3 text-red-300"
+        >
+          {{ requestError }}
+        </div>
+        <div v-else-if="loading" class="py-8 text-center text-gray-500">
+          {{ t('common.loading') }}
+        </div>
+        <div
+          v-else-if="visibleRequests.length === 0"
+          class="py-8 text-center text-xs text-gray-600"
+        >
+          {{ t('requests.empty') }}
+        </div>
+        <div
+          v-else
+          ref="requestList"
+          class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+        >
+          <div
+            v-for="request in pagedRequests"
+            :key="request.id"
+            class="flex items-center gap-3 border-b border-line/60 px-4 py-2 transition hover:bg-raised"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex min-w-0 items-center gap-2">
+                <span v-tooltip.overflow="request.model" class="truncate text-sm text-gray-200">{{
+                  request.model
+                }}</span>
+                <span class="shrink-0 text-xs text-gray-500">{{
+                  t(requestStateKeys[request.state])
+                }}</span>
+              </div>
+              <span
+                v-tooltip.overflow="
+                  request.channel
+                    ? `${accountLabel(request.account_id, request.account_label)} · ${t(channelLabelKey(request.channel))}`
+                    : accountLabel(request.account_id, request.account_label)
+                "
+                class="block truncate text-xs text-gray-500"
+                >{{ accountLabel(request.account_id, request.account_label)
+                }}<template v-if="request.channel">
+                  · {{ t(channelLabelKey(request.channel)) }}</template
+                ></span
+              >
+            </div>
+            <time class="shrink-0 font-mono text-xs whitespace-nowrap text-gray-500">{{
+              formatTime(request.started_at)
+            }}</time>
+            <button
+              v-if="request.state === 'queued' || request.state === 'running'"
+              class="shrink-0 rounded border border-red-900/50 bg-red-900/30 px-3 py-1 text-xs text-red-400 transition hover:bg-red-900/50 disabled:opacity-50"
+              type="button"
+              :disabled="cancelling !== ''"
+              :aria-busy="cancelling === request.id"
+              @click="cancelRequest(request)"
+            >
+              {{ t('requests.stop') }}
+            </button>
           </div>
-          <div v-else-if="loading" class="py-8 text-center text-gray-500">
-            {{ t('common.loading') }}
-          </div>
-          <div v-else-if="requests.length === 0" class="py-8 text-center text-xs text-gray-600">
-            {{ t('requests.empty') }}
-          </div>
-          <div v-else class="max-h-[65vh] min-h-0 flex-1 overflow-y-auto">
-            <template v-for="section in requestSections" :key="section.id">
-              <template v-if="section.total">
-                <h4
-                  class="sticky top-0 z-[1] border-b border-line/60 bg-panel px-4 py-1.5 text-[11px] font-medium text-gray-500"
-                >
-                  {{ section.title }} · {{ section.total }}
-                </h4>
-                <div
-                  v-for="request in section.items"
-                  :key="request.id"
-                  class="flex items-center gap-3 border-b border-line/60 px-4 py-2.5 transition hover:bg-raised"
-                >
-                  <div class="min-w-0 flex-1">
-                    <div class="flex min-w-0 items-center gap-2">
-                      <span
-                        v-tooltip.overflow="request.model"
-                        class="min-w-0 truncate text-sm text-gray-200"
-                        >{{ request.model }}</span
-                      >
-                      <span
-                        class="status-pill ml-auto shrink-0 !py-0"
-                        :class="requestStateTones[request.state]"
-                        >{{ t(requestStateKeys[request.state]) }}</span
-                      >
-                    </div>
-                    <div class="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-gray-500">
-                      <span
-                        v-tooltip.overflow="
-                          request.channel
-                            ? `${accountLabel(request.account_id, request.account_label)} · ${t(channelLabelKey(request.channel))}`
-                            : accountLabel(request.account_id, request.account_label)
-                        "
-                        class="min-w-0 truncate"
-                        >{{ accountLabel(request.account_id, request.account_label)
-                        }}<template v-if="request.channel">
-                          · {{ t(channelLabelKey(request.channel)) }}</template
-                        ></span
-                      >
-                      <time
-                        :title="formatTime(request.started_at)"
-                        class="ml-auto shrink-0 tabular-nums"
-                        ><RelativeTime :since="request.started_at"
-                      /></time>
-                    </div>
-                  </div>
-                  <button
-                    v-if="isActive(request)"
-                    class="ui-button ui-button-danger !min-h-7 shrink-0 !px-2.5 !py-1 !text-xs"
-                    type="button"
-                    :disabled="cancelling !== ''"
-                    :aria-busy="cancelling === request.id"
-                    @click="cancelRequest(request)"
-                  >
-                    {{ t('requests.stop') }}
-                  </button>
-                </div>
-                <div v-if="section.pages > 1" class="px-4 pb-3">
-                  <UiPager
-                    v-model="section.page.value"
-                    :pages="section.pages"
-                    :total="section.total"
-                  />
-                </div>
-              </template>
-            </template>
-          </div>
-        </article>
-      </div>
+        </div>
+        <UiPager v-if="!requestError && !loading" v-model="requestPage" :pages="requestPages" />
+      </article>
     </div>
 
     <DetailDialog
@@ -476,13 +401,25 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
           <dt class="text-gray-500">{{ t('cooldowns.category') }}</dt>
           <dd class="text-yellow-300">{{ categoryLabel(splitReason(detail.reason).category) }}</dd>
           <dt class="text-gray-500">{{ t('cooldowns.until') }}</dt>
-          <dd class="text-gray-200">
-            <RelativeTime :until="detail.until" /> · {{ formatTime(detail.until) }}
-          </dd>
+          <dd class="font-mono text-gray-200">{{ formatTime(detail.until) }}</dd>
         </dl>
         <pre
           class="rounded-md border border-line bg-canvas p-3 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere] text-gray-300"
-          >{{ splitReason(detail.reason).text || '—' }}</pre>
+          >{{ logText(splitReason(detail.reason).text) || '—' }}</pre>
+        <div class="mt-4 flex items-center justify-end gap-3">
+          <span v-if="detail.scope === '*'" class="text-xs text-gray-500">{{
+            t('cooldowns.clearAccountHint')
+          }}</span>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-line bg-raised px-3 py-1.5 text-sm text-gray-200 transition hover:bg-line disabled:opacity-50"
+            :disabled="clearing"
+            :aria-busy="clearing"
+            @click="clearCooldown(detail)"
+          >
+            {{ t('cooldowns.clear') }}
+          </button>
+        </div>
       </template>
     </DetailDialog>
   </section>

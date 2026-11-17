@@ -48,7 +48,7 @@ func requestAdmissionMiddleware(limits func() (int, time.Duration), next http.Ha
 				err := waitCtx.Err()
 				SetAccessLogError(r.Context(), err)
 				if shouldWriteRequestError(r, err) {
-					switch protocolForRequest(r) {
+					switch requestProtocol(r) {
 					case "gemini":
 						writeGeminiRequestError(w, err)
 					case "anthropic":

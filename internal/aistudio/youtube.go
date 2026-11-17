@@ -6,7 +6,14 @@ import (
 	"strings"
 )
 
-var youtubeURLPattern = regexp.MustCompile(`https?://[^\s<>"']+`)
+// youtubeURLPattern 匹配文本中由 ASCII URL 字符组成的链接，遇到空白、引号、尖括号、反引号与非 ASCII 字符结束
+var youtubeURLPattern = regexp.MustCompile(`https?://[A-Za-z0-9\-._~:/?#\[\]@!$&()*+,;=%]+`)
+
+// youtubeVideoIDPattern 匹配 11 位的 YouTube 视频 ID
+var youtubeVideoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{11}$`)
+
+// youtubeWatchURL 是发往 AI Studio 的 YouTube 视频地址前缀
+const youtubeWatchURL = "https://www.youtube.com/watch?v="
 
 // ExternalMediaForURL 返回 AI Studio 可直接读取的外部媒体
 func ExternalMediaForURL(raw string) (*ExternalMedia, bool) {
@@ -40,7 +47,16 @@ func ExternalMediaForURL(raw string) (*ExternalMedia, bool) {
 	if videoID == "" {
 		return nil, false
 	}
-	return &ExternalMedia{MIME: "video/*", URL: "https://www.youtube.com/watch?v=" + url.QueryEscape(videoID)}, true
+	return &ExternalMedia{MIME: "video/*", URL: youtubeWatchURL + url.QueryEscape(videoID)}, true
+}
+
+// attachYouTubeLinks 返回把各 user content 文本中的 YouTube 链接转为视频外部媒体后的 contents
+func attachYouTubeLinks(contents []Content) []Content {
+	converted := make([]Content, len(contents))
+	for index, content := range contents {
+		converted[index] = attachYouTubeMedia(content)
+	}
+	return converted
 }
 
 func attachYouTubeMedia(content Content) Content {
@@ -56,20 +72,17 @@ func attachYouTubeMedia(content Content) Content {
 	parts := make([]Part, 0, len(content.Parts)+1)
 	for _, part := range content.Parts {
 		if part.Text != "" {
-			matches := youtubeURLPattern.FindAllString(part.Text, -1)
 			original := part.Text
-			if len(matches) > 0 {
-				for _, raw := range matches {
-					media, ok := ExternalMediaForURL(raw)
-					if !ok {
-						continue
-					}
-					if _, duplicate := existing[media.URL]; !duplicate {
-						existing[media.URL] = struct{}{}
-						parts = append(parts, Part{ExternalMedia: media})
-					}
-					part.Text = strings.ReplaceAll(part.Text, raw, "")
+			for _, raw := range youtubeURLPattern.FindAllString(part.Text, -1) {
+				media, ok := ExternalMediaForURL(raw)
+				if !ok || !youtubeVideoIDPattern.MatchString(strings.TrimPrefix(media.URL, youtubeWatchURL)) {
+					continue
 				}
+				if _, duplicate := existing[media.URL]; !duplicate {
+					existing[media.URL] = struct{}{}
+					parts = append(parts, Part{ExternalMedia: media})
+				}
+				part.Text = strings.ReplaceAll(part.Text, raw, "")
 			}
 			if part.Text != original {
 				part.Text = strings.TrimSpace(part.Text)

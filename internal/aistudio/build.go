@@ -2,6 +2,7 @@ package aistudio
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -24,7 +25,7 @@ const buildProxyUnaryMethod = "ProxyUnaryCall"
 const buildProofField = 3
 
 // buildThinkingLevels 把 thinking level 枚举换算为 Gemini API 名称
-var buildThinkingLevels = map[int64]string{1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "MINIMAL"}
+var buildThinkingLevels = map[int64]string{1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "MINIMAL", 5: "EXTRA_HIGH"}
 
 // buildModelDefaults 返回 Build 独有模型按目录推导的生成默认值
 func buildModelDefaults(model Model) GenerationDefaults {
@@ -46,10 +47,10 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 		return "", nil, fmt.Errorf("GenerateContent contents 不能为空")
 	}
 	body := map[string]any{"contents": contents}
-	if system := strings.TrimSpace(request.System); system != "" {
-		body["systemInstruction"] = map[string]any{"parts": []any{map[string]any{"text": request.System}}}
+	if system := buildSystemInstruction(request.System); system != nil {
+		body["systemInstruction"] = system
 	}
-	tools, serverSide, err := encodeBuildTools(request.Tools)
+	tools, err := encodeBuildTools(request.Tools)
 	if err != nil {
 		return "", nil, err
 	}
@@ -57,8 +58,18 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 		body["tools"] = tools
 	}
 	toolConfig := map[string]any{}
-	if serverSide {
+	if len(tools) > 0 && serverSideInvocations(request.Tools, imageRoute) {
 		toolConfig["includeServerSideToolInvocations"] = true
+	}
+	if retrieval := request.Tools.ToolConfig.Retrieval; len(tools) > 0 && retrieval != nil {
+		config := map[string]any{}
+		if retrieval.Latitude != nil && retrieval.Longitude != nil {
+			config["latLng"] = map[string]any{"latitude": *retrieval.Latitude, "longitude": *retrieval.Longitude}
+		}
+		if retrieval.LanguageCode != "" {
+			config["languageCode"] = retrieval.LanguageCode
+		}
+		toolConfig["retrievalConfig"] = config
 	}
 	mode := request.Tools.ToolConfig.Mode
 	if len(request.Tools.Functions) > 0 && mode != "none" {
@@ -71,7 +82,7 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 		if mode == "required" && len(request.Tools.ToolConfig.AllowedFunctionNames) > 0 {
 			calling["allowedFunctionNames"] = request.Tools.ToolConfig.AllowedFunctionNames
 		}
-		if request.Tools.StreamReplyArguments && !unary {
+		if request.Tools.ToolConfig.StreamReplyArguments && !unary {
 			calling["streamFunctionCallArguments"] = true
 		}
 		if mode != "" && mode != "auto" || calling["mode"] != "AUTO" || len(request.Tools.ToolConfig.AllowedFunctionNames) > 0 {
@@ -99,6 +110,15 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 		}
 		body["safetySettings"] = settings
 	}
+	if tier := strings.ToLower(strings.TrimSpace(request.ServiceTier)); tier != "" && tier != "unspecified" {
+		body["serviceTier"] = "SERVICE_TIER_" + strings.ToUpper(tier)
+	}
+	if request.Store != nil {
+		body["store"] = *request.Store
+	}
+	if len(request.Labels) > 0 {
+		body["labels"] = request.Labels
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return "", nil, fmt.Errorf("编码 Build 请求: %w", err)
@@ -109,6 +129,18 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 	return "/v1beta/models/" + model + ":streamGenerateContent", encoded, nil
 }
 
+// buildSystemInstruction 返回每段系统指令一个 Part 的 systemInstruction，没有系统指令时为 nil
+func buildSystemInstruction(system []string) map[string]any {
+	if strings.TrimSpace(SystemText(system)) == "" {
+		return nil
+	}
+	parts := make([]any, 0, len(system))
+	for _, text := range system {
+		parts = append(parts, map[string]any{"text": text})
+	}
+	return map[string]any{"parts": parts}
+}
+
 // EncodeBuildProxyRequest 编码代理请求：ProxyStreamedCall 为 [路径, 请求体, WAA proof]，ProxyUnaryCall 追加 HTTP 方法
 func EncodeBuildProxyRequest(path string, body []byte, unary bool) ([]byte, error) {
 	if unary {
@@ -117,7 +149,7 @@ func EncodeBuildProxyRequest(path string, body []byte, unary bool) ([]byte, erro
 	return json.Marshal([]any{path, string(body), nil})
 }
 
-// buildUsesUnary 判断模型是否需要订阅权益；权益头只随 ProxyUnaryCall 发送，这类模型经单次代理调用
+// buildUsesUnary 判断模型是否需要订阅权益，需要时经 ProxyUnaryCall 单次代理调用
 func buildUsesUnary(model Model) bool {
 	return len(model.AccessModes) > 0 && !modelAllowedByTier(model, BenefitTierFree)
 }
@@ -137,17 +169,15 @@ func buildBindingPrompt(body []byte) (string, error) {
 }
 
 func encodeBuildContents(contents []Content) ([]any, error) {
-	wire := make([]any, 0, len(contents))
-	var pendingCalls []FunctionCall
-	for index, content := range contents {
+	linked, err := linkedContents(contents)
+	if err != nil {
+		return nil, err
+	}
+	wire := make([]any, 0, len(linked))
+	for index, content := range linked {
 		if len(content.Parts) == 0 {
 			continue
 		}
-		content, err := linkFunctionResults(content, &pendingCalls)
-		if err != nil {
-			return nil, fmt.Errorf("编码 content %d: %w", index, err)
-		}
-		content = attachYouTubeMedia(content)
 		role := "user"
 		switch content.Role {
 		case RoleUser, RoleTool:
@@ -192,12 +222,20 @@ func encodeBuildPart(part Part) (map[string]any, error) {
 		if part.InlineData.MIME == "" || len(part.InlineData.Data) == 0 {
 			return nil, fmt.Errorf("inline data 缺少 MIME 或数据")
 		}
-		wire["inlineData"] = map[string]any{"mimeType": part.InlineData.MIME, "data": base64.StdEncoding.EncodeToString(part.InlineData.Data)}
+		inline := map[string]any{"mimeType": part.InlineData.MIME, "data": base64.StdEncoding.EncodeToString(part.InlineData.Data)}
+		if part.DisplayName != "" {
+			inline["displayName"] = part.DisplayName
+		}
+		wire["inlineData"] = inline
 	case part.ExternalMedia != nil:
 		if part.ExternalMedia.MIME == "" || part.ExternalMedia.URL == "" {
 			return nil, fmt.Errorf("外部媒体缺少 MIME 或 URL")
 		}
-		wire["fileData"] = map[string]any{"mimeType": part.ExternalMedia.MIME, "fileUri": part.ExternalMedia.URL}
+		file := map[string]any{"mimeType": part.ExternalMedia.MIME, "fileUri": part.ExternalMedia.URL}
+		if part.DisplayName != "" {
+			file["displayName"] = part.DisplayName
+		}
+		wire["fileData"] = file
 	case part.File != nil:
 		return nil, fmt.Errorf("Build 通道不接受 Drive 文件引用")
 	case part.FunctionCall != nil:
@@ -220,9 +258,6 @@ func encodeBuildPart(part Part) (map[string]any, error) {
 			signature = "skip_thought_signature_validator"
 		}
 	case part.FunctionResult != nil:
-		if part.FunctionResult.Name == "" {
-			return nil, fmt.Errorf("function result 缺少名称且无法唯一关联调用")
-		}
 		response, err := buildJSONObject(part.FunctionResult.Content)
 		if err != nil {
 			return nil, fmt.Errorf("function result content: %w", err)
@@ -233,17 +268,13 @@ func encodeBuildPart(part Part) (map[string]any, error) {
 		}
 		wire["functionResponse"] = result
 	case part.ExecutableCode != nil:
-		wire["executableCode"] = map[string]any{"language": part.ExecutableCode.Language, "code": part.ExecutableCode.Code}
+		wire["executableCode"] = part.ExecutableCode
 	case part.CodeExecutionResult != nil:
-		output := part.CodeExecutionResult.Output
-		if part.CodeExecutionResult.Outcome != "OUTCOME_OK" {
-			output = part.CodeExecutionResult.Error
-		}
-		result := map[string]any{"outcome": part.CodeExecutionResult.Outcome}
-		if output != "" {
-			result["output"] = output
-		}
-		wire["codeExecutionResult"] = result
+		wire["codeExecutionResult"] = part.CodeExecutionResult
+	case part.ToolCall != nil:
+		wire["toolCall"] = buildServerToolStep(part.ToolCall, "args")
+	case part.ToolResponse != nil:
+		wire["toolResponse"] = buildServerToolStep(part.ToolResponse, "response")
 	case signature != "":
 		wire["text"] = ""
 	default:
@@ -252,7 +283,41 @@ func encodeBuildPart(part Part) (map[string]any, error) {
 	if signature != "" {
 		wire["thoughtSignature"] = signature
 	}
+	if video := part.VideoMetadata; video != nil {
+		metadata := map[string]any{}
+		if video.StartOffset != "" {
+			metadata["startOffset"] = video.StartOffset
+		}
+		if video.EndOffset != "" {
+			metadata["endOffset"] = video.EndOffset
+		}
+		if video.FPS != nil {
+			metadata["fps"] = *video.FPS
+		}
+		wire["videoMetadata"] = metadata
+	}
+	if part.MediaProcessing != "" {
+		wire["mediaProcessing"] = part.MediaProcessing
+	}
+	if part.MediaResolution != "" {
+		wire["mediaResolution"] = map[string]any{"level": part.MediaResolution}
+	}
 	return wire, nil
+}
+
+// buildServerToolStep 编码服务端工具的 toolCall 或 toolResponse，payload 为 args 或 response
+func buildServerToolStep(step *ServerToolStep, payload string) map[string]any {
+	value := map[string]any{"id": step.ID}
+	if step.Type != "" {
+		value["toolType"] = step.Type
+	}
+	if payload == "args" && step.Name != "" {
+		value["toolName"] = step.Name
+	}
+	if len(step.Data) != 0 {
+		value[payload] = step.Data
+	}
+	return value
 }
 
 // buildJSONObject 把 JSON 值转成 Gemini API Struct，非对象值放在 result 字段
@@ -271,31 +336,45 @@ func buildJSONObject(raw json.RawMessage) (any, error) {
 	return map[string]any{"result": value}, nil
 }
 
-func encodeBuildTools(tools Tools) ([]any, bool, error) {
+func encodeBuildTools(tools Tools) ([]any, error) {
 	switch tools.ToolConfig.Mode {
 	case "none":
-		return nil, false, nil
+		return nil, nil
 	case "", "auto", "required", "validated":
 	default:
-		return nil, false, fmt.Errorf("未知 tool choice %q", tools.ToolConfig.Mode)
+		return nil, fmt.Errorf("未知 tool choice %q", tools.ToolConfig.Mode)
 	}
 	var wire []any
 	if len(tools.Functions) > 0 {
 		declarations := make([]any, 0, len(tools.Functions))
 		for index, declaration := range tools.Functions {
 			if declaration.Name == "" {
-				return nil, false, fmt.Errorf("function declaration %d 缺少名称", index)
+				return nil, fmt.Errorf("function declaration %d 缺少名称", index)
 			}
 			encoded := map[string]any{"name": declaration.Name}
 			if declaration.Description != "" {
 				encoded["description"] = declaration.Description
 			}
+			behavior, _, err := functionBehavior(declaration)
+			if err != nil {
+				return nil, fmt.Errorf("function declaration %d: %w", index, err)
+			}
+			if behavior != "" {
+				encoded["behavior"] = behavior
+			}
 			if len(bytes.TrimSpace(declaration.Parameters)) > 0 {
 				parameters, err := normalizeFunctionParameters(declaration.Parameters)
 				if err != nil {
-					return nil, false, fmt.Errorf("function declaration %d parameters: %w", index, err)
+					return nil, fmt.Errorf("function declaration %d parameters: %w", index, err)
 				}
 				encoded["parametersJsonSchema"] = parameters
+			}
+			if len(bytes.TrimSpace(declaration.Response)) > 0 {
+				response, err := normalizeFunctionParameters(declaration.Response)
+				if err != nil {
+					return nil, fmt.Errorf("function declaration %d response: %w", index, err)
+				}
+				encoded["responseJsonSchema"] = response
 			}
 			declarations = append(declarations, encoded)
 		}
@@ -306,7 +385,6 @@ func encodeBuildTools(tools Tools) ([]any, bool, error) {
 	if tools.GoogleSearch != nil {
 		search = *tools.GoogleSearch
 	}
-	serverSide := false
 	for _, name := range tools.Google {
 		switch name {
 		case "google_search", "image_search":
@@ -318,14 +396,55 @@ func encodeBuildTools(tools Tools) ([]any, bool, error) {
 		case "url_context":
 			wire = append(wire, map[string]any{"urlContext": map[string]any{}})
 		case "google_maps":
-			wire = append(wire, map[string]any{"googleMaps": map[string]any{}})
+			maps := map[string]any{}
+			if tools.MapsWidget {
+				maps["enableWidget"] = true
+			}
+			wire = append(wire, map[string]any{"googleMaps": maps})
 		default:
-			return nil, false, fmt.Errorf("未知 Google tool %q", name)
+			return nil, fmt.Errorf("未知 Google tool %q", name)
 		}
-		serverSide = true
+	}
+	if computer := tools.ComputerUse; computer != nil {
+		options := map[string]any{}
+		if computer.Environment != "" {
+			options["environment"] = computer.Environment
+		}
+		if len(computer.ExcludedPredefinedFunctions) > 0 {
+			options["excludedPredefinedFunctions"] = computer.ExcludedPredefinedFunctions
+		}
+		if len(computer.DisabledSafetyPolicies) > 0 {
+			options["disabledSafetyPolicies"] = computer.DisabledSafetyPolicies
+		}
+		if computer.EnablePromptInjectionDetection {
+			options["enablePromptInjectionDetection"] = true
+		}
+		wire = append(wire, map[string]any{"computerUse": options})
+	}
+	if len(tools.MCPServers) > 0 {
+		servers := make([]any, 0, len(tools.MCPServers))
+		for _, server := range tools.MCPServers {
+			transport := map[string]any{"url": server.URL}
+			if len(server.Headers) > 0 {
+				transport["headers"] = server.Headers
+			}
+			if server.Timeout != "" {
+				transport["timeout"] = server.Timeout
+			}
+			if server.SSEReadTimeout != "" {
+				transport["sseReadTimeout"] = server.SSEReadTimeout
+			}
+			if server.TerminateOnClose != nil {
+				transport["terminateOnClose"] = *server.TerminateOnClose
+			}
+			servers = append(servers, map[string]any{"name": server.Name, "streamableHttpTransport": transport})
+		}
+		wire = append(wire, map[string]any{"mcpServers": servers})
+	}
+	if len(tools.FileSearch) > 0 {
+		wire = append(wire, map[string]any{"fileSearch": tools.FileSearch})
 	}
 	if searchRequested {
-		serverSide = true
 		options := map[string]any{}
 		if search.ImageSearch {
 			types := map[string]any{"imageSearch": map[string]any{}}
@@ -346,13 +465,13 @@ func encodeBuildTools(tools Tools) ([]any, bool, error) {
 		}
 		wire = append(wire, map[string]any{"googleSearch": options})
 	}
-	return wire, serverSide && len(tools.Functions) > 0, nil
+	return wire, nil
 }
 
-// encodeBuildGenerationConfig 复用 Playground 的参数校验与默认值，并转换为 Gemini API 字段
+// encodeBuildGenerationConfig 把有效生成配置编码为 Gemini API generationConfig
 func encodeBuildGenerationConfig(config GenerationConfig, defaults GenerationDefaults) (map[string]any, error) {
 	defaults.ContinuedOutputTokens = 0
-	wire, err := encodeGenerationConfig(config, defaults)
+	settings, err := resolveGenerationSettings(config, defaults)
 	if err != nil {
 		return nil, err
 	}
@@ -360,23 +479,39 @@ func encodeBuildGenerationConfig(config GenerationConfig, defaults GenerationDef
 	if len(config.StopSequences) > 0 {
 		encoded["stopSequences"] = config.StopSequences
 	}
-	fields := []struct {
-		index int
-		name  string
-	}{{3, "maxOutputTokens"}, {4, "temperature"}, {5, "topP"}, {6, "topK"}, {18, "seed"}}
-	for _, field := range fields {
-		if field.index < len(wire) && wire[field.index] != nil {
-			encoded[field.name] = wire[field.index]
-		}
+	if settings.maxOutput != nil {
+		encoded["maxOutputTokens"] = *settings.maxOutput
+	}
+	if settings.temperature != nil {
+		encoded["temperature"] = *settings.temperature
+	}
+	if settings.topP != nil {
+		encoded["topP"] = *settings.topP
+	}
+	if settings.topK != nil {
+		encoded["topK"] = *settings.topK
+	}
+	if config.Seed != nil {
+		encoded["seed"] = *config.Seed
 	}
 	if config.ResponseMIMEType != "" {
 		encoded["responseMimeType"] = config.ResponseMIMEType
 	}
-	if len(wire) > 17 && wire[17] != nil {
+	if settings.mediaResolution != nil {
 		encoded["mediaResolution"] = strings.ToUpper(strings.TrimSpace(config.MediaResolution))
 	}
-	if wire[8] != nil {
-		encoded["responseSchema"] = buildResponseSchema(wire[8].([]any))
+	if len(config.ResponseSchema) > 0 && settings.responseSchema != nil {
+		encoded["responseSchema"] = settings.responseSchema
+	}
+	if len(config.ResponseSchema) == 0 && len(config.ResponseJSONSchema) > 0 {
+		delete(encoded, "responseMimeType")
+		encoded["responseFormat"] = map[string]any{"text": map[string]any{"mimeType": "APPLICATION_JSON", "schema": config.ResponseJSONSchema}}
+	}
+	if transcription := config.TranscriptionConfig; transcription != nil {
+		encoded["audioTranscriptionConfig"] = buildTranscriptionConfig(*transcription)
+	}
+	if config.EnhancedCivicAnswers {
+		encoded["enableEnhancedCivicAnswers"] = true
 	}
 	if config.ResponseModalities != nil {
 		modalities := make([]string, 0, len(config.ResponseModalities))
@@ -385,45 +520,46 @@ func encodeBuildGenerationConfig(config GenerationConfig, defaults GenerationDef
 		}
 		encoded["responseModalities"] = modalities
 	}
-	if len(wire) > 26 && wire[26] != nil {
-		// 与 Playground 相同的图片配置，含可设置分辨率模型的默认 1K
-		image := wire[26].([]any)
+	if image := settings.image; image != nil {
 		imageConfig := map[string]any{}
-		if aspect, ok := image[0].(string); ok && aspect != "" {
-			imageConfig["aspectRatio"] = aspect
+		if image.AspectRatio != "" {
+			imageConfig["aspectRatio"] = image.AspectRatio
 		}
-		if len(image) > 1 {
-			if size, ok := image[1].(string); ok && size != "" {
-				imageConfig["imageSize"] = size
-			}
+		if image.ImageSize != "" {
+			imageConfig["imageSize"] = image.ImageSize
 		}
 		encoded["imageConfig"] = imageConfig
 	}
 	if speech := config.SpeechConfig; speech != nil {
-		voice := func(name string) map[string]any {
-			return map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": name}}
+		voice := func(name, id string) map[string]any {
+			if name = strings.TrimSpace(name); name != "" {
+				return map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": name}}
+			}
+			return map[string]any{"voice": strings.TrimSpace(id)}
 		}
 		speechConfig := map[string]any{}
-		if name := strings.TrimSpace(speech.VoiceName); name != "" {
-			speechConfig["voiceConfig"] = voice(name)
+		if strings.TrimSpace(speech.VoiceName) != "" || strings.TrimSpace(speech.Voice) != "" {
+			speechConfig["voiceConfig"] = voice(speech.VoiceName, speech.Voice)
+		}
+		if speech.LanguageCode != "" {
+			speechConfig["languageCode"] = speech.LanguageCode
 		}
 		if len(speech.Speakers) > 0 {
 			speakers := make([]any, 0, len(speech.Speakers))
 			for _, speaker := range speech.Speakers {
-				speakers = append(speakers, map[string]any{"speaker": speaker.Speaker, "voiceConfig": voice(speaker.VoiceName)})
+				speakers = append(speakers, map[string]any{"speaker": speaker.Speaker, "voiceConfig": voice(speaker.VoiceName, speaker.Voice)})
 			}
 			speechConfig["multiSpeakerVoiceConfig"] = map[string]any{"speakerVoiceConfigs": speakers}
 		}
 		encoded["speechConfig"] = speechConfig
 	}
-	if len(wire) > 16 && wire[16] != nil {
-		thinking := wire[16].([]any)
+	if thinking := settings.thinking; thinking != nil {
 		thinkingConfig := map[string]any{"includeThoughts": !config.HideThinking}
-		if len(thinking) > 1 && thinking[1] != nil {
-			thinkingConfig["thinkingBudget"] = thinking[1]
+		if thinking.budget != nil {
+			thinkingConfig["thinkingBudget"] = *thinking.budget
 		}
-		if len(thinking) > 3 && thinking[3] != nil {
-			if name, ok := buildThinkingLevels[thinking[3].(int64)]; ok {
+		if thinking.level != nil {
+			if name, ok := buildThinkingLevels[*thinking.level]; ok {
 				thinkingConfig["thinkingLevel"] = name
 			}
 		}
@@ -438,21 +574,31 @@ type buildResponse struct {
 		Content *struct {
 			Parts []buildResponsePart `json:"parts"`
 		} `json:"content"`
-		FinishReason     string `json:"finishReason"`
-		FinishMessage    string `json:"finishMessage"`
+		FinishReason     string         `json:"finishReason"`
+		FinishMessage    string         `json:"finishMessage"`
+		SafetyRatings    []SafetyRating `json:"safetyRatings"`
 		CitationMetadata *struct {
 			CitationSources []struct {
 				URI        string `json:"uri"`
 				Title      string `json:"title"`
+				License    string `json:"license"`
 				StartIndex int    `json:"startIndex"`
 				EndIndex   int    `json:"endIndex"`
 			} `json:"citationSources"`
 		} `json:"citationMetadata"`
-		GroundingMetadata *buildGrounding `json:"groundingMetadata"`
+		GroundingMetadata  *buildGrounding `json:"groundingMetadata"`
+		URLContextMetadata *struct {
+			URLMetadata []struct {
+				RetrievedURL       string `json:"retrievedUrl"`
+				URLRetrievalStatus string `json:"urlRetrievalStatus"`
+			} `json:"urlMetadata"`
+		} `json:"urlContextMetadata"`
+		DetailedFinishReason json.RawMessage `json:"detailedFinishReason"`
 	} `json:"candidates"`
 	PromptFeedback *struct {
-		BlockReason        string `json:"blockReason"`
-		BlockReasonMessage string `json:"blockReasonMessage"`
+		BlockReason        string         `json:"blockReason"`
+		BlockReasonMessage string         `json:"blockReasonMessage"`
+		SafetyRatings      []SafetyRating `json:"safetyRatings"`
 	} `json:"promptFeedback"`
 	UsageMetadata *struct {
 		PromptTokenCount        int64  `json:"promptTokenCount"`
@@ -461,7 +607,12 @@ type buildResponse struct {
 		CachedContentTokenCount int64  `json:"cachedContentTokenCount"`
 		ThoughtsTokenCount      int64  `json:"thoughtsTokenCount"`
 		ToolUsePromptTokenCount int64  `json:"toolUsePromptTokenCount"`
+		UsageDetails
 	} `json:"usageMetadata"`
+	ModelVersion string          `json:"modelVersion"`
+	ResponseID   string          `json:"responseId"`
+	TurnToken    string          `json:"turnToken"`
+	DebugInfo    json.RawMessage `json:"debugInfo"`
 }
 
 type buildResponsePart struct {
@@ -472,12 +623,13 @@ type buildResponsePart struct {
 		MIMEType string `json:"mimeType"`
 		Data     string `json:"data"`
 	} `json:"inlineData"`
-	ExecutableCode      *ExecutableCode `json:"executableCode"`
-	CodeExecutionResult *struct {
-		Outcome string `json:"outcome"`
-		Output  string `json:"output"`
-	} `json:"codeExecutionResult"`
-	FunctionCall *struct {
+	FileData *struct {
+		MIMEType string `json:"mimeType"`
+		FileURI  string `json:"fileUri"`
+	} `json:"fileData"`
+	ExecutableCode      *ExecutableCode      `json:"executableCode"`
+	CodeExecutionResult *CodeExecutionResult `json:"codeExecutionResult"`
+	FunctionCall        *struct {
 		ID          string          `json:"id"`
 		Name        string          `json:"name"`
 		Args        json.RawMessage `json:"args"`
@@ -487,11 +639,32 @@ type buildResponsePart struct {
 		} `json:"partialArgs"`
 		WillContinue bool `json:"willContinue"`
 	} `json:"functionCall"`
+	ToolCall           *buildToolStep `json:"toolCall"`
+	ToolResponse       *buildToolStep `json:"toolResponse"`
+	AudioTranscription *struct {
+		Text         string `json:"text"`
+		SpeakerLabel string `json:"speakerLabel"`
+		Words        []struct {
+			Word        string `json:"word"`
+			StartOffset string `json:"startOffset"`
+			EndOffset   string `json:"endOffset"`
+		} `json:"words"`
+	} `json:"audioTranscription"`
+}
+
+// buildToolStep 表示 Gemini API 服务端工具的 toolCall 或 toolResponse
+type buildToolStep struct {
+	ID       string          `json:"id"`
+	ToolType string          `json:"toolType"`
+	ToolName string          `json:"toolName"`
+	Args     json.RawMessage `json:"args"`
+	Response json.RawMessage `json:"response"`
 }
 
 type buildGrounding struct {
-	WebSearchQueries []string `json:"webSearchQueries"`
-	SearchEntryPoint *struct {
+	WebSearchQueries   []string `json:"webSearchQueries"`
+	ImageSearchQueries []string `json:"imageSearchQueries"`
+	SearchEntryPoint   *struct {
 		RenderedContent string `json:"renderedContent"`
 		SDKBlob         string `json:"sdkBlob"`
 	} `json:"searchEntryPoint"`
@@ -505,33 +678,43 @@ type buildGrounding struct {
 		} `json:"segment"`
 		GroundingChunkIndices []int     `json:"groundingChunkIndices"`
 		ConfidenceScores      []float64 `json:"confidenceScores"`
+		RenderedParts         []int     `json:"renderedParts"`
+		Origin                string    `json:"origin"`
 	} `json:"groundingSupports"`
 	GoogleMapsWidgetContextToken string `json:"googleMapsWidgetContextToken"`
 }
 
 // buildChunkSources 把 Gemini API grounding chunk 字段映射为规范来源
-var buildChunkSources = map[string]string{"web": "web", "retrievedContext": "retrieved_context", "maps": "maps"}
+var buildChunkSources = map[string]string{"web": "web", "image": "image", "retrievedContext": "retrieved_context", "maps": "maps"}
 
 // BuildStreamDecoder 把 Build 代理返回的 Gemini API 响应块转换为规范事件
 type BuildStreamDecoder struct {
-	usage      *Usage
-	finished   bool
 	replyCall  *FunctionCall
 	replyText  strings.Builder
 	replyIndex int
+	usage      *Usage
+	finished   bool
+	frames     int
+	// safetyRatings 是最近一个候选的安全评级
+	safetyRatings []SafetyRating
 }
 
 // Decode 解码一个 Gemini API GenerateContentResponse JSON
 func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
+	d.frames++
 	var response buildResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$chunk", Detail: err.Error(), Raw: cloneRaw(raw)}
 	}
+	var frameUsage *Usage
 	if response.UsageMetadata != nil && response.UsageMetadata.TotalTokenCount > 0 {
 		metadata := response.UsageMetadata
 		usage := Usage{
 			InputTokens: metadata.PromptTokenCount, CachedTokens: metadata.CachedContentTokenCount, ReasoningTokens: metadata.ThoughtsTokenCount,
 			ToolTokens: metadata.ToolUsePromptTokenCount, TotalTokens: metadata.TotalTokenCount,
+		}
+		if details := metadata.UsageDetails; details.present() {
+			usage.Details = &details
 		}
 		if metadata.CandidatesTokenCount != nil {
 			usage.OutputTokens = *metadata.CandidatesTokenCount
@@ -539,10 +722,12 @@ func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
 			usage.OutputTokens = max(0, usage.TotalTokens-usage.InputTokens-usage.ReasoningTokens-usage.ToolTokens)
 		}
 		d.usage = &usage
+		frameUsage = &usage
 	}
 	if len(response.Candidates) == 0 {
 		if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
-			return nil, &PromptFeedbackError{Reason: buildEnumName(response.PromptFeedback.BlockReason, "BLOCK_REASON_"), Message: response.PromptFeedback.BlockReasonMessage, Raw: cloneRaw(raw)}
+			feedback := response.PromptFeedback
+			return nil, &PromptFeedbackError{Reason: buildEnumName(feedback.BlockReason, "BLOCK_REASON_"), Message: feedback.BlockReasonMessage, SafetyRatings: feedback.SafetyRatings, Usage: frameUsage, Raw: cloneRaw(raw)}
 		}
 		return nil, nil
 	}
@@ -550,6 +735,9 @@ func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
 		return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$chunk.candidates", Detail: "候选数量不是 1", Raw: cloneRaw(raw)}
 	}
 	candidate := response.Candidates[0]
+	if len(candidate.SafetyRatings) > 0 {
+		d.safetyRatings = candidate.SafetyRatings
+	}
 	var events []Event
 	if candidate.Content != nil {
 		for index, part := range candidate.Content.Parts {
@@ -571,23 +759,42 @@ func (d *BuildStreamDecoder) Decode(raw []byte) ([]Event, error) {
 			if source.URI == "" {
 				continue
 			}
-			citation := Citation{URL: source.URI, Title: source.Title, Start: source.StartIndex, End: source.EndIndex}
+			citation := Citation{URL: source.URI, Title: source.Title, Start: source.StartIndex, End: source.EndIndex, License: source.License}
 			events = append(events, Event{Kind: EventCitation, Citation: &citation})
 		}
 	}
-	if grounding := candidate.GroundingMetadata; grounding != nil {
-		events = append(events, Event{Kind: EventGrounding, Grounding: decodeBuildGrounding(*grounding)})
+	if candidate.GroundingMetadata != nil || candidate.URLContextMetadata != nil {
+		grounding := &GroundingMetadata{}
+		if candidate.GroundingMetadata != nil {
+			grounding = decodeBuildGrounding(*candidate.GroundingMetadata)
+		}
+		if candidate.URLContextMetadata != nil {
+			for _, item := range candidate.URLContextMetadata.URLMetadata {
+				grounding.URLContext = append(grounding.URLContext, URLMetadata{RetrievedURL: item.RetrievedURL, Status: item.URLRetrievalStatus})
+			}
+		}
+		events = append(events, Event{Kind: EventGrounding, Grounding: grounding})
 	}
 	if candidate.FinishReason != "" && !d.finished {
-		if d.replyCall != nil {
-			return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$chunk.functionCall", Detail: "回复工具参数分片未完成", Raw: cloneRaw(raw)}
+		for index := range events {
+			events[index].FinishFrame = true
 		}
 		if d.usage != nil {
 			usage := *d.usage
 			events = append(events, Event{Kind: EventUsage, Usage: &usage})
 		}
-		events = append(events, Event{Kind: EventFinish, FinishReason: buildFinishReason(candidate.FinishReason), FinishMessage: candidate.FinishMessage})
+		events = append(events, Event{
+			Kind: EventFinish, FinishReason: buildFinishReason(candidate.FinishReason), FinishMessage: candidate.FinishMessage, SafetyRatings: d.safetyRatings,
+			DetailedFinishReason: candidate.DetailedFinishReason,
+		})
 		d.finished = true
+	}
+	for index := range events {
+		events[index].ProviderModel = response.ModelVersion
+		events[index].TurnToken = response.TurnToken
+		events[index].DebugInfo = response.DebugInfo
+		events[index].ResponseID = response.ResponseID
+		events[index].FrameUsage = frameUsage
 	}
 	return events, nil
 }
@@ -597,7 +804,7 @@ func (d *BuildStreamDecoder) End() error {
 	if d.finished {
 		return nil
 	}
-	return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$", Detail: "流结束前没有 finishReason"}
+	return &StreamInterruptedError{Method: buildProxyStreamedMethod, Frames: d.frames, Err: errMissingFinishFrame}
 }
 
 // buildEnumName 把 Gemini API 枚举名转换为规范小写名称
@@ -609,19 +816,19 @@ func buildEnumName(value string, prefix string) string {
 	return strings.ToLower(value)
 }
 
-// buildFinishReason 把 Gemini API 终止原因转换为 Playground 同名原因，Playground 没有的原因加 provider_ 前缀
+// buildFinishReason 把 Gemini API finishReason 枚举名转为规范结束原因，Playground 枚举没有的名称加 provider_ 前缀
 func buildFinishReason(value string) string {
 	name := buildEnumName(value, "FINISH_REASON_")
-	for code := int64(0); ; code++ {
-		known := decodeFinishReason(code)
-		if known == name {
+	for code := int64(0); code <= buildFinishReasonCodes; code++ {
+		if decodeFinishReason(code) == name {
 			return name
 		}
-		if strings.HasPrefix(known, "provider_") {
-			return "provider_" + name
-		}
 	}
+	return "provider_" + name
 }
+
+// buildFinishReasonCodes 是 Playground FinishReason 的最大编号
+const buildFinishReasonCodes = 22
 
 func decodeBuildPart(part buildResponsePart, index int, raw []byte) ([]Event, error) {
 	signature := part.ThoughtSignature
@@ -631,26 +838,35 @@ func decodeBuildPart(part buildResponsePart, index int, raw []byte) ([]Event, er
 		if part.Thought {
 			kind = EventReasoning
 		}
-		events = append(events, Event{Kind: kind, Text: *part.Text, ThoughtSignature: signature})
+		events = append(events, Event{Kind: kind, Text: *part.Text, Thought: part.Thought, ThoughtSignature: signature})
 	}
-	if part.InlineData != nil && !part.Thought {
+	if transcription := part.AudioTranscription; transcription != nil {
+		transcript := TranscriptMetadata{Text: transcription.Text, Speaker: transcription.SpeakerLabel}
+		for _, word := range transcription.Words {
+			transcript.Words = append(transcript.Words, TranscriptWord{Word: word.Word, Start: parseTranscriptDuration(word.StartOffset), End: parseTranscriptDuration(word.EndOffset)})
+		}
+		if len(events) > 0 && events[0].Kind == EventText {
+			events[0].Transcript = &transcript
+		} else {
+			events = append(events, Event{Kind: EventText, Text: transcript.Text, Transcript: &transcript, ThoughtSignature: signature})
+		}
+	}
+	if part.InlineData != nil {
 		data, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
 		if err != nil {
 			return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: fmt.Sprintf("$chunk.parts[%d].inlineData", index), Detail: "inline data 不是 Base64", Raw: cloneRaw(raw)}
 		}
-		events = append(events, Event{Kind: EventMedia, Media: &Media{MIME: part.InlineData.MIMEType, Data: data}, ThoughtSignature: signature})
+		events = append(events, mediaEvent(Part{InlineData: &Blob{MIME: part.InlineData.MIMEType, Data: data}, Thought: part.Thought, ThoughtSignature: signature}))
+	}
+	if part.FileData != nil {
+		events = append(events, mediaEvent(Part{ExternalMedia: &ExternalMedia{MIME: part.FileData.MIMEType, URL: part.FileData.FileURI}, Thought: part.Thought, ThoughtSignature: signature}))
 	}
 	if part.ExecutableCode != nil {
 		code := *part.ExecutableCode
 		events = append(events, Event{Kind: EventExecutableCode, ExecutableCode: &code, ThoughtSignature: signature})
 	}
 	if part.CodeExecutionResult != nil {
-		result := CodeExecutionResult{Outcome: part.CodeExecutionResult.Outcome}
-		if result.Outcome == "OUTCOME_OK" {
-			result.Output = part.CodeExecutionResult.Output
-		} else {
-			result.Error = part.CodeExecutionResult.Output
-		}
+		result := *part.CodeExecutionResult
 		events = append(events, Event{Kind: EventCodeExecutionResult, CodeExecutionResult: &result, ThoughtSignature: signature})
 	}
 	if part.FunctionCall != nil {
@@ -659,7 +875,13 @@ func decodeBuildPart(part buildResponsePart, index int, raw []byte) ([]Event, er
 			arguments = json.RawMessage(`{}`)
 		}
 		call := FunctionCall{ID: part.FunctionCall.ID, Name: part.FunctionCall.Name, Arguments: arguments, ThoughtSignature: signature}
-		events = append(events, Event{Kind: EventToolCall, ToolCall: &call, ThoughtSignature: signature})
+		events = append(events, Event{Kind: EventToolCall, FunctionCall: &call, ThoughtSignature: signature})
+	}
+	if step := part.ToolCall; step != nil {
+		events = append(events, Event{Kind: EventServerToolCall, ToolCall: &ServerToolStep{ID: step.ID, Type: step.ToolType, Name: step.ToolName, Data: step.Args}, ThoughtSignature: signature})
+	}
+	if step := part.ToolResponse; step != nil {
+		events = append(events, Event{Kind: EventServerToolResponse, ToolResponse: &ServerToolStep{ID: step.ID, Type: step.ToolType, Name: step.ToolName, Data: step.Response}, ThoughtSignature: signature})
 	}
 	if len(events) == 0 && signature != "" {
 		events = append(events, Event{Kind: EventThoughtSignature, ThoughtSignature: signature})
@@ -669,28 +891,39 @@ func decodeBuildPart(part buildResponsePart, index int, raw []byte) ([]Event, er
 
 func decodeBuildGrounding(value buildGrounding) *GroundingMetadata {
 	metadata := &GroundingMetadata{
-		WebSearchQueries: value.WebSearchQueries, MapsWidgetContextToken: value.GoogleMapsWidgetContextToken,
+		WebSearchQueries: value.WebSearchQueries, ImageSearchQueries: value.ImageSearchQueries, MapsWidgetContextToken: value.GoogleMapsWidgetContextToken,
 	}
 	if value.SearchEntryPoint != nil {
 		metadata.SearchEntryPoint = &SearchEntryPoint{RenderedContent: value.SearchEntryPoint.RenderedContent, SDKBlob: value.SearchEntryPoint.SDKBlob}
 	}
 	for _, chunk := range value.GroundingChunks {
-		for _, key := range []string{"web", "retrievedContext", "maps"} {
+		var origin, referenceID string
+		_ = json.Unmarshal(chunk["origin"], &origin)
+		_ = json.Unmarshal(chunk["referenceId"], &referenceID)
+		for _, key := range []string{"web", "image", "retrievedContext", "maps"} {
 			raw, exists := chunk[key]
 			if !exists {
 				continue
 			}
 			var fields struct {
-				URI     string `json:"uri"`
-				Title   string `json:"title"`
-				Text    string `json:"text"`
-				PlaceID string `json:"placeId"`
+				URI                 string          `json:"uri"`
+				SourceURI           string          `json:"sourceUri"`
+				ImageURI            string          `json:"imageUri"`
+				Domain              string          `json:"domain"`
+				Title               string          `json:"title"`
+				Text                string          `json:"text"`
+				PlaceID             string          `json:"placeId"`
+				PlaceAnswerSources  json.RawMessage `json:"placeAnswerSources"`
+				SiteName            string          `json:"siteName"`
+				SearchResultMapping json.RawMessage `json:"searchResultMapping"`
 			}
 			if json.Unmarshal(raw, &fields) != nil {
 				continue
 			}
 			metadata.Chunks = append(metadata.Chunks, GroundingChunk{
-				Source: buildChunkSources[key], URI: fields.URI, Title: fields.Title, Text: fields.Text, PlaceID: fields.PlaceID,
+				Source: buildChunkSources[key], URI: cmp.Or(fields.URI, fields.SourceURI), ImageURI: fields.ImageURI, Domain: fields.Domain,
+				Title: fields.Title, Text: fields.Text, PlaceID: fields.PlaceID, PlaceAnswerSources: fields.PlaceAnswerSources,
+				SiteName: fields.SiteName, SearchResultMapping: fields.SearchResultMapping, Origin: origin, ReferenceID: referenceID,
 			})
 		}
 	}
@@ -700,7 +933,8 @@ func decodeBuildGrounding(value buildGrounding) *GroundingMetadata {
 				PartIndex: support.Segment.PartIndex, StartIndex: support.Segment.StartIndex,
 				EndIndex: support.Segment.EndIndex, Text: support.Segment.Text,
 			},
-			ChunkIndices: support.GroundingChunkIndices, ConfidenceScores: support.ConfidenceScores,
+			ChunkIndices: support.GroundingChunkIndices, ConfidenceScores: support.ConfidenceScores, RenderedParts: support.RenderedParts,
+			Origin: support.Origin,
 		})
 	}
 	return metadata
@@ -751,7 +985,7 @@ func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(
 		if err := stream.Decode(&raw); err != nil {
 			return fail("$", err.Error())
 		}
-		if err := buildTrailerError(raw); err != nil {
+		if err := trailerError(buildProxyStreamedMethod, raw); err != nil {
 			return err
 		}
 	}
@@ -765,7 +999,7 @@ func DecodeBuildStream(source io.Reader, decoder *BuildStreamDecoder, emit func(
 func DecodeBuildUnary(source io.Reader, decoder *BuildStreamDecoder, emit func(Event) error) error {
 	raw, err := io.ReadAll(source)
 	if err != nil {
-		return fmt.Errorf("读取 AI Studio %s: %w", buildProxyUnaryMethod, err)
+		return &StreamInterruptedError{Method: buildProxyUnaryMethod, Err: err}
 	}
 	decoded, err := decodeJSONValue(raw)
 	if err != nil {
@@ -814,25 +1048,6 @@ func buildProxyResponseBody(raw json.RawMessage, path string) ([]byte, error) {
 	return nil, &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: path, Detail: "代理响应缺少正文", Raw: cloneRaw(raw)}
 }
 
-func buildTrailerError(raw json.RawMessage) error {
-	status, err := rawArray(raw, "$[1]", raw)
-	if err != nil || len(status) == 0 {
-		return &ProtocolEvidenceError{Method: buildProxyStreamedMethod, Path: "$[1]", Detail: "流尾状态无效", Raw: cloneRaw(raw)}
-	}
-	code, err := rawInt64(status[0], "$[1][0]", raw)
-	if err != nil {
-		return withMethod(err, buildProxyStreamedMethod)
-	}
-	if code == 0 {
-		return nil
-	}
-	statusCode := http.StatusBadGateway
-	if mapped, ok := interactionStatusHTTP[code]; ok {
-		statusCode = mapped
-	}
-	return DecodeRPCError(buildProxyStreamedMethod, statusCode, raw)
-}
-
 // sendBuild 编码并发送 Build 代理请求，返回响应与含 finishReason 校验的解码
 func (c *Client) sendBuild(ctx context.Context, request GenerateRequest, entry modelEntry) (*RPCResponse, func(io.Reader, func(Event) error) error, error) {
 	unary := request.Unary || buildUsesUnary(entry.model)
@@ -867,7 +1082,7 @@ func (c *Client) sendBuildMode(ctx context.Context, request GenerateRequest, ent
 	if unary {
 		mode = "native"
 	}
-	reportUpstreamMode(ctx, method, mode, reason)
+	reportUpstreamMode(ctx, method, mode, 0, reason)
 	rpc := newRPCRequest(method, request.AccountID, request.ID, proxy, !unary)
 	c.applyBenefitTier(rpc.Method, request.AccountID, rpc.Header)
 	response, err := c.protected.DoProtected(ctx, request, rpc)
@@ -904,15 +1119,12 @@ func (c *Client) buildModelEntry(ctx context.Context, request GenerateRequest, l
 
 // buildModel 返回租约账户 Build 目录中的模型
 func (l *AccountLease) buildModel(modelID string) (Model, bool) {
-	if l == nil || l.pool == nil || l.account == nil {
-		return Model{}, false
-	}
 	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
 	l.pool.mu.Lock()
 	defer l.pool.mu.Unlock()
 	for _, model := range l.account.buildModels {
 		if model.ID == modelID {
-			return cloneAccountModels([]Model{model})[0], true
+			return cloneModels([]Model{model})[0], true
 		}
 	}
 	return Model{}, false
@@ -921,12 +1133,18 @@ func (l *AccountLease) buildModel(modelID string) (Model, bool) {
 // buildListedModel 表示 Gemini API models.list 的模型条目
 type buildListedModel struct {
 	Name                       string   `json:"name"`
+	Version                    string   `json:"version"`
 	DisplayName                string   `json:"displayName"`
 	Description                string   `json:"description"`
 	InputTokenLimit            int64    `json:"inputTokenLimit"`
 	OutputTokenLimit           int64    `json:"outputTokenLimit"`
 	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+	Temperature                *float64 `json:"temperature"`
+	MaxTemperature             *float64 `json:"maxTemperature"`
+	TopP                       *float64 `json:"topP"`
+	TopK                       *int     `json:"topK"`
 	Thinking                   bool     `json:"thinking"`
+	ModelStage                 string   `json:"modelStage"`
 }
 
 // ParseBuildModels 解析 Gemini API models.list 响应
@@ -952,9 +1170,10 @@ func ParseBuildModels(raw []byte) ([]Model, string, error) {
 			capabilities["thinking"] = true
 		}
 		models = append(models, Model{
-			ID: id, Name: listed.DisplayName, Description: listed.Description,
+			ID: id, Name: listed.DisplayName, Description: listed.Description, Version: listed.Version, Stage: listed.ModelStage,
 			Methods:         append([]string(nil), listed.SupportedGenerationMethods...),
 			InputTokenLimit: listed.InputTokenLimit, OutputTokenLimit: listed.OutputTokenLimit,
+			Temperature: listed.Temperature, MaxTemperature: listed.MaxTemperature, TopP: listed.TopP, TopK: listed.TopK,
 			Capabilities: capabilities,
 		})
 	}

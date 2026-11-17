@@ -1,8 +1,8 @@
 package api
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,27 +16,38 @@ import (
 )
 
 var errIncompleteStream = errors.New("upstream stream closed before finish")
-var errUpstreamStream = errors.New("upstream stream error")
 
 const streamHeartbeatInterval = 10 * time.Second
 
 type generationResult struct {
 	compactStream bool
+	hasOutput     bool
+	allowEmpty    bool
 	events        []aistudio.Event
-	text          strings.Builder
-	reasoning     strings.Builder
+	text          bytes.Buffer
+	reasoning     bytes.Buffer
 	toolCalls     []aistudio.FunctionCall
 	citations     []aistudio.Citation
 	grounding     *aistudio.GroundingMetadata
-	media         []aistudio.Media
+	media         []aistudio.Blob
 	usage         *aistudio.Usage
 	finishReason  string
 	finishMessage string
 	stopSequence  string
 	providerModel string
 	finished      bool
-	hasOutput     bool
-	allowEmpty    bool
+	// safetyRatings 是候选的安全评级
+	safetyRatings []aistudio.SafetyRating
+	// responseID、turnToken、debugInfo 与 detailedFinishReason 是上游最后给出的 responseId、轮次令牌、调试信息与细分结束原因
+	responseID           string
+	turnToken            string
+	debugInfo            json.RawMessage
+	detailedFinishReason json.RawMessage
+	// interactionID 与 accountID 是 agent 后台任务的上游 interaction ID 与所属账户
+	interactionID string
+	accountID     string
+	// environmentID 是 agent 交互返回的远程环境 ID
+	environmentID string
 }
 
 type allowEmptyOutputKey struct{}
@@ -56,21 +67,29 @@ func emptyOutputPolicyMiddleware(next http.Handler, allow func() bool) http.Hand
 }
 
 func (result *generationResult) apply(event aistudio.Event) error {
+	result.hasOutput = result.hasOutput || event.HasOutput()
 	if event.ProviderModel != "" {
 		result.providerModel = event.ProviderModel
+	}
+	if event.ResponseID != "" {
+		result.responseID = event.ResponseID
+	}
+	if event.TurnToken != "" {
+		result.turnToken = event.TurnToken
+	}
+	if event.InteractionID != "" {
+		result.interactionID, result.accountID = event.InteractionID, event.AccountID
+	}
+	if len(event.DebugInfo) > 0 {
+		result.debugInfo = event.DebugInfo
 	}
 	if event.Usage != nil {
 		usage := *event.Usage
 		result.usage = &usage
 	}
-	if event.Kind == aistudio.EventError {
-		if event.Err != nil {
-			return event.Err
-		}
-		return errUpstreamStream
-	}
-	result.hasOutput = result.hasOutput || event.HasOutput()
 	switch event.Kind {
+	case aistudio.EventError:
+		return event.Err
 	case aistudio.EventText:
 		if !result.compactStream {
 			result.text.WriteString(event.Text)
@@ -80,43 +99,31 @@ func (result *generationResult) apply(event aistudio.Event) error {
 			result.reasoning.WriteString(event.Text)
 		}
 	case aistudio.EventToolCall:
-		if event.ToolCall != nil {
-			call := *event.ToolCall
-			if len(call.Arguments) == 0 {
-				call.Arguments = json.RawMessage(`{}`)
-			}
-			if !json.Valid(call.Arguments) {
-				return fmt.Errorf("upstream tool call %q arguments are not JSON", call.Name)
-			}
-			event.ToolCall = &call
-			result.toolCalls = append(result.toolCalls, call)
-		}
+		result.toolCalls = append(result.toolCalls, *event.FunctionCall)
 	case aistudio.EventGrounding:
-		if event.Grounding != nil {
-			grounding := *event.Grounding
-			result.grounding = &grounding
-			result.citations = append(result.citations, groundingCitations(grounding)...)
+		grounding := *event.Grounding
+		if result.grounding != nil {
+			grounding.URLContext = mergeURLContext(result.grounding.URLContext, grounding.URLContext)
 		}
+		result.grounding = &grounding
+		result.citations = append(result.citations, groundingCitations(grounding)...)
 	case aistudio.EventCitation:
-		if event.Citation != nil {
-			result.citations = append(result.citations, *event.Citation)
-		}
+		result.citations = append(result.citations, *event.Citation)
 	case aistudio.EventMedia:
-		if event.Media != nil {
-			if event.Media.MIME == "" || (len(event.Media.Data) == 0 && event.Media.URL == "") {
+		if event.ExternalMedia != nil && (event.ExternalMedia.MIME == "" || event.ExternalMedia.URL == "") {
+			return fmt.Errorf("upstream media is missing MIME or content")
+		}
+		if event.InlineData != nil {
+			if event.InlineData.MIME == "" || len(event.InlineData.Data) == 0 {
 				return fmt.Errorf("upstream media is missing MIME or content")
 			}
-			media := *event.Media
-			media.Data = append([]byte(nil), media.Data...)
-			if strings.HasPrefix(media.MIME, "audio/l16") && len(media.Data) > 0 && media.URL == "" && len(result.events) > 0 {
-				previous := &result.events[len(result.events)-1]
-				if previous.Kind == aistudio.EventMedia && previous.Media != nil && previous.Media.MIME == media.MIME && previous.Media.URL == "" && previous.ThoughtSignature == "" && event.ThoughtSignature == "" {
-					previous.Media.Data = append(previous.Media.Data, media.Data...)
-					result.media[len(result.media)-1].Data = append(result.media[len(result.media)-1].Data, media.Data...)
-					return nil
-				}
+			if count := len(result.events); count > 0 && result.events[count-1].Kind == aistudio.EventMedia && aistudio.MergePCM(&result.events[count-1].Part, event.Part) {
+				result.media[len(result.media)-1].Data = result.events[count-1].InlineData.Data
+				return nil
 			}
-			event.Media = &media
+			media := *event.InlineData
+			media.Data = append([]byte(nil), media.Data...)
+			event.InlineData = &media
 			result.media = append(result.media, media)
 		}
 	case aistudio.EventFinish:
@@ -124,8 +131,11 @@ func (result *generationResult) apply(event aistudio.Event) error {
 			return emptyOutputError{}
 		}
 		result.finishReason = event.FinishReason
+		result.environmentID = event.EnvironmentID
 		result.finishMessage = event.FinishMessage
 		result.stopSequence = event.StopSequence
+		result.safetyRatings = event.SafetyRatings
+		result.detailedFinishReason = event.DetailedFinishReason
 		result.finished = true
 	}
 	if !result.compactStream || event.Kind != aistudio.EventReasoning && event.Kind != aistudio.EventUsage {
@@ -134,32 +144,45 @@ func (result *generationResult) apply(event aistudio.Event) error {
 	return nil
 }
 
-// awaitStreamStart 等待实际内容或结束事件再写响应头，此前的错误保留原 HTTP 状态码。
-func awaitStreamStart(ctx context.Context, events <-chan aistudio.Event) (<-chan aistudio.Event, error) {
+// mergeURLContext 返回 previous 加上 next 中的网址读取结果，同一网址取 next 的结果
+func mergeURLContext(previous, next []aistudio.URLMetadata) []aistudio.URLMetadata {
+	merged := slices.Clone(previous)
+	for _, item := range next {
+		if index := slices.IndexFunc(merged, func(old aistudio.URLMetadata) bool { return old.RetrievedURL == item.RetrievedURL }); index >= 0 {
+			merged[index] = item
+		} else {
+			merged = append(merged, item)
+		}
+	}
+	return merged
+}
+
+// awaitStreamStart 等待实际输出，保留此前的用量，并让首次失败保留 HTTP 状态。
+func awaitStreamStart(ctx context.Context, events <-chan aistudio.Event) (<-chan aistudio.Event, *aistudio.Usage, error) {
 	var pending []aistudio.Event
+	var usage *aistudio.Usage
 wait:
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		case event, ok := <-events:
 			if !ok {
-				return nil, errIncompleteStream
+				return nil, nil, errIncompleteStream
 			}
 			if event.Kind == aistudio.EventError {
-				if event.Err != nil {
-					return nil, event.Err
-				}
-				return nil, errUpstreamStream
+				return nil, nil, event.Err
 			}
 			if event.Kind == aistudio.EventFinish && !allowEmptyOutput(ctx) {
-				return nil, emptyOutputError{}
+				return nil, nil, emptyOutputError{}
+			}
+			if event.FrameUsage != nil {
+				usage = event.FrameUsage
 			}
 			pending = append(pending, event)
-			if event.Kind != aistudio.EventFinish && !event.HasOutput() && !(event.Kind == aistudio.EventReasoning && strings.TrimSpace(event.Text) != "") {
-				continue
+			if event.HasOutput() || event.Kind == aistudio.EventReasoning && strings.TrimSpace(event.Text) != "" || event.Kind == aistudio.EventFinish {
+				break wait
 			}
-			break wait
 		}
 	}
 	replay := make(chan aistudio.Event)
@@ -188,69 +211,32 @@ wait:
 			}
 		}
 	}()
-	return replay, nil
+	return replay, usage, nil
 }
 
-func consumeEvents(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error) (result generationResult, resultErr error) {
-	return consumeEventsWithHeartbeat(ctx, events, emit, nil)
+// consumeEvents 收集全部事件，不逐个转发
+func consumeEvents(ctx context.Context, events <-chan aistudio.Event) (generationResult, error) {
+	return consumeStreamEvents(ctx, events, nil)
 }
 
-func consumeStreamEvents(
-	ctx context.Context,
-	events <-chan aistudio.Event,
-	emit func(aistudio.Event) error,
-	heartbeat func() error,
-) (generationResult, error) {
-	return consumeEventsWithHeartbeat(ctx, events, emit, heartbeat)
+// consumeStreamEvents 收集事件并逐个交给 emit
+func consumeStreamEvents(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error) (result generationResult, resultErr error) {
+	return consumeEventsInto(ctx, events, emit, generationResult{})
 }
 
-func consumeEventsWithHeartbeat(
-	ctx context.Context,
-	events <-chan aistudio.Event,
-	emit func(aistudio.Event) error,
-	heartbeat func() error,
-) (result generationResult, resultErr error) {
-	return consumeEventsInto(ctx, events, emit, heartbeat, generationResult{})
+func consumeChatStreamEvents(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error) (generationResult, error) {
+	return consumeEventsInto(ctx, events, emit, generationResult{compactStream: true})
 }
 
-// consumeChatStreamEvents 已转发的思考不再累积，正文只保留一份供引用定位。
-func consumeChatStreamEvents(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error, heartbeat func() error) (generationResult, error) {
-	return consumeEventsInto(ctx, events, emit, heartbeat, generationResult{compactStream: true})
-}
-
-func consumeEventsInto(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error, heartbeat func() error, result generationResult) (_ generationResult, resultErr error) {
+func consumeEventsInto(ctx context.Context, events <-chan aistudio.Event, emit func(aistudio.Event) error, result generationResult) (_ generationResult, resultErr error) {
 	result.allowEmpty = allowEmptyOutput(ctx)
 	defer func() {
 		SetAccessLogError(ctx, resultErr)
 	}()
-	var heartbeatTimer *time.Timer
-	var heartbeatTick <-chan time.Time
-	if heartbeat != nil {
-		heartbeatTimer = time.NewTimer(streamHeartbeatInterval)
-		heartbeatTick = heartbeatTimer.C
-		defer heartbeatTimer.Stop()
-	}
-	resetHeartbeat := func() {
-		if heartbeatTimer == nil {
-			return
-		}
-		if !heartbeatTimer.Stop() {
-			select {
-			case <-heartbeatTimer.C:
-			default:
-			}
-		}
-		heartbeatTimer.Reset(streamHeartbeatInterval)
-	}
 	for {
 		select {
 		case <-ctx.Done():
 			return result, ctx.Err()
-		case <-heartbeatTick:
-			if err := heartbeat(); err != nil {
-				return result, err
-			}
-			resetHeartbeat()
 		case event, ok := <-events:
 			if !ok {
 				if !result.finished {
@@ -266,7 +252,6 @@ func consumeEventsInto(ctx context.Context, events <-chan aistudio.Event, emit f
 					return result, err
 				}
 			}
-			resetHeartbeat()
 		}
 	}
 }
@@ -286,9 +271,8 @@ func inputTokens(usage *aistudio.Usage) int64 {
 }
 
 func providerFinishReason(reason string) string {
-	normalized := strings.ToLower(strings.TrimSpace(reason))
-	if strings.HasPrefix(normalized, "provider_") {
-		return normalized
+	if strings.HasPrefix(reason, "provider_") {
+		return reason
 	}
 	return ""
 }
@@ -337,14 +321,15 @@ var functionResultMediaTypes = map[string]bool{
 	"image_url": true, "input_image": true, "input_file": true, "input_audio": true, "video_url": true, "input_video": true,
 }
 
-// functionResultParts 把工具结果转成函数结果内容与紧随其后的媒体 part：内容块数组中的文本块以换行相连作为结果文本，媒体块由 parse 转成 part，其余块以 JSON 文本并入结果；isError 时结果写在 error 键下
+// functionResultParts 把工具结果转成函数结果内容与紧随其后的媒体 part，文本块以换行相连作为结果文本，isError 时结果写在 error 键下
 func functionResultParts(raw json.RawMessage, isError bool, parse func(json.RawMessage) ([]aistudio.Part, error)) (json.RawMessage, []aistudio.Part, error) {
 	key := "result"
 	if isError {
 		key = "error"
 	}
+	trimmed := bytes.TrimSpace(raw)
 	var blocks []json.RawMessage
-	if json.Unmarshal(raw, &blocks) == nil && len(blocks) > 0 {
+	if bytes.HasPrefix(trimmed, []byte("[")) && json.Unmarshal(raw, &blocks) == nil && len(blocks) > 0 {
 		var texts []string
 		var media []aistudio.Part
 		contentBlocks := true
@@ -375,46 +360,15 @@ func functionResultParts(raw json.RawMessage, isError bool, parse func(json.RawM
 			return content, media, nil
 		}
 	}
-	if isError {
-		if len(raw) == 0 {
-			raw = json.RawMessage("null")
-		}
-		if !json.Valid(raw) {
-			return nil, nil, fmt.Errorf("function result must be JSON")
-		}
-		return json.RawMessage(`{"error":` + strings.TrimSpace(string(raw)) + `}`), nil, nil
-	}
-	content, err := normalizeFunctionResultContent(raw)
-	return content, nil, err
-}
-
-func normalizeFunctionResultContent(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
-		raw = json.RawMessage("null")
+		raw, trimmed = json.RawMessage("null"), []byte("null")
 	}
-	if !json.Valid(raw) {
-		return nil, fmt.Errorf("function result must be JSON")
+	if !isError && bytes.HasPrefix(trimmed, []byte("{")) {
+		return raw, nil, nil
 	}
-	trimmed := strings.TrimSpace(string(raw))
-	if strings.HasPrefix(trimmed, "{") {
-		return raw, nil
-	}
-	return json.RawMessage(`{"result":` + trimmed + `}`), nil
-}
-
-func renderMediaMarkdown(media aistudio.Media) string {
-	url := media.URL
-	if len(media.Data) > 0 {
-		url = "data:" + media.MIME + ";base64," + base64.StdEncoding.EncodeToString(media.Data)
-	}
-	label := media.Name
-	if label == "" {
-		label, _, _ = strings.Cut(media.MIME, "/")
-	}
-	if strings.HasPrefix(media.MIME, "image/") {
-		return fmt.Sprintf("![%s](%s)", label, url)
-	}
-	return fmt.Sprintf("[%s](%s)", label, url)
+	content := make(json.RawMessage, 0, len(key)+len(trimmed)+5)
+	content = append(append(append(append(content, `{"`...), key...), `":`...), trimmed...)
+	return append(content, '}'), nil, nil
 }
 
 func groundingCitations(metadata aistudio.GroundingMetadata) []aistudio.Citation {
@@ -422,7 +376,7 @@ func groundingCitations(metadata aistudio.GroundingMetadata) []aistudio.Citation
 	if len(metadata.Supports) == 0 {
 		for _, chunk := range metadata.Chunks {
 			if chunk.URI != "" {
-				citations = append(citations, aistudio.Citation{URL: chunk.URI, Title: chunk.Title, Publisher: chunk.Source})
+				citations = append(citations, aistudio.Citation{URL: chunk.URI, Title: chunk.Title})
 			}
 		}
 		return citations
@@ -437,7 +391,7 @@ func groundingCitations(metadata aistudio.GroundingMetadata) []aistudio.Citation
 				continue
 			}
 			citations = append(citations, aistudio.Citation{
-				URL: chunk.URI, Title: chunk.Title, Publisher: chunk.Source,
+				URL: chunk.URI, Title: chunk.Title,
 				Start: support.Segment.StartIndex, End: support.Segment.EndIndex,
 			})
 		}
@@ -466,22 +420,13 @@ func spanCitation(output string, spans []textSpan, citation aistudio.Citation) (
 func renderCodeExecution(event aistudio.Event) string {
 	switch event.Kind {
 	case aistudio.EventExecutableCode:
-		if event.ExecutableCode == nil {
-			return ""
-		}
 		language := strings.ToLower(event.ExecutableCode.Language)
 		if language == "language_unspecified" {
 			language = "text"
 		}
 		return "```" + language + "\n" + strings.TrimSuffix(event.ExecutableCode.Code, "\n") + "\n```"
 	case aistudio.EventCodeExecutionResult:
-		if event.CodeExecutionResult == nil {
-			return ""
-		}
 		value := event.CodeExecutionResult.Output
-		if event.CodeExecutionResult.Outcome != "OUTCOME_OK" {
-			value = event.CodeExecutionResult.Error
-		}
 		if value == "" {
 			return ""
 		}

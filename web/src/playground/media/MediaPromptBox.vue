@@ -1,0 +1,181 @@
+<script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
+import { useI18n } from '@/i18n'
+import UiIcon from '@/playground/ui/UiIcon.vue'
+import RunKeyHint from '../RunKeyHint.vue'
+import { submits, useRunTooltip } from '../run-keys'
+
+const draft = defineModel<string>({ required: true })
+const props = defineProps<{
+  placeholder: string
+  label: string
+  running: boolean
+  canRun: boolean
+}>()
+const emit = defineEmits<{ run: []; stop: [] }>()
+const { t } = useI18n()
+const textarea = ref<HTMLTextAreaElement>()
+
+// resize 让输入框随内容增高，超过 210 px 后在框内滚动
+function resize(): void {
+  const element = textarea.value!
+  element.style.height = 'auto'
+  element.style.height = `${Math.min(Math.max(element.scrollHeight, 21), 210)}px`
+}
+
+watch(draft, () => void nextTick(resize))
+
+// submit 运行或停止
+function submit(): void {
+  if (props.running) emit('stop')
+  else if (props.canRun) emit('run')
+}
+
+// defaultTooltip 是运行按钮的默认悬停提示
+const defaultTooltip = useRunTooltip(() => props.running)
+
+// onKeydown 与官网 ms-prompt-box 一致：Escape 失焦，生成中或不能运行时快捷键不起作用，否则按提交键运行
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    textarea.value!.blur()
+    return
+  }
+  if (props.running || !props.canRun) return
+  if (submits(event)) {
+    event.preventDefault()
+    emit('run')
+  }
+}
+</script>
+
+<template>
+  <div class="ms-prompt-box">
+    <div class="prompt-box-container">
+      <div class="textarea-row">
+        <div class="text-wrapper">
+          <textarea
+            ref="textarea"
+            v-model="draft"
+            class="textarea"
+            rows="1"
+            :placeholder="placeholder"
+            :aria-label="label"
+            @keydown="onKeydown"
+          ></textarea>
+        </div>
+      </div>
+      <div class="buttons-row">
+        <div class="button-row-left">
+          <slot name="left" />
+        </div>
+        <div class="button-wrapper">
+          <slot name="right" />
+          <button
+            v-tooltip="defaultTooltip"
+            type="button"
+            ms-button
+            class="run-button ms-button-primary"
+            :aria-label="running ? t('pg.stop') : t('pg.run')"
+            :aria-disabled="!running && !canRun"
+            @click="submit"
+          >
+            <template v-if="running">
+              <UiIcon name="refresh" :size="18" class="spin" />
+              <span class="run-button-label">{{ t('pg.stop') }}</span>
+            </template>
+            <template v-else>
+              <span class="run-button-label">{{ t('pg.run') }}</span>
+              <RunKeyHint />
+            </template>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.ms-prompt-box {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.prompt-box-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 12px 12px;
+  padding: 12px;
+  border: 1px solid var(--color-v3-outline-var);
+  border-radius: 12px;
+  background-color: var(--color-v3-surface-container-high);
+  box-shadow: var(--shadow-v3-md);
+}
+
+.textarea-row {
+  display: flex;
+  align-items: flex-start;
+}
+
+.text-wrapper {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+}
+
+.textarea {
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
+  min-height: 21px;
+  max-height: 210px;
+  padding: 0;
+  border: none;
+  background-color: transparent;
+  color: var(--color-v3-text);
+  font-size: 14px;
+  line-height: 21px;
+  outline: none;
+  overflow-wrap: anywhere;
+  resize: none;
+  scrollbar-gutter: stable;
+  white-space: pre-wrap;
+}
+
+.textarea::placeholder {
+  color: var(--color-v3-text-var);
+}
+
+.buttons-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.button-row-left {
+  display: flex;
+  flex-grow: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.button-wrapper {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  margin-left: 8px;
+}
+
+.run-button .run-button-label {
+  min-width: 28px;
+}
+</style>

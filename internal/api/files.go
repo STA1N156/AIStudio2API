@@ -2,9 +2,13 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/jpeg"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -14,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
@@ -29,8 +34,8 @@ type openAIFileUploadResult struct {
 	err error
 }
 
-type openAIFilePurposeResult struct {
-	value string
+type openAIFileFieldsResult struct {
+	value aistudio.UploadFields
 	err   error
 }
 
@@ -54,6 +59,7 @@ type openAIFileObject struct {
 	Object    string `json:"object"`
 	Bytes     int64  `json:"bytes"`
 	CreatedAt int64  `json:"created_at"`
+	ExpiresAt *int64 `json:"expires_at"`
 	Filename  string `json:"filename"`
 	Purpose   string `json:"purpose"`
 	Status    string `json:"status"`
@@ -72,7 +78,7 @@ func (s *server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeFileParseError(w, r, err)
 		return
 	}
-	purpose, file, filename, contentType, err := readOpenAIFileParts(reader)
+	fields, file, filename, contentType, err := readOpenAIFileParts(reader)
 	if err != nil {
 		writeFileParseError(w, r, err)
 		return
@@ -83,15 +89,8 @@ func (s *server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeFileError(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	request := aistudio.UploadRequest{
-		Name: filename, MIME: mimeType, Purpose: purpose, Size: -1, MaxSize: openAIFileMaxBytes, Reader: stream,
-	}
-	var ref aistudio.FileRef
-	if purpose != "" {
-		ref, err = service.UploadFile(r.Context(), request)
-	} else {
-		ref, err = uploadOpenAIFileBeforePurpose(r.Context(), service, reader, request)
-	}
+	request := aistudio.UploadRequest{Name: filename, MIME: mimeType, Size: -1, MaxSize: openAIFileMaxBytes, Reader: stream}
+	ref, err := uploadOpenAIFile(r.Context(), service, reader, request, fields)
 	if err != nil {
 		if !shouldWriteRequestError(r, err) {
 			return
@@ -112,35 +111,34 @@ func (s *server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		writeFileError(w, r, statusFromError(err), openAIErrorCode(err), err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, fileResponse(r, metadata))
+	writeJSON(w, http.StatusOK, officialOrder(fileProtocol(r), fileResponse(r, metadata)))
 }
 
-func readOpenAIFileParts(reader *multipart.Reader) (string, *multipart.Part, string, string, error) {
-	purpose := ""
+// readOpenAIFileParts 读取文件段及其之前的表单字段
+func readOpenAIFileParts(reader *multipart.Reader) (openAIFileFields, *multipart.Part, string, string, error) {
+	var fields openAIFileFields
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
-			return "", nil, "", "", errors.New("file is required")
+			return fields, nil, "", "", errors.New("file is required")
 		}
 		if err != nil {
-			return "", nil, "", "", err
+			return fields, nil, "", "", err
 		}
 		if part.FormName() == "file" && part.FileName() != "" {
 			filename := strings.TrimSpace(part.FileName())
 			if filename == "" {
 				_ = part.Close()
-				return "", nil, "", "", errors.New("filename is required")
+				return fields, nil, "", "", errors.New("filename is required")
 			}
-			return purpose, part, filename, part.Header.Get("Content-Type"), nil
+			return fields, part, filename, part.Header.Get("Content-Type"), nil
 		}
 		value, err := readOpenAIFileField(part)
 		_ = part.Close()
 		if err != nil {
-			return "", nil, "", "", err
+			return fields, nil, "", "", err
 		}
-		if part.FormName() == "purpose" && purpose == "" {
-			purpose = strings.TrimSpace(value)
-		}
+		fields.add(part.FormName(), value)
 	}
 }
 
@@ -155,23 +153,25 @@ func readOpenAIFileField(part *multipart.Part) (string, error) {
 	return string(data), nil
 }
 
-func uploadOpenAIFileBeforePurpose(
+// uploadOpenAIFile 上传文件内容，读完文件段后再读取其后的表单字段，与文件段之前的字段一起确定用途与有效期
+func uploadOpenAIFile(
 	ctx context.Context,
 	service aistudio.FileService,
 	reader *multipart.Reader,
 	request aistudio.UploadRequest,
+	fields openAIFileFields,
 ) (aistudio.FileRef, error) {
 	uploadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	consumed := make(chan error, 1)
 	request.Reader = &completionReader{reader: request.Reader, done: consumed}
-	purpose := make(chan openAIFilePurposeResult, 1)
-	request.ResolvePurpose = func(resolveCtx context.Context) (string, error) {
+	resolved := make(chan openAIFileFieldsResult, 1)
+	request.ResolveFields = func(resolveCtx context.Context) (aistudio.UploadFields, error) {
 		select {
-		case result := <-purpose:
+		case result := <-resolved:
 			return result.value, result.err
 		case <-resolveCtx.Done():
-			return "", resolveCtx.Err()
+			return aistudio.UploadFields{}, resolveCtx.Err()
 		}
 	}
 	done := make(chan openAIFileUploadResult, 1)
@@ -188,8 +188,11 @@ func uploadOpenAIFileBeforePurpose(
 			return result.ref, result.err
 		}
 	}
-	value, parseErr := readOpenAIFilePurpose(reader)
-	purpose <- openAIFilePurposeResult{value: value, err: parseErr}
+	value, parseErr := aistudio.UploadFields{}, readOpenAIFileFields(reader, &fields)
+	if parseErr == nil {
+		value, parseErr = fields.upload()
+	}
+	resolved <- openAIFileFieldsResult{value: value, err: parseErr}
 	result := <-done
 	if parseErr != nil {
 		return result.ref, parseErr
@@ -200,33 +203,75 @@ func uploadOpenAIFileBeforePurpose(
 // defaultFilePurpose 为省略 purpose 时的文件用途
 const defaultFilePurpose = "user_data"
 
-// readOpenAIFilePurpose 读取文件段之后的 purpose，缺失或为空时使用默认用途
-func readOpenAIFilePurpose(reader *multipart.Reader) (string, error) {
+// openAIFileFields 是上传表单中文件之外的 purpose 与 expires_after 字段，同名字段以先出现的为准
+type openAIFileFields struct {
+	purpose string
+	anchor  string
+	seconds string
+}
+
+// add 记录一个表单字段
+func (fields *openAIFileFields) add(name string, value string) {
+	value = strings.TrimSpace(value)
+	switch name {
+	case "purpose":
+		fields.purpose = cmp.Or(fields.purpose, value)
+	case "expires_after[anchor]":
+		fields.anchor = cmp.Or(fields.anchor, value)
+	case "expires_after[seconds]":
+		fields.seconds = cmp.Or(fields.seconds, value)
+	}
+}
+
+// openAIBatchFileRetention 是 purpose 为 batch 且没有 expires_after 的文件的保留时长
+const openAIBatchFileRetention = 30 * 24 * time.Hour
+
+// upload 返回文件的用途与有效期：省略 purpose 时为 user_data，expires_after 的秒数在 3600 至 2592000 之间，purpose 为 batch 且没有 expires_after 时保留 30 天，其余文件不过期
+func (fields openAIFileFields) upload() (aistudio.UploadFields, error) {
+	result := aistudio.UploadFields{Purpose: cmp.Or(fields.purpose, defaultFilePurpose)}
+	if fields.anchor == "" && fields.seconds == "" {
+		if result.Purpose == "batch" {
+			result.ExpiresAfter = openAIBatchFileRetention
+		}
+		return result, nil
+	}
+	if fields.anchor != "created_at" {
+		return result, fmt.Errorf("%w: expires_after[anchor] must be created_at", aistudio.ErrInvalidArgument)
+	}
+	seconds, err := strconv.ParseInt(fields.seconds, 10, 64)
+	if err != nil || seconds < 3600 || seconds > 2592000 {
+		return result, fmt.Errorf("%w: expires_after[seconds] must be an integer between 3600 and 2592000", aistudio.ErrInvalidArgument)
+	}
+	result.ExpiresAfter = time.Duration(seconds) * time.Second
+	return result, nil
+}
+
+// readOpenAIFileFields 读取文件段之后的表单字段并记入 fields，其后的文件段不读取
+func readOpenAIFileFields(reader *multipart.Reader, fields *openAIFileFields) error {
 	for {
 		part, err := reader.NextPart()
 		if errors.Is(err, io.EOF) {
-			return defaultFilePurpose, nil
+			return nil
 		}
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return "", err
+				return err
 			}
-			return "", fmt.Errorf("%w: %w", aistudio.ErrInvalidArgument, err)
+			return fmt.Errorf("%w: %w", aistudio.ErrInvalidArgument, err)
+		}
+		if part.FileName() != "" {
+			_ = part.Close()
+			continue
 		}
 		value, readErr := readOpenAIFileField(part)
 		_ = part.Close()
 		if readErr != nil {
 			if errors.Is(readErr, context.Canceled) {
-				return "", readErr
+				return readErr
 			}
-			return "", fmt.Errorf("%w: %w", aistudio.ErrInvalidArgument, readErr)
+			return fmt.Errorf("%w: %w", aistudio.ErrInvalidArgument, readErr)
 		}
-		if part.FormName() == "purpose" {
-			if value = strings.TrimSpace(value); value == "" {
-				return defaultFilePurpose, nil
-			}
-			return value, nil
-		}
+		fields.add(part.FormName(), value)
 	}
 }
 
@@ -242,7 +287,7 @@ func (s *server) handleFileGet(w http.ResponseWriter, r *http.Request) {
 		writeFileRequestError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, fileResponse(r, metadata))
+	writeJSON(w, http.StatusOK, officialOrder(fileProtocol(r), fileResponse(r, metadata)))
 }
 
 // handleFileContent 返回上传文件内容
@@ -263,28 +308,25 @@ func (s *server) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		writeFileRequestError(w, r, err)
 		return
 	}
-	mimeType := strings.TrimSpace(media.MIME)
-	if mimeType == "" {
-		mimeType = metadata.MIME
-	}
-	filename := strings.TrimSpace(media.Name)
-	if filename == "" {
-		filename = metadata.Name
-	}
 	size := media.Size
 	if size < 0 {
 		size = metadata.Size
 	}
-	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("Content-Type", cmp.Or(strings.TrimSpace(media.MIME), metadata.MIME))
+	filename := cmp.Or(strings.TrimSpace(media.Name), metadata.Name)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	writeMediaStream(w, r, media.Body, size)
+}
+
+// writeMediaStream 写出 200 与文件内容，size 非负时带 Content-Length，复制或关闭出错时记入访问日志
+func writeMediaStream(w http.ResponseWriter, r *http.Request, body io.ReadCloser, size int64) {
 	if size >= 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 	w.WriteHeader(http.StatusOK)
-	_, copyErr := io.Copy(w, media.Body)
-	closeErr := media.Body.Close()
-	if requestErr := errors.Join(copyErr, closeErr); requestErr != nil {
-		SetAccessLogError(r.Context(), requestErr)
+	_, copyErr := io.Copy(w, body)
+	if err := errors.Join(copyErr, body.Close()); err != nil {
+		SetAccessLogError(r.Context(), err)
 	}
 }
 
@@ -301,10 +343,10 @@ func (s *server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if anthropicFilesRequest(r) {
-		writeJSON(w, http.StatusOK, map[string]any{"id": fileID, "type": "file_deleted"})
+		writeJSON(w, http.StatusOK, officialOrder("anthropic", map[string]any{"id": fileID, "type": "file_deleted"}))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": fileID, "object": "file", "deleted": true})
+	writeJSON(w, http.StatusOK, officialOrder("openai", map[string]any{"id": fileID, "object": "file", "deleted": true}))
 }
 
 // handleFileList 列出上传文件，Anthropic 请求返回 Files API 列表，其余按 OpenAI 的 after、limit、order 与 purpose 分页过滤
@@ -340,13 +382,13 @@ func (s *server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	if len(listed) > 0 {
 		body["first_id"], body["last_id"] = listed[0].ID, listed[len(listed)-1].ID
 	}
-	writeJSON(w, http.StatusOK, body)
+	writeJSON(w, http.StatusOK, officialOrder("openai", body))
 }
 
 // anthropicFilePagePrefix 是 Files API next_page 游标的前缀，游标其余部分为上一页最后一个文件的 ID
 const anthropicFilePagePrefix = "page_"
 
-// writeAnthropicFileList 按 Files API 的 ids、scope_id、limit 与 page 游标返回一页文件，同时接受 after_id 与 before_id，响应带 next_page 以及 first_id、last_id、has_more
+// writeAnthropicFileList 按 Files API 的 ids、scope_id、limit 与 page 游标返回一页文件，响应带 next_page、first_id、last_id 与 has_more
 func writeAnthropicFileList(w http.ResponseWriter, r *http.Request, files []aistudio.FileMetadata) {
 	query := r.URL.Query()
 	if query.Get("scope_id") != "" {
@@ -378,7 +420,7 @@ func writeAnthropicFileList(w http.ResponseWriter, r *http.Request, files []aist
 	if hasMore && query.Get("before_id") == "" {
 		body["next_page"] = anthropicFilePagePrefix + listed[len(listed)-1].ID
 	}
-	writeJSON(w, http.StatusOK, body)
+	writeJSON(w, http.StatusOK, officialOrder("anthropic", body))
 }
 
 func multipartStreamMIME(file io.Reader, value string, filename string) (string, io.Reader, error) {
@@ -391,10 +433,28 @@ func multipartStreamMIME(file io.Reader, value string, filename string) (string,
 		return "", nil, errors.New("file must not be empty")
 	}
 	stream := io.MultiReader(bytes.NewReader(probe[:count]), file)
-	if mediaType := declaredMediaType(value); mediaType != "" {
+	mediaType := attachmentMIME(declaredMediaType(value), filename, probe[:count])
+	if mediaType != "image/gif" {
 		return mediaType, stream, nil
 	}
-	return detectMediaType(filename, probe[:count]), stream, nil
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		return "", nil, err
+	}
+	if frame, config, ok := decodeGIFFrame(data); ok {
+		data, mediaType = gifJPEG(frame, config), "image/jpeg"
+	}
+	return mediaType, bytes.NewReader(data), nil
+}
+
+// gifJPEG 与官网上传 GIF 时一样把首帧画在同尺寸白底上，编码为质量 92 的 JPEG
+func gifJPEG(frame *image.Paletted, config image.Config) []byte {
+	canvas := image.NewRGBA(image.Rect(0, 0, config.Width, config.Height))
+	draw.Draw(canvas, canvas.Bounds(), image.White, image.Point{}, draw.Src)
+	draw.Draw(canvas, frame.Bounds(), frame, frame.Bounds().Min, draw.Over)
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, canvas, &jpeg.Options{Quality: 92})
+	return buf.Bytes()
 }
 
 func multipartFileMIME(file io.ReadSeeker, value string, filename string) (string, error) {
@@ -421,6 +481,29 @@ func declaredMediaType(value string) string {
 	return mediaType
 }
 
+// attachmentMIME 返回附件发往上游的 MIME：类型缺失、不含子类型或为通用二进制时按内容前缀与文件名识别，内容为文本而类型不是 text/*、application/json 与 application/x-ipynb+json 时为 text/plain
+func attachmentMIME(mimeType string, name string, prefix []byte) string {
+	mediaType := declaredMediaType(mimeType)
+	if mediaType == "" {
+		mimeType = detectMediaType(name, prefix)
+		mediaType = mimeType
+	}
+	if !strings.HasPrefix(mediaType, "text/") && mediaType != "application/json" && mediaType != "application/x-ipynb+json" && textContent(prefix) {
+		return "text/plain"
+	}
+	return mimeType
+}
+
+// textContent 表示内容开头 512 字节为不含二进制控制字符的 UTF-8 文本，截断处不完整的字符不计
+func textContent(data []byte) bool {
+	head := data[:min(len(data), 512)]
+	valid := utf8.Valid(head)
+	for cut := 1; !valid && len(head) == 512 && cut < utf8.UTFMax; cut++ {
+		valid = utf8.Valid(head[:len(head)-cut])
+	}
+	return valid && strings.HasPrefix(http.DetectContentType(head), "text/")
+}
+
 // audioExtensionTypes 为 OpenAI 转录接受的文件扩展名对应的 MIME
 var audioExtensionTypes = map[string]string{
 	".flac": "audio/flac", ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".mp4": "video/mp4", ".mpeg": "audio/mpeg",
@@ -428,10 +511,15 @@ var audioExtensionTypes = map[string]string{
 }
 
 func openAIFileResponse(metadata aistudio.FileMetadata) openAIFileObject {
-	return openAIFileObject{
+	object := openAIFileObject{
 		ID: metadata.ID, Object: "file", Bytes: metadata.Size, CreatedAt: metadata.CreatedAt.Unix(),
 		Filename: metadata.Name, Purpose: metadata.Purpose, Status: "processed",
 	}
+	if !metadata.ExpiresAt.IsZero() {
+		expires := metadata.ExpiresAt.Unix()
+		object.ExpiresAt = &expires
+	}
+	return object
 }
 
 // anthropicFilesRequest 判断文件请求是否来自 Anthropic Files API 客户端
@@ -450,6 +538,14 @@ func fileResponse(r *http.Request, metadata aistudio.FileMetadata) any {
 	}
 }
 
+// fileProtocol 返回文件请求所属协议的字段顺序名
+func fileProtocol(r *http.Request) string {
+	if anthropicFilesRequest(r) {
+		return "anthropic"
+	}
+	return "openai"
+}
+
 // writeFileError 按文件请求的协议写入错误
 func writeFileError(w http.ResponseWriter, r *http.Request, status int, code string, message string) {
 	if anthropicFilesRequest(r) {
@@ -462,9 +558,6 @@ func writeFileError(w http.ResponseWriter, r *http.Request, status int, code str
 // writeFileRequestError 写入文件服务错误，文件不存在时返回 404
 func writeFileRequestError(w http.ResponseWriter, r *http.Request, err error) {
 	if !shouldWriteRequestError(r, err) {
-		return
-	}
-	if writeUpstreamError(w, err) {
 		return
 	}
 	if errors.Is(err, aistudio.ErrResourceNotFound) {

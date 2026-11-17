@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { useI18n } from '@/i18n'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useI18n, type TranslationKey } from '@/i18n'
 import type { AdminLog } from '@/types'
 import UiIcon from './UiIcon.vue'
-import UiSelect from './UiSelect.vue'
+import UiSelect, { keepSelected } from './UiSelect.vue'
 import RequestLogCard from './RequestLogCard.vue'
 import StageLogCard from './StageLogCard.vue'
-import PageHeader from './PageHeader.vue'
-import { groupLogs } from '@/logs'
+import LogText from './LogText.vue'
+import { groupLogs, requestSources, type LogRow } from '@/logs'
+import { reducedMotion, standardEase, type CollapseResize } from '@/motion'
 import { useQueryParam, useQueryText } from '@/url'
 
 const props = defineProps<{
@@ -18,51 +19,127 @@ defineEmits<{
   clear: []
 }>()
 
-const { t, logText } = useI18n()
+const { t, logText, locale } = useI18n()
 const levels = ['ALL', 'INFO', 'WARN', 'ERROR'] as const
 const level = useQueryParam('level', levels, 'ALL')
 const source = useQueryText('source', 'ALL')
 const search = useQueryText('q')
 const autoScroll = ref(true)
 const output = ref<HTMLElement>()
-const sourceWidth = ref(224)
+// levelRuler 叠放三个级别文字，宽度为当前语言最宽的级别文字
+const levelRuler = ref<HTMLElement>()
+// levelWidth 是级别列宽度，单位 px
+const levelWidth = ref(0)
+const levelResize = new ResizeObserver(([entry]) => {
+  levelWidth.value = Math.ceil(entry!.borderBoxSize[0]!.inlineSize)
+})
+watch(levelRuler, (element) => {
+  levelResize.disconnect()
+  if (element) levelResize.observe(element)
+})
+const sourceWidth = ref(136)
 const resizingSource = ref(false)
-const minSourceWidth = 128
-const maxSourceWidth = 512
+const minSourceWidth = 96
+// metricsWidth 是一行放下请求指标所需的消息列宽度，单位 px
+const metricsWidth = 694
+// messageMinWidth 是拖动来源列时保留给消息列的最小宽度，单位 px
+const messageMinWidth = 360
+// outputWidth 是日志区的 clientWidth，由尺寸观察在每次布局之后记录
+const outputWidth = ref(0)
+// maxSourceWidth 返回来源列可拖到的最大宽度：当前日志区宽度减去时间、级别、列间距与消息列保留的宽度
+function maxSourceWidth(): number {
+  return Math.max(minSourceWidth, outputWidth.value - 200 - messageMinWidth)
+}
 
+// sourceResized 表示来源列宽度已由用户调整
+let sourceResized = false
+// fitPending 表示页面激活后尚未按日志区宽度设定来源列的默认宽度
+let fitPending = false
+// outputResize 在布局之后记录日志区宽度，激活后的首次记录设定来源列默认宽度，激活与挂载时不强制同步布局
+const outputResize = new ResizeObserver(() => {
+  outputWidth.value = output.value!.clientWidth
+  if (!fitPending || outputWidth.value === 0) return
+  fitPending = false
+  if (!sourceResized) sourceWidth.value = fittedSourceWidth()
+})
 let resizeStartX = 0
 let resizeStartWidth = 0
 
-const sources = computed(() =>
-  Array.from(new Set(props.logs.map((entry) => entry.source).filter(Boolean))).sort(),
-)
+// sources 是日志中出现过的来源与当前选中的来源，来源集合不变时沿用原数组，来源下拉不随每批日志重新渲染
+const sources = computed<string[]>((previous) => {
+  const next = keepSelected(
+    Array.from(new Set(props.logs.map((entry) => entry.source).filter(Boolean))).sort(),
+    source.value,
+    'ALL',
+  )
+  return previous?.length === next.length && previous.every((item, index) => item === next[index])
+    ? previous
+    : next
+})
+
+// sourceKeys 是服务自身各来源的显示文案键，其余来源为账户名
+const sourceKeys: Partial<Record<string, TranslationKey>> = {
+  service: 'logs.sources.service',
+  auth: 'logs.sources.auth',
+  request: 'logs.sources.request',
+}
+
+// sourceName 返回来源的显示名
+function sourceName(source: string): string {
+  const key = sourceKeys[source]
+  return key === undefined ? source : t(key)
+}
+
+// sourceLabel 是来源列文字，请求卡片依次列出用到的账户
+function sourceLabel(row: LogRow): string {
+  return row.entry.request
+    ? requestSources(row).map(sourceName).join(' → ')
+    : sourceName(row.entry.source)
+}
+
+// matchText 判断文字的原文或界面语言译文是否含搜索词
+function matchText(text: string, query: string): boolean {
+  return text.toLowerCase().includes(query) || logText(text).toLowerCase().includes(query)
+}
 
 function matchLog(entry: AdminLog, query: string): boolean {
-  if (entry.message && entry.message.toLowerCase().includes(query)) return true
-  if (entry.message && logText(entry.message).toLowerCase().includes(query)) return true
-  if (entry.source && entry.source.toLowerCase().includes(query)) return true
-  if (entry.event && entry.event.toLowerCase().includes(query)) return true
+  if (matchText(entry.message, query)) return true
+  if (entry.source.toLowerCase().includes(query)) return true
+  if (sourceName(entry.source).toLowerCase().includes(query)) return true
+  if (entry.event.toLowerCase().includes(query)) return true
+  if (entry.stage && matchText(entry.stage.name, query)) return true
+  for (const field of entry.fields ?? []) {
+    if (matchText(field.value, query)) return true
+    const label = t(`logs.field.${field.key}` as TranslationKey) ?? field.key
+    if (label.toLowerCase().includes(query)) return true
+  }
   if (entry.request) {
     const req = entry.request
-    if (req.id && req.id.toLowerCase().includes(query)) return true
-    if (req.model && req.model.toLowerCase().includes(query)) return true
-    if (req.path && req.path.toLowerCase().includes(query)) return true
+    if (req.id.toLowerCase().includes(query)) return true
+    if (req.model?.toLowerCase().includes(query)) return true
+    if (req.path?.toLowerCase().includes(query)) return true
     if (req.status !== undefined && String(req.status).includes(query)) return true
-    if (req.error && req.error.toLowerCase().includes(query)) return true
-    if (req.finish_reason && req.finish_reason.toLowerCase().includes(query)) return true
+    if (req.error?.toLowerCase().includes(query)) return true
+    if (req.error && logText(req.error).toLowerCase().includes(query)) return true
+    if (req.finish_reason?.toLowerCase().includes(query)) return true
   }
   return false
 }
 
-const rows = computed(() => groupLogs(props.logs))
+// previousRows 是上次分组的行，事件不变的行沿用原对象，未变化的行不重新渲染
+let previousRows = new Map<string, LogRow>()
+const rows = computed(() => {
+  const next = groupLogs(props.logs, previousRows)
+  previousRows = new Map(next.map((row) => [row.key, row]))
+  return next
+})
 // filteredLogs 按级别、来源与搜索筛选日志行，阶段卡片的任一步骤命中即显示
 const filteredLogs = computed(() => {
   const query = search.value.trim().toLowerCase()
   return rows.value.filter(({ entry, events, stage }) => {
     const checked = stage ? events : [entry]
     return (
-      (level.value === 'ALL' ||
-        checked.some((event) => event.level.toUpperCase() === level.value)) &&
+      (level.value === 'ALL' || checked.some((event) => event.level === level.value)) &&
       (source.value === 'ALL' || events.some((event) => event.source === source.value)) &&
       (query === '' || checked.some((event) => matchLog(event, query)))
     )
@@ -81,8 +158,6 @@ const firstVisible = computed(() => {
     )
   return Math.max(0, list.length - displayLimit.value)
 })
-const hasMore = computed(() => firstVisible.value > 0)
-const hiddenCount = computed(() => firstVisible.value)
 const visibleLogs = computed(() => filteredLogs.value.slice(firstVisible.value))
 
 // pinWindow 自动滚动关闭时固定当前窗口首行，开启时恢复跟随末尾
@@ -91,18 +166,23 @@ function pinWindow(): void {
 }
 
 function loadOlder(): void {
+  trimmed.value = 0
   displayLimit.value = visibleLogs.value.length + 200
   pinnedKey.value = undefined
   pinWindow()
 }
 
 watch([level, source, search], () => {
+  trimmed.value = 0
   displayLimit.value = 200
   pinnedKey.value = undefined
   pinWindow()
 })
 
-const logGridStyle = computed(() => ({ '--log-source-width': `${sourceWidth.value}px` }))
+const logGridStyle = computed(() => ({
+  '--log-source-width': `${sourceWidth.value}px`,
+  '--log-level-width': `${levelWidth.value}px`,
+}))
 
 function levelLabel(value: (typeof levels)[number]): string {
   const keys = {
@@ -114,50 +194,170 @@ function levelLabel(value: (typeof levels)[number]): string {
   return t(keys[value])
 }
 
-function displayLevel(value: string): string {
-  const normalized = value.toUpperCase()
-  return levels.includes(normalized as (typeof levels)[number])
-    ? levelLabel(normalized as (typeof levels)[number])
-    : value
-}
+// glide 是进行中的滚到末尾动画帧，没有动画时为 0
+let glide = 0
+// pinFrame 是等待中的滚到末尾动画帧，没有时为 0
+let pinFrame = 0
 
+// scrollToBottom 在下一帧绘制前滚到末尾，布局随这一帧完成，不在更新日志的任务中强制同步布局
 function scrollToBottom(): void {
-  if (!autoScroll.value) return
-  void nextTick(() => {
-    if (output.value !== undefined) output.value.scrollTop = output.value.scrollHeight
+  if (!autoScroll.value || glide !== 0 || pinFrame !== 0) return
+  pinFrame = requestAnimationFrame(() => {
+    pinFrame = 0
+    output.value!.scrollTop = output.value!.scrollHeight
   })
 }
 
-// followScroll 在日志区离开末尾时关闭自动滚动，回到末尾时开启
+// trimmed 是跟随末尾时从窗口顶部移出的日志行的总高度，窗口顶部的占位保持这个高度，其余行位置不变，跟随只靠滚动
+const trimmed = ref(0)
+// maxTrimmed 是占位高度的上限，超过时清零，留在浏览器的布局尺寸上限之内
+const maxTrimmed = 1_000_000
+
+// trackTrimmed 在新日志挤出窗口顶部的行之前，把这些行的高度计入占位
+function trackTrimmed(): void {
+  if (!autoScroll.value || trimmed.value > maxTrimmed) {
+    trimmed.value = 0
+    return
+  }
+  const rows = output.value?.querySelectorAll<HTMLElement>('.log-entry')
+  const first = rows?.[0]
+  if (first === undefined) {
+    trimmed.value = 0
+    return
+  }
+  const kept = new Set(visibleLogs.value.map((row) => row.key))
+  if (kept.has(first.dataset.logKey!)) return
+  for (const row of rows!) {
+    if (kept.has(row.dataset.logKey!)) {
+      trimmed.value += row.offsetTop - first.offsetTop
+      return
+    }
+  }
+}
+
+// glideToBottom 从最多一屏之外以先快后慢的缓动滚到末尾，减少动态效果时直接到底
+function glideToBottom(): void {
+  const element = output.value!
+  cancelAnimationFrame(glide)
+  glide = 0
+  const end = element.scrollHeight - element.clientHeight
+  if (end - element.scrollTop <= 1 || reducedMotion()) {
+    element.scrollTop = end
+    return
+  }
+  const start = Math.max(element.scrollTop, end - element.clientHeight)
+  const duration = Math.min(360, 160 + Math.sqrt(end - start) * 6)
+  element.scrollTop = start
+  // began 是动画第一帧的时间戳，帧时间戳可能早于本函数执行的时刻
+  let began: number | undefined
+  const step = (now: number) => {
+    began ??= now
+    const progress = Math.min(1, (now - began) / duration)
+    const target = element.scrollHeight - element.clientHeight
+    element.scrollTop = start + (target - start) * (1 - (1 - progress) ** 4)
+    glide = progress < 1 ? requestAnimationFrame(step) : 0
+  }
+  glide = requestAnimationFrame(step)
+}
+
+// openRows 是展开详情的请求与阶段日志行和显示全文的普通日志行
+const openRows = reactive(new Set<string>())
+// clippedRows 是消息超过两行而被折叠的普通日志行
+const clippedRows = reactive(new Set<string>())
+// revealMargin 是展开详情滚入视野后与日志区边缘保留的距离
+const revealMargin = 8
+
+function setRowOpen(key: string, open: boolean): void {
+  if (open) openRows.add(key)
+  else openRows.delete(key)
+}
+
+// expandable 判断日志行能否展开
+function expandable(row: LogRow): boolean {
+  return Boolean(row.entry.request || row.stage) || clippedRows.has(row.key)
+}
+
+// toggleRow 点击可展开日志行的详情以外部分时展开或收起，点击行内控件与选中文字时不切换
+function toggleRow(row: LogRow, event: MouseEvent): void {
+  if (!expandable(row)) return
+  if ((event.target as Element).closest('button, a, input, textarea, select, .ui-collapse')) return
+  const selection = getSelection()!
+  if (!selection.isCollapsed && (event.currentTarget as Element).contains(selection.anchorNode))
+    return
+  setRowOpen(row.key, !openRows.has(row.key))
+}
+
+// scrollAlong 以与详情高度过渡相同的缓动把日志区滚动 shift，被尚未撑开的高度截住时继续跟到过渡结束，过渡时长为 0 时直接到位
+function scrollAlong(shift: number, duration: number): void {
+  const element = output.value!
+  cancelAnimationFrame(glide)
+  glide = 0
+  const start = element.scrollTop
+  const target = start + shift
+  if (duration === 0) {
+    element.scrollTop = target
+    return
+  }
+  const began = performance.now()
+  const step = (now: number) => {
+    const progress = Math.min(1, (now - began) / duration)
+    element.scrollTop = start + shift * standardEase(progress)
+    const settling = Math.abs(element.scrollTop - target) > 1 && now - began < duration + 100
+    glide = progress < 1 || settling ? requestAnimationFrame(step) : 0
+  }
+  glide = requestAnimationFrame(step)
+}
+
+// followDetails 在详情展开时随过渡把整行滚入视野且不把被点击的标题滚出顶部，收起时把已滚出顶部的标题带回顶部
+function followDetails(event: Event): void {
+  const element = output.value!
+  const target = event.target as Element
+  const heading = target.parentElement!
+  const entry = target.closest('.log-entry')!
+  const { delta, duration } = (event as CustomEvent<CollapseResize>).detail
+  const view = element.getBoundingClientRect()
+  const top = heading.getBoundingClientRect().top - view.top - revealMargin
+  const shift =
+    delta > 0
+      ? Math.max(
+          0,
+          Math.min(entry.getBoundingClientRect().bottom - view.bottom + revealMargin, top),
+        )
+      : Math.min(0, top)
+  if (shift !== 0) scrollAlong(shift, duration)
+}
+
+// followScroll 在日志区离开末尾时关闭自动滚动，回到末尾时开启；新日志已撑高内容而跟随的滚动尚未执行时不判断
 function followScroll(): void {
-  if (output.value === undefined) return
-  const element = output.value
+  if (glide !== 0 || pinFrame !== 0) return
+  const element = output.value!
   const distance = element.scrollHeight - element.scrollTop - element.clientHeight
   if (autoScroll.value && distance > 40) autoScroll.value = false
   else if (!autoScroll.value && distance <= 10) autoScroll.value = true
 }
 
-// timeFormat 格式化日志行的 24 小时制时间
-const timeFormat = new Intl.DateTimeFormat('en-GB', {
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hour12: false,
-})
-
-function displayTime(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : timeFormat.format(date)
+// clock 以本地 24 小时制“时:分:秒”显示日志时间
+function clock(time: string): string {
+  const date = new Date(time)
+  return [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':')
 }
 
 function clampSourceWidth(value: number): number {
-  return Math.min(maxSourceWidth, Math.max(minSourceWidth, value))
+  return Math.min(maxSourceWidth(), Math.max(minSourceWidth, value))
+}
+
+// fittedSourceWidth 返回来源列的默认宽度：消息列留够一行指标后的剩余宽度，最多 224 px
+function fittedSourceWidth(): number {
+  return Math.min(224, Math.max(136, outputWidth.value - 170 - metricsWidth))
 }
 
 function startSourceResize(event: PointerEvent): void {
   if (event.button !== 0) return
   const handle = event.currentTarget as HTMLElement
   handle.setPointerCapture(event.pointerId)
+  sourceResized = true
   resizeStartX = event.clientX
   resizeStartWidth = sourceWidth.value
   resizingSource.value = true
@@ -169,40 +369,52 @@ function moveSourceResize(event: PointerEvent): void {
   sourceWidth.value = clampSourceWidth(resizeStartWidth + event.clientX - resizeStartX)
 }
 
-function stopSourceResize(event: PointerEvent): void {
-  if (!resizingSource.value) return
-  const handle = event.currentTarget as HTMLElement
-  if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId)
-  resizingSource.value = false
-}
-
 function resizeSourceWithKeyboard(event: KeyboardEvent): void {
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
   event.preventDefault()
+  sourceResized = true
   sourceWidth.value = clampSourceWidth(sourceWidth.value + (event.key === 'ArrowRight' ? 16 : -16))
 }
 
-watch(() => props.logs, scrollToBottom)
-watch(autoScroll, () => {
+watch(
+  () => props.logs,
+  () => {
+    trackTrimmed()
+    scrollToBottom()
+  },
+)
+watch(autoScroll, (enabled) => {
+  trimmed.value = 0
   displayLimit.value = Math.max(200, visibleLogs.value.length)
   pinWindow()
+  if (enabled) void nextTick(glideToBottom)
+})
+onMounted(() => outputResize.observe(output.value!))
+onActivated(() => {
+  trimmed.value = 0
+  fitPending = true
   scrollToBottom()
+})
+onUnmounted(() => {
+  cancelAnimationFrame(glide)
+  cancelAnimationFrame(pinFrame)
+  levelResize.disconnect()
+  outputResize.disconnect()
 })
 </script>
 
 <template>
-  <section class="page-panel flex min-h-0 flex-1 flex-col bg-canvas">
-    <PageHeader :title="t('nav.logs')" :description="t('ui.logsHelp')" />
+  <section class="flex min-h-0 flex-1 flex-col bg-canvas">
     <div
-      class="flex min-h-10 flex-wrap items-center justify-between gap-3 border-b border-line bg-panel px-4 py-3 md:px-8"
+      class="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-panel px-4 py-1.5"
     >
-      <div class="flex min-w-0 flex-wrap items-center gap-3">
-        <span class="text-xs text-gray-400">{{ t('logs.level') }}:</span>
+      <div class="flex items-center gap-2" role="group" :aria-label="t('logs.level')">
+        <span class="hidden text-xs text-gray-400 sm:inline">{{ t('logs.level') }}:</span>
         <div class="flex rounded border border-line bg-canvas p-0.5">
           <button
             v-for="item in levels"
             :key="item"
-            class="rounded-lg px-3 py-2 text-xs transition"
+            class="rounded px-2 py-0.5 text-xs transition"
             :class="
               level === item
                 ? item === 'ERROR'
@@ -213,31 +425,31 @@ watch(autoScroll, () => {
                 : 'text-gray-400 hover:text-gray-200'
             "
             type="button"
+            :aria-pressed="level === item"
             @click="level = item"
           >
             {{ levelLabel(item) }}
           </button>
         </div>
-        <label class="flex items-center gap-2 text-xs text-gray-400">
-          {{ t('logs.source') }}:
-          <UiSelect
-            v-model="source"
-            class="max-w-48 rounded border border-line bg-canvas px-2 py-0.5 text-gray-200 outline-none"
-          >
-            <option value="ALL">{{ t('logs.allSources') }}</option>
-            <option v-for="item in sources" :key="item" :value="item">{{ item }}</option>
-          </UiSelect>
-        </label>
-        <input
-          v-model="search"
-          type="search"
-          :placeholder="t('logs.search')"
-          :aria-label="t('logs.search')"
-          class="ui-input w-full sm:w-64"
-        />
       </div>
-
-      <div class="flex items-center gap-2">
+      <label class="flex items-center gap-2 text-xs text-gray-400">
+        <span class="sr-only sm:not-sr-only">{{ t('logs.source') }}:</span>
+        <UiSelect
+          v-model="source"
+          class="max-w-48 rounded border border-line bg-canvas px-2 py-0.5 text-gray-200 outline-none"
+        >
+          <option value="ALL">{{ t('logs.allSources') }}</option>
+          <option v-for="item in sources" :key="item" :value="item">{{ sourceName(item) }}</option>
+        </UiSelect>
+      </label>
+      <input
+        v-model="search"
+        type="search"
+        :placeholder="t('logs.search')"
+        :aria-label="t('logs.search')"
+        class="min-w-32 flex-1 rounded border border-line bg-canvas px-2 py-1 text-xs text-gray-200 outline-none focus:border-blue-500 sm:w-64 sm:flex-none"
+      />
+      <div class="flex items-center gap-2 sm:ml-auto">
         <button
           v-tooltip="t('logs.clear')"
           class="rounded px-2 py-1 text-gray-400 transition hover:bg-line hover:text-white"
@@ -248,29 +460,44 @@ watch(autoScroll, () => {
           <UiIcon name="trash" :size="14" />
         </button>
         <button
-          class="rounded border px-2 py-0.5 text-xs transition"
+          class="flex items-center gap-1.5 rounded border px-2 py-0.5 text-xs transition"
           :class="
             autoScroll
               ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
-              : 'border-gray-700 text-gray-500'
+              : 'border-line text-gray-500 hover:text-gray-300'
           "
           type="button"
+          :aria-pressed="autoScroll"
           @click="autoScroll = !autoScroll"
         >
-          {{ t('logs.autoScroll') }}: {{ autoScroll ? 'ON' : 'OFF' }}
+          <span
+            class="size-1.5 rounded-full"
+            :class="autoScroll ? 'bg-blue-400' : 'bg-gray-600'"
+          ></span>
+          {{ t('logs.autoScroll') }}
         </button>
       </div>
     </div>
 
     <div
       ref="output"
-      class="min-h-0 flex-1 overflow-auto bg-canvas p-3 text-[13px] leading-6 md:p-5"
+      class="min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable] bg-canvas p-2 text-[13px] leading-5"
       @scroll.passive="followScroll"
+      @collapse-resize="followDetails"
     >
       <div v-if="filteredLogs.length === 0" class="mt-10 text-center text-gray-600 italic">
         {{ t('logs.waiting') }}
       </div>
       <div v-else class="log-table" :style="logGridStyle">
+        <span ref="levelRuler" class="log-level-ruler" aria-hidden="true">
+          <span
+            v-for="value in levels.slice(1)"
+            :key="value"
+            class="log-level"
+            :class="`log-level-${value.toLowerCase()}`"
+            >{{ levelLabel(value) }}</span
+          >
+        </span>
         <div
           class="source-resizer"
           :class="{ 'is-resizing': resizingSource }"
@@ -279,16 +506,17 @@ watch(autoScroll, () => {
           aria-orientation="vertical"
           :aria-label="t('logs.source')"
           :aria-valuemin="minSourceWidth"
-          :aria-valuemax="maxSourceWidth"
+          :aria-valuemax="maxSourceWidth()"
           :aria-valuenow="sourceWidth"
           @pointerdown="startSourceResize"
           @pointermove="moveSourceResize"
-          @pointerup="stopSourceResize"
-          @pointercancel="stopSourceResize"
+          @pointerup="resizingSource = false"
+          @pointercancel="resizingSource = false"
           @keydown="resizeSourceWithKeyboard"
         ></div>
+        <div v-if="trimmed > 0" :style="{ height: `${trimmed}px` }" aria-hidden="true"></div>
         <div
-          v-if="hasMore"
+          v-if="firstVisible > 0"
           class="flex items-center justify-center py-2 border-b border-line bg-panel/60 text-xs my-1 rounded"
         >
           <button
@@ -296,32 +524,51 @@ watch(autoScroll, () => {
             class="rounded border border-line bg-canvas px-3 py-1 text-gray-400 hover:border-blue-500 hover:text-blue-400 transition"
             @click="loadOlder"
           >
-            {{ t('logs.loadOlder').replace('{count}', String(hiddenCount)) }}
+            {{ t('logs.loadOlder').replace('{count}', String(firstVisible)) }}
           </button>
         </div>
         <div
           v-for="row in visibleLogs"
           :key="row.key"
-          class="log-entry log-grid mb-1 rounded-r-lg border-l-2 px-3 py-2 select-text"
+          v-memo="[row, openRows.has(row.key), clippedRows.has(row.key), locale]"
+          :data-log-key="row.key"
+          class="log-entry log-grid border-l-2 px-2 py-1 select-text"
           :class="{
-            'border-blue-500 text-gray-300': row.entry.level.toUpperCase() === 'INFO',
-            'border-yellow-500 bg-yellow-500/5 text-yellow-100':
-              row.entry.level.toUpperCase() === 'WARN',
-            'border-red-500 bg-red-500/10 text-red-100': row.entry.level.toUpperCase() === 'ERROR',
-            'border-gray-600 text-gray-300': !['INFO', 'WARN', 'ERROR'].includes(
-              row.entry.level.toUpperCase(),
-            ),
+            'log-expandable': expandable(row),
+            'border-l-transparent': row.entry.level === 'INFO',
+            'border-l-yellow-500 bg-yellow-500/5': row.entry.level === 'WARN',
+            'border-l-red-500 bg-red-500/10': row.entry.level === 'ERROR',
           }"
+          @click="toggleRow(row, $event)"
         >
-          <span class="text-right text-gray-500">{{ displayTime(row.entry.time) }}</span>
-          <span class="font-semibold">{{ displayLevel(row.entry.level) }}</span>
-          <span v-tooltip="row.entry.source" class="log-cell log-source text-gray-500">{{
-            row.entry.source
+          <span class="log-time font-mono">{{ clock(row.events[0]!.time) }}</span>
+          <span class="log-level" :class="`log-level-${row.entry.level.toLowerCase()}`">{{
+            levelLabel(row.entry.level)
+          }}</span>
+          <span v-tooltip="sourceLabel(row)" class="log-cell log-source">{{
+            sourceLabel(row)
           }}</span>
           <div class="log-cell log-message">
-            <RequestLogCard v-if="row.entry.request" :row="row" />
-            <StageLogCard v-else-if="row.stage" :row="row" />
-            <span v-else>{{ logText(row.entry.message) }}</span>
+            <RequestLogCard
+              v-if="row.entry.request"
+              :row="row"
+              :open="openRows.has(row.key)"
+              @update:open="setRowOpen(row.key, $event)"
+            />
+            <StageLogCard
+              v-else-if="row.stage"
+              :row="row"
+              :open="openRows.has(row.key)"
+              @update:open="setRowOpen(row.key, $event)"
+            />
+            <LogText
+              v-else
+              :entry="row.entry"
+              :open="openRows.has(row.key)"
+              :clipped="clippedRows.has(row.key)"
+              @update:open="setRowOpen(row.key, $event)"
+              @update:clipped="clippedRows.add(row.key)"
+            />
           </div>
         </div>
       </div>
@@ -330,16 +577,38 @@ watch(autoScroll, () => {
 </template>
 
 <style scoped>
+/* 日志区窄于 52rem 时每行改为时间、级别、来源在上，消息在下占满整行 */
 .log-table {
+  --log-level-column: max(3.5rem, var(--log-level-width));
   position: relative;
   width: 100%;
   min-width: 0;
+  container: log-table / inline-size;
+}
+
+.log-entry {
+  border-bottom: 1px solid color-mix(in oklab, var(--color-line) 50%, transparent);
+}
+
+.log-entry:hover {
+  background-image: linear-gradient(
+    color-mix(in oklab, var(--color-line) 22%, transparent),
+    color-mix(in oklab, var(--color-line) 22%, transparent)
+  );
+}
+
+.log-expandable {
+  cursor: pointer;
+}
+
+.log-expandable :deep(.ui-collapse) {
+  cursor: auto;
 }
 
 .log-grid {
   display: grid;
-  grid-template-columns: 5rem 3.5rem var(--log-source-width) minmax(0, 1fr);
-  column-gap: 0.75rem;
+  grid-template-columns: 4.5rem var(--log-level-column) var(--log-source-width) minmax(0, 1fr);
+  column-gap: 0.5rem;
   align-items: start;
 }
 
@@ -349,12 +618,52 @@ watch(autoScroll, () => {
   overflow-wrap: anywhere;
 }
 
+.log-message {
+  padding-left: 0.5rem;
+}
+
+/* 时间、级别与来源为浅色小字，时间为等宽数字 */
+.log-time {
+  color: var(--color-gray-500);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.log-level {
+  color: var(--color-gray-500);
+  white-space: nowrap;
+}
+
+.log-level-ruler {
+  position: absolute;
+  display: grid;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.log-level-warn {
+  color: var(--color-yellow-400);
+  font-weight: 600;
+}
+
+.log-level-error {
+  color: var(--color-red-400);
+  font-weight: 600;
+}
+
+.log-source {
+  overflow: hidden;
+  color: var(--color-gray-500);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .source-resizer {
   position: absolute;
   z-index: 10;
   top: 0;
   bottom: 0;
-  left: calc(10.5rem + var(--log-source-width) + 2px);
+  left: calc(6rem + var(--log-level-column) + var(--log-source-width) + 2px);
   width: 0.75rem;
   cursor: col-resize;
   overflow-anchor: none;
@@ -376,28 +685,18 @@ watch(autoScroll, () => {
 .source-resizer:hover::after,
 .source-resizer:focus-visible::after,
 .source-resizer.is-resizing::after {
-  background: #3b82f6;
+  background: var(--color-blue-500);
 }
 
 .source-resizer:focus-visible {
   outline: none;
 }
 
-@media (max-width: 767px) {
-  .log-table {
-    min-width: 0;
-  }
-
+@container log-table (width < 52rem) {
   .log-grid {
-    grid-template-columns: 4.5rem 3.25rem minmax(0, 1fr);
+    grid-template-columns: 4.5rem max(3.25rem, var(--log-level-width)) minmax(0, 1fr);
     column-gap: 0.5rem;
     row-gap: 0.125rem;
-  }
-
-  .log-source {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .log-message {

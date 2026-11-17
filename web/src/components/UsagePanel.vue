@@ -1,33 +1,32 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, onActivated, onDeactivated, provide, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
-import type { Model, UsageDimension, UsagePair, UsageReport, UsageStats } from '@/types'
+import type { Model, UsageDimension, UsageReport, UsageStats } from '@/types'
 import UiIcon from './UiIcon.vue'
-import PageHeader from './PageHeader.vue'
-import UiSelect from './UiSelect.vue'
-import FilterMenu from './usage/FilterMenu.vue'
+import UiSelect, { keepSelected } from './UiSelect.vue'
+import FilterMenu from './FilterMenu.vue'
 import KpiCard from './usage/KpiCard.vue'
 import RangePicker from './usage/RangePicker.vue'
 import RankingTable from './usage/RankingTable.vue'
 import RecordsTable from './usage/RecordsTable.vue'
+import RefreshButton from './usage/RefreshButton.vue'
 import UsageCharts from './usage/UsageCharts.vue'
-import { useUsageFormat } from './usage/format'
+import { usageClock, useUsageFormat } from './usage/format'
+import { readPreference, writePreference } from '@/preference'
 import {
   dimensions,
   liveRange,
   rateTone,
-  readPreference,
   resolveRange,
   successRate,
   useUsageState,
-  writePreference,
   type RangePreset,
 } from './usage/model'
 
 const props = defineProps<{ models: Model[] }>()
 const { t, errorText } = useI18n()
-const { compact, integer, percent, dateTime, clock, ago, dimensionLabel } = useUsageFormat()
+const { compact, integer, usd, percent, duration, dateTime, dimensionLabel } = useUsageFormat()
 const state = useUsageState()
 
 // filterOptions 返回筛选候选，模型按模型目录顺序排列，目录外的取值排在最后
@@ -44,11 +43,8 @@ const loading = ref(false)
 const error = ref('')
 const updatedAt = ref(0)
 const now = ref(Date.now())
+provide(usageClock, now)
 const recordsRefresh = ref(0)
-const view = ref('overview')
-const confirmClear = ref(false)
-const clearing = ref(false)
-const clearError = ref('')
 const refreshChoices = [0, 15, 30, 60] as const
 const autoRefresh = ref<number>(
   readPreference('usage.autoRefresh', 30, (value) =>
@@ -60,7 +56,9 @@ const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 let controller: AbortController | undefined
 let clockTimer: number | undefined
 
-const resolved = computed(() => resolveRange(state, new Date(now.value)))
+// minute 是取整到分钟的时钟，时间范围只显示到分钟
+const minute = computed(() => Math.floor(now.value / 60_000) * 60_000)
+const resolved = computed(() => resolveRange(state, new Date(minute.value)))
 const live = computed(() => liveRange(state.range))
 const hasFilters = computed(() => dimensions.some((item) => (state.filters[item] ?? []).length > 0))
 const scope = computed(() => JSON.stringify([state.range, state.from, state.to, state.filters]))
@@ -107,41 +105,23 @@ async function load(): Promise<void> {
   }
 }
 
-// loadPairs 按需读取一个账户或模型在当前范围与筛选下的组合明细，主报告不再携带全部组合
-async function loadPairs(dimension: 'account' | 'model', key: string): Promise<UsagePair[]> {
+// loadPairs 读取当前范围与筛选下一个账户或模型的组合明细，主报告不含组合明细
+async function loadPairs(
+  dimension: 'account' | 'model',
+  key: string,
+): Promise<UsageReport['pairs']> {
   const query = baseQuery()
-  if (query === null) return []
+  if (query === null) throw new Error(t('usage.rangeInvalid'))
   query.set(dimension, key)
   query.set('tz', timezone)
-  return (await api.usage(query)).pairs
+  query.set('stack', state.stack)
+  return (await api.usage(query, new AbortController().signal)).pairs
 }
 
 // refresh 立即刷新报告与请求记录
 function refresh(): void {
   void load()
   recordsRefresh.value++
-}
-
-function showClearConfirmation(): void {
-  confirmClear.value = true
-  clearError.value = ''
-}
-
-async function clearUsage(): Promise<void> {
-  if (clearing.value) return
-  clearing.value = true
-  clearError.value = ''
-  try {
-    await api.clearUsage()
-    confirmClear.value = false
-    report.value = null
-    status.value = 'loading'
-    refresh()
-  } catch (reason) {
-    clearError.value = errorText(reason)
-  } finally {
-    clearing.value = false
-  }
 }
 
 watch(
@@ -168,12 +148,13 @@ function resume(): void {
   if (document.visibilityState === 'visible') tick()
 }
 
-onMounted(() => {
-  void load()
+onActivated(() => {
+  if (report.value === null) void load()
+  else tick()
   clockTimer = window.setInterval(tick, 1000)
   document.addEventListener('visibilitychange', resume)
 })
-onUnmounted(() => {
+onDeactivated(() => {
   controller?.abort()
   window.clearInterval(clockTimer)
   document.removeEventListener('visibilitychange', resume)
@@ -208,20 +189,6 @@ const activeChips = computed(() =>
     (state.filters[dimension] ?? []).map((value) => ({ dimension, value })),
   ),
 )
-
-const freshness = computed(() => {
-  const latest = report.value?.latest_at
-  if (latest === undefined) return { tone: 'bg-gray-600', text: t('usage.latestNone') }
-  const age = now.value - new Date(latest).getTime()
-  const tone = age < 5 * 60_000 ? 'bg-green-500' : age < 3_600_000 ? 'bg-yellow-500' : 'bg-gray-500'
-  return { tone, text: t('usage.latest').replace('{time}', ago(latest, now.value)) }
-})
-const countdown = computed(() => {
-  if (!live.value) return t('usage.fixedRange')
-  if (autoRefresh.value === 0 || updatedAt.value === 0) return ''
-  const seconds = Math.max(0, autoRefresh.value - Math.floor((now.value - updatedAt.value) / 1000))
-  return t('usage.nextRefresh').replace('{seconds}', String(seconds))
-})
 
 // relative 返回相对变化比例，上一周期为 0 时返回 null
 function relative(current: number, previous: number): number | null {
@@ -262,8 +229,27 @@ const kpis = computed(() => {
   const previousRate = successRate(previous)
   const series = (pick: (bucket: UsageStats) => number | null) =>
     buckets.map(pick).filter((item): item is number => item !== null)
-  const otherErrors = totals.failed - totals.rate_limited - (totals.rate_excluded ?? 0)
+  const otherErrors = totals.failed - totals.rate_limited
+  const first = totals.first_event
   return [
+    {
+      label: t('usage.requests'),
+      icon: 'requests' as const,
+      value: integer(totals.requests),
+      raw: totals.requests,
+      help: t('usage.requestsHelp'),
+      details: [
+        {
+          label: t('usage.failed'),
+          value: integer(totals.failed),
+          tone: totals.failed > 0 ? 'text-red-400' : undefined,
+        },
+        { label: t('usage.canceled'), value: integer(totals.canceled) },
+      ],
+      delta: delta(relative(totals.requests, previous.requests), (item) => percent(item), 'none'),
+      spark: buckets.map((bucket) => bucket.requests),
+      color: '#60a5fa',
+    },
     {
       label: t('usage.successRate'),
       icon: 'success' as const,
@@ -281,7 +267,6 @@ const kpis = computed(() => {
           value: integer(otherErrors),
           tone: otherErrors > 0 ? 'text-red-400' : undefined,
         },
-        { label: t('usage.rateExcluded'), value: integer(totals.rate_excluded ?? 0) },
       ],
       delta: delta(
         rate === null || previousRate === null ? null : rate - previousRate,
@@ -294,25 +279,6 @@ const kpis = computed(() => {
       }),
       color: '#22c55e',
       tone: rateTone(rate),
-    },
-    {
-      label: t('usage.requests'),
-      icon: 'requests' as const,
-      value: integer(totals.requests),
-      raw: totals.requests,
-      help: t('usage.requestsHelp'),
-      details: [
-        { label: t('usage.succeeded'), value: integer(totals.succeeded) },
-        {
-          label: t('usage.failed'),
-          value: integer(totals.failed),
-          tone: totals.failed > 0 ? 'text-red-400' : undefined,
-        },
-        { label: t('usage.canceled'), value: integer(totals.canceled) },
-      ],
-      delta: delta(relative(totals.requests, previous.requests), (item) => percent(item), 'none'),
-      spark: buckets.map((bucket) => bucket.requests),
-      color: '#60a5fa',
     },
     {
       label: t('usage.tokens'),
@@ -346,111 +312,93 @@ const kpis = computed(() => {
       spark: buckets.map((bucket) => bucket.requests),
       color: '#f59e0b',
     },
+    {
+      label: t('usage.cost'),
+      icon: 'cost' as const,
+      value: value.cost === 0 && value.unpriced_models.length > 0 ? '—' : usd(value.cost),
+      raw: value.cost === 0 && value.unpriced_models.length > 0 ? null : value.cost,
+      help:
+        value.unpriced_models.length > 0
+          ? `${t('usage.costHelp')} · ${t('usage.unpriced')} ${value.unpriced_models.join(', ')}`
+          : t('usage.costHelp'),
+      details: [
+        {
+          label: t('usage.cacheHitRate'),
+          value:
+            totals.input_tokens > 0 ? percent(totals.cached_tokens / totals.input_tokens) : '—',
+        },
+        ...(value.cost === 0 && value.unpriced_models.length > 0
+          ? [
+              {
+                label: t('usage.unpriced'),
+                value: value.unpriced_models.join(', '),
+                tone: 'text-amber-300',
+              },
+            ]
+          : []),
+      ],
+      delta: delta(relative(value.cost, value.previous_cost), (item) => percent(item), 'none'),
+      spark: buckets.map((bucket) => bucket.cost),
+      color: '#34d399',
+    },
+    {
+      label: `${t('usage.firstEvent')} P50`,
+      icon: 'firstEvent' as const,
+      value: duration(first.p50_ms),
+      raw: first.p50_ms > 0 ? first.p50_ms : null,
+      help: t('usage.firstEventHelp'),
+      details: [{ label: 'P95', value: duration(first.p95_ms) }],
+      delta: delta(
+        relative(first.p50_ms, previous.first_event.p50_ms),
+        (item) => percent(item),
+        'down',
+      ),
+      spark: series((bucket) => (bucket.first_event.p50_ms > 0 ? bucket.first_event.p50_ms : null)),
+      color: '#a78bfa',
+    },
   ]
 })
 
 const statusOptions = computed(() =>
-  (report.value?.groups.status ?? []).map((group) => group.key).sort(),
+  keepSelected(
+    (report.value?.groups.status ?? []).map((group) => group.key).sort(),
+    state.status,
+    '',
+  ),
 )
-
-function showStatusRecords(value: string): void {
-  state.status = value
-  view.value = 'records'
-}
 </script>
 
 <template>
-  <section class="page-panel flex min-h-0 flex-1 flex-col overflow-auto">
-    <PageHeader :title="t('usage.title')" :description="t('usage.description')">
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500">
-        <span v-tooltip="t('usage.latestHelp')" class="flex items-center gap-1.5">
-          <span class="h-2 w-2 rounded-full" :class="freshness.tone" aria-hidden="true"></span>
-          {{ freshness.text }}
-        </span>
-        <span v-if="updatedAt > 0" class="tabular-nums" aria-live="polite">
-          {{ t('usage.updatedAt').replace('{time}', clock(new Date(updatedAt))) }}
-          <span v-if="countdown" class="ml-1 text-gray-600">· {{ countdown }}</span>
-        </span>
+  <section class="relative flex min-h-0 flex-1 flex-col overflow-auto [scrollbar-gutter:stable]">
+    <header class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4">
+      <div class="min-w-0 flex-1">
+        <h2 class="text-xl font-semibold text-white">{{ t('usage.title') }}</h2>
+        <p class="mt-1 text-sm text-gray-500">{{ t('usage.description') }}</p>
+      </div>
+      <div class="flex h-10 items-stretch rounded border border-line text-sm">
+        <RefreshButton
+          :loading="loading"
+          :live="live"
+          :updated-at="updatedAt"
+          :latest-at="report?.latest_at"
+          @refresh="refresh"
+        />
         <UiSelect
           v-if="live"
           :model-value="autoRefresh"
           :aria-label="t('usage.autoRefresh')"
-          class="w-max rounded-md border border-line bg-canvas px-2 py-1 text-xs text-gray-200"
+          class="w-max rounded-r border-l border-line px-3 text-gray-200 hover:bg-raised"
           @update:model-value="autoRefresh = Number($event)"
         >
           <option v-for="choice in refreshChoices" :key="choice" :value="choice">
             {{ t(`usage.autoRefresh.${choice}`) }}
           </option>
         </UiSelect>
-        <button
-          v-tooltip="t('app.refresh')"
-          type="button"
-          class="rounded-md border border-line p-1.5 text-gray-400 transition hover:bg-raised hover:text-white"
-          :aria-label="t('app.refresh')"
-          @click="refresh"
-        >
-          <UiIcon name="refresh" :size="14" :class="{ 'animate-spin': loading }" />
-        </button>
-        <button
-          type="button"
-          class="flex items-center gap-1.5 rounded-md border border-red-500/30 px-2.5 py-1.5 text-red-300 transition hover:bg-red-500/10 disabled:opacity-50"
-          :disabled="clearing"
-          @click="showClearConfirmation"
-        >
-          <UiIcon name="trash" :size="14" />
-          {{ t('usage.clear') }}
-        </button>
       </div>
-    </PageHeader>
-
-    <nav
-      class="filter-tabs border-b border-line bg-panel px-4 py-2 md:px-8"
-      :aria-label="t('usage.title')"
-    >
-      <button
-        v-for="item in [
-          { id: 'overview', label: 'ui.overview' },
-          { id: 'records', label: 'usage.records' },
-          { id: 'ranking', label: 'usage.ranking' },
-        ] as const"
-        :key="item.id"
-        type="button"
-        :aria-pressed="view === item.id"
-        @click="view = item.id"
-      >
-        {{ t(item.label) }}
-      </button>
-    </nav>
+    </header>
 
     <div
-      v-if="confirmClear"
-      role="alert"
-      class="mx-4 my-3 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200 md:mx-8"
-    >
-      <p>{{ t('usage.clearConfirm') }}</p>
-      <p v-if="clearError" class="mt-2" role="alert">{{ clearError }}</p>
-      <div class="mt-3 flex gap-2">
-        <button
-          type="button"
-          class="rounded-md bg-red-600 px-3 py-1.5 text-white hover:bg-red-500 disabled:opacity-50"
-          :disabled="clearing"
-          @click="clearUsage"
-        >
-          {{ clearing ? t('common.loading') : t('usage.clearAction') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-md border border-line px-3 py-1.5 hover:bg-raised disabled:opacity-50"
-          :disabled="clearing"
-          @click="confirmClear = false"
-        >
-          {{ t('common.cancel') }}
-        </button>
-      </div>
-    </div>
-
-    <div
-      class="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-canvas/95 px-4 py-2.5 backdrop-blur md:px-8"
+      class="page-x sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-canvas/95 py-2.5 backdrop-blur"
       role="toolbar"
       :aria-label="t('usage.filters')"
     >
@@ -463,6 +411,9 @@ function showStatusRecords(value: string): void {
         :options="filterOptions(dimension)"
         :selected="state.filters[dimension] ?? []"
         :format="(value: string) => dimensionLabel(dimension, value)"
+        :search-label="t('usage.filterSearch')"
+        :empty-label="t('usage.filterNone')"
+        :clear-label="t('usage.filtersClear')"
         @change="setFilter(dimension, $event)"
       />
       <button
@@ -474,7 +425,7 @@ function showStatusRecords(value: string): void {
         {{ t('usage.filtersClear') }}
       </button>
     </div>
-    <div v-if="activeChips.length > 0" class="flex flex-wrap gap-1.5 px-4 pt-3 md:px-8">
+    <div v-if="activeChips.length > 0" class="page-x flex flex-wrap gap-1.5 pt-3">
       <span
         v-for="chip in activeChips"
         :key="`${chip.dimension}:${chip.value}`"
@@ -502,7 +453,7 @@ function showStatusRecords(value: string): void {
       </span>
     </div>
 
-    <div class="w-full space-y-4 p-4 md:p-8">
+    <div class="@container page-x space-y-4 py-4 md:py-8">
       <div
         v-if="error && status !== 'error'"
         class="flex items-center gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300"
@@ -520,8 +471,11 @@ function showStatusRecords(value: string): void {
       </div>
 
       <template v-if="status === 'loading'">
-        <div class="grid grid-cols-2 gap-3 xl:grid-cols-4" aria-hidden="true">
-          <div v-for="index in 4" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
+        <div
+          class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[56rem]:grid-cols-3 @min-[110rem]:grid-cols-6"
+          aria-hidden="true"
+        >
+          <div v-for="index in 6" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
         </div>
         <div class="h-80 animate-pulse rounded-lg bg-panel" aria-hidden="true"></div>
         <p class="sr-only" role="status">{{ t('common.loading') }}</p>
@@ -566,11 +520,12 @@ function showStatusRecords(value: string): void {
             </button>
           </div>
           <template v-else>
-            <div v-if="view === 'overview'" class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <div
+              class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[56rem]:grid-cols-3 @min-[110rem]:grid-cols-6"
+            >
               <KpiCard
-                v-for="(kpi, index) in kpis"
+                v-for="kpi in kpis"
                 :key="kpi.label"
-                :class="index === 0 ? 'border-green-500/30 bg-green-500/5 [&>data]:text-3xl' : ''"
                 :label="kpi.label"
                 :icon="kpi.icon"
                 :value="kpi.value"
@@ -584,21 +539,17 @@ function showStatusRecords(value: string): void {
               />
             </div>
             <UsageCharts
-              v-if="view === 'overview'"
               :report="report"
               :stack="state.stack"
               @update:stack="state.stack = $event"
             />
             <RankingTable
-              v-if="view === 'ranking'"
               :report="report"
-              :now="now"
               :load-pairs="loadPairs"
               @filter="addFilter"
-              @status="showStatusRecords"
+              @status="state.status = $event"
             />
             <RecordsTable
-              v-if="view === 'records'"
               :scope="scope"
               :base-query="baseQuery"
               :status="state.status"

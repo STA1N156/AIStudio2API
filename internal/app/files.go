@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
@@ -15,11 +14,7 @@ func (service *trackedService) UploadFile(ctx context.Context, request aistudio.
 		return aistudio.FileRef{}, err
 	}
 	defer cancel()
-	files, ok := service.service.(aistudio.FileService)
-	if !ok {
-		return aistudio.FileRef{}, fmt.Errorf("file service 不可用")
-	}
-	file, requestErr := files.UploadFile(requestCtx, request)
+	file, requestErr := service.service.(aistudio.FileService).UploadFile(requestCtx, request)
 	api.SetAccessLogError(requestCtx, requestErr)
 	return file, requestErr
 }
@@ -31,11 +26,7 @@ func (service *trackedService) FileMetadata(ctx context.Context, fileID string) 
 		return aistudio.FileMetadata{}, err
 	}
 	defer cancel()
-	files, ok := service.service.(aistudio.FileService)
-	if !ok {
-		return aistudio.FileMetadata{}, fmt.Errorf("file service 不可用")
-	}
-	metadata, requestErr := files.FileMetadata(requestCtx, fileID)
+	metadata, requestErr := service.service.(aistudio.FileService).FileMetadata(requestCtx, fileID)
 	api.SetAccessLogError(requestCtx, requestErr)
 	return metadata, requestErr
 }
@@ -47,11 +38,7 @@ func (service *trackedService) ListFiles(ctx context.Context) ([]aistudio.FileMe
 		return nil, err
 	}
 	defer cancel()
-	files, ok := service.service.(aistudio.FileService)
-	if !ok {
-		return nil, fmt.Errorf("file service 不可用")
-	}
-	list, requestErr := files.ListFiles(requestCtx)
+	list, requestErr := service.service.(aistudio.FileService).ListFiles(requestCtx)
 	api.SetAccessLogError(requestCtx, requestErr)
 	return list, requestErr
 }
@@ -63,11 +50,19 @@ func (service *trackedService) DeleteFile(ctx context.Context, fileID string) er
 		return err
 	}
 	defer cancel()
-	files, ok := service.service.(aistudio.FileService)
-	if !ok {
-		return fmt.Errorf("file service 不可用")
-	}
-	requestErr := files.DeleteFile(requestCtx, fileID)
+	requestErr := service.service.(aistudio.FileService).DeleteFile(requestCtx, fileID)
 	api.SetAccessLogError(requestCtx, requestErr)
 	return requestErr
+}
+
+// VideoFrameTokens 统计视频文件按视频设置抽帧后的 token 数并记录实际账户
+func (service *trackedService) VideoFrameTokens(ctx context.Context, request aistudio.VideoFramesRequest) (int64, error) {
+	requestCtx, cancel, err := service.observedDataRequestContext(ctx, "")
+	if err != nil {
+		return 0, err
+	}
+	defer cancel()
+	tokens, requestErr := service.service.(aistudio.VideoFrameService).VideoFrameTokens(requestCtx, request)
+	api.SetAccessLogError(requestCtx, requestErr)
+	return tokens, requestErr
 }

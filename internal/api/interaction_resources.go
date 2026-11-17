@@ -11,10 +11,36 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
-// interactionRecord 是已保存交互的资源对象与请求输入步骤
+// interactionRecord 是已保存交互的资源对象与请求输入步骤，upstream、account 与 agent 是 agent 后台任务的上游 interaction ID、所属账户与 agent，stream 是后台交互的事件记录
 type interactionRecord struct {
-	object json.RawMessage
-	input  []json.RawMessage
+	object   json.RawMessage
+	input    []json.RawMessage
+	upstream string
+	account  string
+	agent    string
+	stream   *streamLog
+}
+
+// savedInteraction 是 interactionRecord 写入续接状态库的形式，不含后台交互的事件记录
+type savedInteraction struct {
+	Object   json.RawMessage   `json:"object"`
+	Input    []json.RawMessage `json:"input,omitempty"`
+	Upstream string            `json:"upstream,omitempty"`
+	Account  string            `json:"account,omitempty"`
+	Agent    string            `json:"agent,omitempty"`
+}
+
+func (record *interactionRecord) MarshalJSON() ([]byte, error) {
+	return json.Marshal(savedInteraction{Object: record.object, Input: record.input, Upstream: record.upstream, Account: record.account, Agent: record.agent})
+}
+
+func (record *interactionRecord) UnmarshalJSON(data []byte) error {
+	var saved savedInteraction
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return err
+	}
+	*record = interactionRecord{object: saved.Object, input: saved.Input, upstream: saved.Upstream, account: saved.Account, agent: saved.Agent}
+	return nil
 }
 
 // interactionEvent 是重放交互时的一条流式事件
@@ -33,12 +59,12 @@ func (s *server) storeInteraction(request interactionRequest, previous responseH
 		}
 		stored["steps"] = steps
 	}
-	encoded, err := json.Marshal(stored)
+	encoded, err := json.Marshal(officialOrder("interactions", stored))
 	if err != nil {
 		return
 	}
 	id, _ := object["id"].(string)
-	interaction := &interactionRecord{object: encoded, input: interactionInputSteps(request.Input)}
+	interaction := &interactionRecord{object: encoded, input: interactionInputSteps(request.Input), upstream: result.interactionID, account: result.accountID, agent: result.providerModel, stream: request.stream}
 	s.responseStates.Store(id, previous, result, responseState{Contents: current, Interaction: interaction})
 }
 
@@ -76,7 +102,7 @@ func interactionInputSteps(raw json.RawMessage) []json.RawMessage {
 	return steps
 }
 
-// handleInteractionGet 返回已保存的交互，include_input 时在步骤前加入请求输入，stream 时按流式事件重放
+// handleInteractionGet 返回已保存的交互，include_input 时在步骤前加入请求输入，stream 时后台交互从事件记录跟随到结束，其他交互按流式事件重放
 func (s *server) handleInteractionGet(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	record, ok := s.responseStates.Interaction(id)
@@ -86,7 +112,24 @@ func (s *server) handleInteractionGet(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query()
 	if stream, _ := strconv.ParseBool(query.Get("stream")); stream {
-		replayInteraction(w, r, record.object, query.Get("last_event_id"))
+		if record.stream == nil {
+			replayInteraction(w, r, record.object, query.Get("last_event_id"))
+			return
+		}
+		after := 0
+		if value := query.Get("last_event_id"); value != "" {
+			sequence, err := strconv.Atoi(value)
+			if err != nil || sequence < 1 {
+				writeGeminiError(w, http.StatusBadRequest, "INVALID_ARGUMENT", fmt.Sprintf("last_event_id %q was not found", value))
+				return
+			}
+			after = sequence
+		}
+		out, err := openStream(w, sseHeartbeat)
+		defer out.stop()
+		if err == nil {
+			_ = record.stream.follow(r.Context(), out, after-1)
+		}
 		return
 	}
 	if include, _ := strconv.ParseBool(query.Get("include_input")); include && len(record.input) > 0 {
@@ -95,7 +138,7 @@ func (s *server) handleInteractionGet(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(record.object, &fields)
 		_ = json.Unmarshal(fields["steps"], &steps)
 		fields["steps"], _ = json.Marshal(append(slices.Clone(record.input), steps...))
-		writeJSON(w, http.StatusOK, fields)
+		writeJSON(w, http.StatusOK, officialOrder("interactions", fields))
 		return
 	}
 	writeJSON(w, http.StatusOK, record.object)
@@ -111,9 +154,14 @@ func (s *server) handleInteractionDelete(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
-// handleInteractionCancel 返回已保存的交互
+// handleInteractionCancel 停止进行中的后台交互并返回保存的交互
 func (s *server) handleInteractionCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if value, ok := s.background.Load(id); ok {
+		run := value.(backgroundRun)
+		run.cancel()
+		<-run.done
+	}
 	record, ok := s.responseStates.Interaction(id)
 	if !ok {
 		writeInteractionNotFound(w, id)
@@ -176,7 +224,7 @@ func replayInteraction(w http.ResponseWriter, r *http.Request, object json.RawMe
 		event := events[sequence]
 		event.value["event_type"] = event.kind
 		event.value["event_id"] = strconv.Itoa(sequence + 1)
-		if err := writeSSE(w, event.kind, event.value); err != nil {
+		if err := writeSSE(w, event.kind, officialOrder("interactions", event.value)); err != nil {
 			SetAccessLogError(r.Context(), err)
 			return
 		}

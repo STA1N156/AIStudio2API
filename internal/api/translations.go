@@ -21,12 +21,7 @@ func (s *server) handleOpenAITranslation(w http.ResponseWriter, r *http.Request)
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "audio translation is unavailable")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, openAIFileMaxBytes+openAIFileRequestOverhead)
-	if err := r.ParseMultipartForm(transcriptionMultipartMemory); err != nil {
-		if r.MultipartForm != nil {
-			_ = r.MultipartForm.RemoveAll()
-		}
-		writeFileParseError(w, r, err)
+	if !parseAudioForm(w, r) {
 		return
 	}
 	defer r.MultipartForm.RemoveAll()
@@ -99,12 +94,11 @@ func (s *server) handleOpenAITranslation(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	text := strings.Join(texts, " ")
-	if responseFormat != "verbose_json" {
-		writeTranscriptionResponse(w, responseFormat, "", aistudio.TranscriptionResult{Text: text, Segments: segments})
-		return
+	result := aistudio.TranscriptionResult{Text: text, Segments: segments}
+	if responseFormat == "verbose_json" {
+		result.Usage = transcript.Usage
 	}
-	items, _, duration := openAITranscriptionMetadata(segments)
-	writeJSON(w, http.StatusOK, openAITranscriptionResponse{Task: "translate", Language: "english", Duration: duration, Text: text, Segments: items})
+	writeTranscriptionResponse(w, responseFormat, "translate", "english", result, false, wavSeconds(file, header.Size))
 }
 
 // translationModels 返回转录模型与翻译文本模型：model 是转录模型或省略时使用默认文本模型翻译，是其他模型时由默认转录模型转录、该模型翻译
@@ -139,7 +133,7 @@ func (s *server) translateSegments(ctx context.Context, model string, sources []
 	if err != nil {
 		return nil, err
 	}
-	result, err := consumeEvents(ctx, events, nil)
+	result, err := consumeEvents(ctx, events)
 	if err != nil {
 		return nil, err
 	}

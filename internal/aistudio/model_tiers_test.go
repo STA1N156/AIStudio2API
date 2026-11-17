@@ -2,6 +2,7 @@ package aistudio
 
 import (
 	"context"
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 	"io"
 	"net/http"
 	"strings"
@@ -64,6 +65,11 @@ func TestManualModelTiersKeepCooldownSeparate(t *testing.T) {
 
 type freeCatalogTransport struct{ methods []string }
 
+func (f *freeCatalogTransport) PageCatalog(context.Context, string, bool) (camoufoxnative.PageCatalog, error) {
+	f.methods = append(f.methods, "PageCatalog")
+	return camoufoxnative.PageCatalog{Logging: []byte(`[]`), Tier: []byte(`[0]`), Models: []byte(`[[]]`)}, nil
+}
+
 func (f *freeCatalogTransport) Do(_ context.Context, request RPCRequest) (*RPCResponse, error) {
 	f.methods = append(f.methods, request.Method)
 	body := "[[]]"
@@ -77,16 +83,13 @@ func TestFreeCatalogDoesNotDisableAccount(t *testing.T) {
 	account := &Account{ID: "free", Config: DefaultAccountConfig("free@example.com"), State: AccountReady}
 	pool := NewAccountPool([]*Account{account}, 1)
 	transport := &freeCatalogTransport{}
-	client := &Client{transport: transport, tiers: make(map[string]BenefitTier), catalogs: make(map[string]modelCatalog)}
-	service, err := NewPooledService(pool, client)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := NewClient(ClientOptions{Transport: transport, Pages: transport})
+	service := NewPooledService(pool, client)
 	lease := &AccountLease{pool: pool, account: account, checkedAt: time.Now()}
-	if _, err := service.modelsForLease(context.Background(), lease); err != nil {
+	if _, err := service.modelsForLease(context.Background(), lease, false); err != nil {
 		t.Fatal(err)
 	}
-	if !account.Config.Enabled || pool.Status()[0].BenefitTier != "Free" || len(transport.methods) != 2 {
+	if !account.Config.Enabled || pool.Status()[0].BenefitTier != "Free" || len(transport.methods) != 1 {
 		t.Fatalf("Free account was disabled or catalog skipped: %+v", pool.Status()[0])
 	}
 }

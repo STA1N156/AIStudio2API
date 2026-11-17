@@ -60,7 +60,6 @@ function choose(range: RangePreset): void {
 
 // applyCustom 应用校验通过的自定义范围
 function applyCustom(): void {
-  if (customError.value !== '') return
   emit('apply', 'custom', customFrom.value, customTo.value)
   open.value = false
 }
@@ -69,7 +68,7 @@ function applyCustom(): void {
 <template>
   <PopoverRoot :open="open" @update:open="prepare">
     <PopoverTrigger
-      class="flex min-w-0 items-center gap-2 rounded-md border border-line bg-canvas px-3 py-1.5 text-left text-sm text-gray-200 transition-colors hover:border-gray-600 data-[state=open]:border-blue-500"
+      class="flex min-w-0 items-center gap-2 rounded-md border border-line bg-canvas px-3 py-1 text-left text-sm text-gray-200 transition-colors hover:border-gray-600 data-[state=open]:border-blue-500"
       :aria-label="`${t('usage.range')}: ${t(`usage.range.${range}`)} ${summary}`"
     >
       <UiIcon name="calendar" :size="14" class="text-gray-400" />
@@ -97,7 +96,7 @@ function applyCustom(): void {
               ]"
               :key="group.label"
             >
-              <h4 class="mb-1.5 text-[11px] font-medium tracking-wide text-gray-500 uppercase">
+              <h4 class="mb-1.5 text-xs font-medium tracking-wide text-gray-500 uppercase">
                 {{ t(group.label) }}
               </h4>
               <div class="grid grid-cols-2 gap-1">
@@ -120,7 +119,7 @@ function applyCustom(): void {
             </section>
           </div>
           <form class="space-y-2 border-line sm:border-l sm:pl-4" @submit.prevent="applyCustom">
-            <h4 class="mb-1.5 text-[11px] font-medium tracking-wide text-gray-500 uppercase">
+            <h4 class="mb-1.5 text-xs font-medium tracking-wide text-gray-500 uppercase">
               {{ t('usage.rangeCustom') }}
             </h4>
             <label class="block text-xs text-gray-400">

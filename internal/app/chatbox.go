@@ -20,7 +20,12 @@ func stripChatboxText(text string) string {
 // stripChatboxRuntimeDescription runs before input wrapping, never on response chunks.
 // Only matching text is copied; tool arguments, media and signed thoughts stay intact.
 func stripChatboxRuntimeDescription(request *aistudio.GenerateRequest) {
-	request.System = stripChatboxText(request.System)
+	for i, text := range request.System {
+		if cleaned := stripChatboxText(text); cleaned != text {
+			request.System = slices.Clone(request.System)
+			request.System[i] = cleaned
+		}
+	}
 	copied := false
 	for index, content := range request.Contents {
 		var cleaned []aistudio.Part

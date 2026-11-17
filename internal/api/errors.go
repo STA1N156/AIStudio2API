@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,36 +21,38 @@ type httpStatusError interface {
 	HTTPStatus() int
 }
 
-type statusCodeError interface {
-	StatusCode() int
-}
-
 type errorCodeProvider interface {
 	ErrorCode() string
 }
 
+const emptyOutputMessage = "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
+
 type emptyOutputError struct{}
 
-const (
-	emptyOutputMessage   = "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
-	blockedPromptMessage = "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
-)
+var ErrEmptyOutput error = emptyOutputError{}
 
-func (emptyOutputError) Error() string {
-	return emptyOutputMessage
-}
-func (emptyOutputError) HTTPStatus() int { return http.StatusBadRequest }
+func (emptyOutputError) Error() string     { return emptyOutputMessage }
+func (emptyOutputError) HTTPStatus() int   { return http.StatusBadRequest }
+func (emptyOutputError) ErrorCode() string { return "EMPTY_MODEL_OUTPUT" }
 
-// ExcludeFromFailureRate 仅排除指定的空回与提示词拦截 400，兼容旧记录中的上游原文。
 func ExcludeFromFailureRate(status int, message string) bool {
 	return status == http.StatusBadRequest && (strings.Contains(message, emptyOutputMessage) ||
 		strings.Contains(message, "模型输出为空，请降低思考强度，并检查是否含有过多敏感内容") ||
-		strings.Contains(message, blockedPromptMessage) ||
+		strings.Contains(message, "预设或其他内容被谷歌拦截") ||
 		strings.Contains(message, "The input token count exceeds the maximum number of tokens allowed 131072."))
 }
 
+// decodeJSON 把请求正文解码为一个 JSON 值；读取或解码失败时以同一正文与读取错误逐段解码，返回其错误
 func decodeJSON(r *http.Request, target any) error {
-	decoder := json.NewDecoder(r.Body)
+	body, readErr := io.ReadAll(r.Body)
+	if readErr == nil && json.Unmarshal(body, target) == nil {
+		return nil
+	}
+	reader := io.Reader(bytes.NewReader(body))
+	if readErr != nil {
+		reader = io.MultiReader(reader, errorReader{readErr})
+	}
+	decoder := json.NewDecoder(reader)
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
@@ -58,6 +62,11 @@ func decodeJSON(r *http.Request, target any) error {
 	}
 	return nil
 }
+
+// errorReader 每次读取都返回同一个错误
+type errorReader struct{ err error }
+
+func (reader errorReader) Read([]byte) (int, error) { return 0, reader.err }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -70,6 +79,7 @@ func streamHeaders(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	return http.NewResponseController(w).Flush()
 }
@@ -80,36 +90,35 @@ func writeSSE(w http.ResponseWriter, event string, payload any) error {
 	if err != nil {
 		return err
 	}
-	frame := make([]byte, 0, len(event)+len(data)+16)
+	return writeSSEFrame(w, append(append(sseFrameStart(event, len(data)), data...), "\n\n"...))
+}
+
+// sseFrameStart 返回具名事件 SSE 帧到 data: 为止的开头，容量另留 size 字节正文
+func sseFrameStart(event string, size int) []byte {
+	frame := make([]byte, 0, len(event)+size+16)
 	if event != "" {
 		frame = append(append(append(frame, "event: "...), event...), '\n')
 	}
-	frame = append(append(append(frame, "data: "...), data...), "\n\n"...)
+	return append(frame, "data: "...)
+}
+
+// writeSSEFrame 写入完整的 SSE 帧并传播缓冲刷新错误
+func writeSSEFrame(w http.ResponseWriter, frame []byte) error {
 	if _, err := w.Write(frame); err != nil {
 		return err
 	}
 	return http.NewResponseController(w).Flush()
 }
 
+// appendJSONString 追加按 json.Marshal 转义的 JSON 字符串
+func appendJSONString(buffer []byte, value string) []byte {
+	encoded, _ := json.Marshal(value)
+	return append(buffer, encoded...)
+}
+
 // writeSSEText 写入文本事件并刷新网络缓冲
 func writeSSEText(w http.ResponseWriter, data string) error {
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
-		return err
-	}
-	return http.NewResponseController(w).Flush()
-}
-
-// writeGeminiHeartbeat 发送不触发事件的空行并传播连接错误
-func writeGeminiHeartbeat(w http.ResponseWriter) error {
-	if _, err := io.WriteString(w, "\n"); err != nil {
-		return err
-	}
-	return http.NewResponseController(w).Flush()
-}
-
-// writeSSEHeartbeat 发送心跳并传播连接错误
-func writeSSEHeartbeat(w http.ResponseWriter) error {
-	if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
 		return err
 	}
 	return http.NewResponseController(w).Flush()
@@ -130,10 +139,7 @@ func statusFromError(err error) int {
 	if errors.As(err, &notReady) {
 		return http.StatusServiceUnavailable
 	}
-	if errors.Is(err, aistudio.ErrNoEligibleAccount) {
-		return http.StatusBadRequest
-	}
-	if errors.Is(err, aistudio.ErrInvalidArgument) {
+	if errors.Is(err, aistudio.ErrNoEligibleAccount) || errors.Is(err, aistudio.ErrInvalidArgument) {
 		return http.StatusBadRequest
 	}
 	if errors.Is(err, aistudio.ErrModelNotFound) {
@@ -146,69 +152,7 @@ func statusFromError(err error) int {
 	if errors.As(err, &statusErr) {
 		return validHTTPStatus(statusErr.HTTPStatus())
 	}
-	var codeErr statusCodeError
-	if errors.As(err, &codeErr) {
-		return validHTTPStatus(codeErr.StatusCode())
-	}
 	return http.StatusBadGateway
-}
-
-// upstreamErrorPayload 保留上游错误对象，仅替换指定 400 的提示。
-func upstreamErrorPayload(err error) (map[string]any, bool) {
-	var empty emptyOutputError
-	if errors.As(err, &empty) {
-		return map[string]any{"error": map[string]any{
-			"code": http.StatusBadRequest, "message": empty.Error(), "status": "EMPTY_MODEL_OUTPUT",
-		}}, true
-	}
-	var rpc *aistudio.RPCError
-	if !errors.As(err, &rpc) {
-		return nil, false
-	}
-	message := publicErrorMessage(err)
-	var payload map[string]any
-	for _, raw := range []json.RawMessage{rpc.ResponseBody, json.RawMessage(rpc.Message)} {
-		if json.Unmarshal(raw, &payload) == nil && payload["error"] != nil {
-			if detail, ok := payload["error"].(map[string]any); ok && message != rpc.Message && rpc.Message != "" {
-				detail["message"] = message
-			}
-			return payload, true
-		}
-	}
-	details := make([]any, 0, 2)
-	if len(rpc.Metadata) > 0 {
-		details = append(details, map[string]any{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": rpc.Metadata})
-	}
-	if rpc.RetryDelay > 0 {
-		details = append(details, map[string]any{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": strconv.FormatFloat(rpc.RetryDelay.Seconds(), 'f', -1, 64) + "s"})
-	}
-	providerError := map[string]any{"code": statusFromError(err), "message": message, "status": geminiErrorStatus(err)}
-	if len(details) > 0 {
-		providerError["details"] = details
-	}
-	return map[string]any{"error": providerError}, true
-}
-
-func publicErrorMessage(err error) string {
-	var rpc *aistudio.RPCError
-	if errors.As(err, &rpc) && rpc.Message != "" {
-		if rpc.StatusCode == http.StatusBadRequest && strings.Contains(rpc.Message, "131072") {
-			return blockedPromptMessage
-		}
-		return rpc.Message
-	}
-	return err.Error()
-}
-
-func writeUpstreamError(w http.ResponseWriter, err error) bool {
-	payload, ok := upstreamErrorPayload(err)
-	if !ok {
-		return false
-	}
-	setRetryAfter(w, err)
-	setAccessLogResponseError(w, publicErrorMessage(err))
-	writeJSON(w, statusFromError(err), payload)
-	return true
 }
 
 // shouldWriteRequestError 判断仍在线的客户端是否需要收到结构化错误
@@ -236,44 +180,154 @@ func codeFromError(err error, defaultCode string) string {
 	return defaultCode
 }
 
+// requestProtocol 返回请求路径与请求头所属的公开协议：gemini、anthropic 或 openai
+func requestProtocol(r *http.Request) string {
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/v1beta/"), strings.HasPrefix(r.URL.Path, "/upload/"), interactionsPath(r.URL.Path), geminiV1Path(r):
+		return "gemini"
+	case strings.HasPrefix(r.URL.Path, "/v1/messages"), r.Header.Get("Anthropic-Version") != "":
+		return "anthropic"
+	}
+	return "openai"
+}
+
+// geminiV1Path 表示 /v1 下的 Gemini API 请求：模型方法调用、上下文缓存与长时操作，以及以 Gemini API 方式鉴权的模型与文件请求
+func geminiV1Path(r *http.Request) bool {
+	path := r.URL.Path
+	switch {
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/models/"), strings.HasPrefix(path, "/v1/cachedContents"), strings.HasPrefix(path, "/v1/operations/"):
+		return true
+	case path == "/v1/models", strings.HasPrefix(path, "/v1/models/"), path == "/v1/files", strings.HasPrefix(path, "/v1/files/"):
+		return geminiAuth(r)
+	}
+	return false
+}
+
+// geminiAuth 表示请求以 Gemini API 的方式鉴权：带 x-goog-api-key 请求头或 key 查询参数，不带 Authorization
+func geminiAuth(r *http.Request) bool {
+	return r.Header.Get("Authorization") == "" && (r.Header.Get("X-Goog-Api-Key") != "" || r.URL.Query().Has("key"))
+}
+
+// writeAuthError 按请求所属协议写入 API key 错误，OpenAI 与 Anthropic 为 401
 func writeAuthError(w http.ResponseWriter, r *http.Request) {
-	switch protocolForRequest(r) {
+	switch requestProtocol(r) {
+	case "gemini":
+		writeGeminiAuthError(w, r)
 	case "anthropic":
 		writeAnthropicError(w, http.StatusUnauthorized, "authentication_error", "Invalid API Key")
-	case "gemini":
-		writeGeminiError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Invalid API Key")
-	case "admin":
-		writeAdminError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API Key")
 	default:
 		writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API Key")
 	}
 }
 
-func protocolForRequest(r *http.Request) string {
-	switch {
-	case strings.HasPrefix(r.URL.Path, "/v1beta/"), r.URL.Path == "/v1/interactions":
-		return "gemini"
-	case strings.HasPrefix(r.URL.Path, "/v1/messages"), r.Header.Get("Anthropic-Version") != "":
-		return "anthropic"
-	case strings.HasPrefix(r.URL.Path, "/api/"):
-		return "admin"
+// writeRouteNotFound 以请求所属协议的错误体返回 404，消息含请求的方法与路径
+func writeRouteNotFound(w http.ResponseWriter, r *http.Request) {
+	message := fmt.Sprintf("Invalid URL (%s %s)", r.Method, r.URL.Path)
+	switch requestProtocol(r) {
+	case "gemini":
+		writeGeminiError(w, http.StatusNotFound, "NOT_FOUND", message)
+	case "anthropic":
+		writeAnthropicError(w, http.StatusNotFound, "not_found_error", message)
 	default:
-		return "openai"
+		writeOpenAIError(w, http.StatusNotFound, "not_found", message)
 	}
 }
 
+// geminiInvalidKeyMessage 是 Gemini API 对无效 API key 的错误信息
+const geminiInvalidKeyMessage = "API key not valid. Please pass a valid API key."
+
+// geminiAuthFailure 是 Gemini API 认证错误的 error 对象
+type geminiAuthFailure struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Status  string `json:"status"`
+	Details []any  `json:"details,omitempty"`
+}
+
+// geminiErrorInfo 是 Gemini 错误 details 中的 google.rpc.ErrorInfo
+type geminiErrorInfo struct {
+	Type     string            `json:"@type"`
+	Reason   string            `json:"reason"`
+	Domain   string            `json:"domain"`
+	Metadata map[string]string `json:"metadata"`
+}
+
+// geminiLocalizedMessage 是 Gemini 错误 details 中的 google.rpc.LocalizedMessage
+type geminiLocalizedMessage struct {
+	Type    string `json:"@type"`
+	Locale  string `json:"locale"`
+	Message string `json:"message"`
+}
+
+// writeGeminiAuthError 按 Gemini API 写入 API key 错误：给出的 key 无效时为 400 INVALID_ARGUMENT 带 ErrorInfo 与 LocalizedMessage，没有 key 时为 403 PERMISSION_DENIED；Interactions 与非 SSE 的 streamGenerateContent 外层为数组
+func writeGeminiAuthError(w http.ResponseWriter, r *http.Request) {
+	failure := geminiAuthFailure{
+		Code: http.StatusForbidden, Status: "PERMISSION_DENIED",
+		Message: "Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API.",
+	}
+	if slices.ContainsFunc(apiKeyCandidates(r), func(key string) bool { return key != "" }) {
+		failure = geminiAuthFailure{Code: http.StatusBadRequest, Message: geminiInvalidKeyMessage, Status: "INVALID_ARGUMENT", Details: []any{
+			geminiErrorInfo{Type: "type.googleapis.com/google.rpc.ErrorInfo", Reason: "API_KEY_INVALID", Domain: "googleapis.com", Metadata: map[string]string{"service": "generativelanguage.googleapis.com"}},
+			geminiLocalizedMessage{Type: "type.googleapis.com/google.rpc.LocalizedMessage", Locale: "en-US", Message: geminiInvalidKeyMessage},
+		}}
+	}
+	setAccessLogResponseError(w, failure.Message)
+	var payload any = map[string]geminiAuthFailure{"error": failure}
+	if interactionsPath(r.URL.Path) || strings.HasSuffix(r.URL.Path, ":streamGenerateContent") && r.URL.Query().Get("alt") != "sse" {
+		payload = []any{payload}
+	}
+	writeJSON(w, failure.Code, payload)
+}
+
+// interactionsPath 判断路径是否为 v1 或 v1beta 的 Interactions 资源
+func interactionsPath(path string) bool {
+	for _, prefix := range []string{"/v1/interactions", "/v1beta/interactions"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// serverErrorPrefix 返回 5xx 状态对应的官方英文错误开头，其余状态返回空
+func serverErrorPrefix(status int) string {
+	switch {
+	case status == http.StatusServiceUnavailable:
+		return "Service unavailable"
+	case status == http.StatusGatewayTimeout:
+		return "Request timed out"
+	case status == 529:
+		return "Overloaded"
+	case status >= 500:
+		return "Internal server error"
+	}
+	return ""
+}
+
+// publicErrorMessage 在 5xx 错误原因前加官方英文开头
+func publicErrorMessage(status int, message string) string {
+	if prefix := serverErrorPrefix(status); prefix != "" && !strings.HasPrefix(message, prefix) {
+		return prefix + ": " + message
+	}
+	return message
+}
+
 func writeOpenAIError(w http.ResponseWriter, status int, code string, message string) {
+	message = publicErrorMessage(status, message)
 	setAccessLogResponseError(w, message)
-	writeJSON(w, status, map[string]any{"error": map[string]any{
-		"message": message,
-		"type":    openAIErrorType(status, code),
-		"param":   nil,
-		"code":    code,
-	}})
+	writeJSON(w, status, map[string]any{"error": openAIErrorBody{Message: message, Type: openAIErrorType(status, code), Code: code}})
+}
+
+// openAIErrorBody 是 OpenAI 错误对象，字段顺序与官方相同
+type openAIErrorBody struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param"`
+	Code    string  `json:"code"`
 }
 
 func openAIErrorType(status int, code string) string {
-	if status == http.StatusBadRequest || status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound || code == "invalid_request" || code == "invalid_api_key" || code == "model_not_found" {
+	if status == http.StatusBadRequest || status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusNotFound {
 		return "invalid_request_error"
 	}
 	if code == "rate_limit_exceeded" {
@@ -283,41 +337,72 @@ func openAIErrorType(status int, code string) string {
 }
 
 func writeAnthropicError(w http.ResponseWriter, status int, errorType string, message string) {
+	message = publicErrorMessage(status, message)
 	setAccessLogResponseError(w, message)
-	writeJSON(w, status, map[string]any{
-		"type": "error",
-		"error": map[string]string{
-			"type":    errorType,
-			"message": message,
-		},
-	})
+	writeJSON(w, status, anthropicErrorResponse{Type: "error", Error: anthropicErrorBody{Type: errorType, Message: message}})
+}
+
+// anthropicErrorResponse 是 Anthropic 错误响应，字段顺序与官方相同
+type anthropicErrorResponse struct {
+	Type  string             `json:"type"`
+	Error anthropicErrorBody `json:"error"`
+}
+
+// anthropicErrorBody 是 Anthropic 错误对象
+type anthropicErrorBody struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 func writeGeminiError(w http.ResponseWriter, status int, statusName string, message string) {
 	setAccessLogResponseError(w, message)
-	writeJSON(w, status, map[string]any{"error": map[string]any{
+	writeJSON(w, status, officialOrder("gemini", map[string]any{"error": map[string]any{
 		"code":    status,
 		"message": message,
 		"status":  statusName,
-	}})
+	}}))
 }
 
-// writeOpenAIRequestError 以 OpenAI 错误体写出请求失败，可重试时带 Retry-After
+// writeOpenAIRequestError 以 OpenAI 错误体写出请求失败，可重试时带 Retry-After 并在消息末尾写明重试时间
 func writeOpenAIRequestError(w http.ResponseWriter, err error) {
 	if writeUpstreamError(w, err) {
 		return
 	}
-	setRetryAfter(w, err)
-	writeOpenAIError(w, statusFromError(err), openAIErrorCode(err), err.Error())
+	seconds := setRetryAfter(w, err)
+	writeOpenAIError(w, statusFromError(err), openAIErrorCode(err), retryMessage(err.Error(), seconds))
 }
 
-// writeAnthropicRequestError 以 Anthropic 错误体写出请求失败，可重试时带 Retry-After
+// writeOpenAISSEError 在已开始的 OpenAI 事件流中以 error 数据帧写出请求失败，可重试时在消息末尾写明重试时间
+func writeOpenAISSEError(w http.ResponseWriter, err error) {
+	if payload, ok := upstreamErrorPayload(err); ok {
+		_ = writeSSE(w, "", payload)
+		return
+	}
+	status := statusFromError(err)
+	code := openAIErrorCode(err)
+	_ = writeSSE(w, "", map[string]any{"error": openAIErrorBody{
+		Message: retryMessage(publicErrorMessage(status, err.Error()), retryAfterSeconds(err)), Type: openAIErrorType(status, code), Code: code,
+	}})
+}
+
+// writeAnthropicRequestError 以 Anthropic 错误体写出请求失败，可重试时带 Retry-After 并在消息末尾写明重试时间
 func writeAnthropicRequestError(w http.ResponseWriter, err error) {
 	if writeUpstreamError(w, err) {
 		return
 	}
-	setRetryAfter(w, err)
-	writeAnthropicError(w, statusFromError(err), anthropicErrorType(err), publicErrorMessage(err))
+	seconds := setRetryAfter(w, err)
+	writeAnthropicError(w, statusFromError(err), anthropicErrorType(err), retryMessage(anthropicErrorMessage(err), seconds))
+}
+
+// retryMessage 在 seconds 大于 0 时于消息末尾按 OpenAI 限流消息的写法另起一句 Please try again in <seconds>s.
+func retryMessage(message string, seconds int64) string {
+	if seconds <= 0 {
+		return message
+	}
+	if !strings.HasSuffix(message, ".") {
+		message += "."
+	}
+	return message + " Please try again in " + strconv.FormatInt(seconds, 10) + "s."
 }
 
 // contextOverflow 判断错误是否为上游的上下文超限
@@ -326,22 +411,88 @@ func contextOverflow(err error) bool {
 	return errors.As(err, &rpc) && rpc.ContextOverflow()
 }
 
+// anthropicErrorMessage 返回 Anthropic 错误消息，上下文超限时以 prompt is too long 开头
+func anthropicErrorMessage(err error) string {
+	if contextOverflow(err) {
+		return "prompt is too long: " + err.Error()
+	}
+	return err.Error()
+}
+
 // writeGeminiRequestError 以 Gemini 错误体写出请求失败，可重试时带 Retry-After 与 RetryInfo
 func writeGeminiRequestError(w http.ResponseWriter, err error) {
 	if writeUpstreamError(w, err) {
 		return
 	}
-	status := statusFromError(err)
-	payload := map[string]any{"code": status, "message": err.Error(), "status": geminiErrorStatus(err)}
-	if seconds := setRetryAfter(w, err); seconds > 0 {
+	payload := geminiErrorPayload(err, setRetryAfter(w, err))
+	setAccessLogResponseError(w, err.Error())
+	writeJSON(w, statusFromError(err), officialOrder("gemini", map[string]any{"error": payload}))
+}
+
+// geminiErrorPayload 返回 Gemini 错误对象，seconds 大于 0 时 details 带该时长的 RetryInfo
+func geminiErrorPayload(err error, seconds int64) map[string]any {
+	payload := map[string]any{"code": statusFromError(err), "message": err.Error(), "status": geminiErrorStatus(err)}
+	if seconds > 0 {
 		payload["details"] = []any{map[string]any{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": strconv.FormatInt(seconds, 10) + "s"}}
 	}
-	setAccessLogResponseError(w, err.Error())
-	writeJSON(w, status, map[string]any{"error": payload})
+	return payload
+}
+
+func upstreamErrorPayload(err error) (map[string]any, bool) {
+	var empty emptyOutputError
+	if errors.As(err, &empty) {
+		return map[string]any{"error": map[string]any{"code": 400, "message": empty.Error(), "status": "EMPTY_MODEL_OUTPUT"}}, true
+	}
+	var rpc *aistudio.RPCError
+	if !errors.As(err, &rpc) {
+		return nil, false
+	}
+	message := rpc.Message
+	if rpc.StatusCode == 400 && strings.Contains(message, "The input token count exceeds the maximum number of tokens allowed 131072.") {
+		message = "预设或其他内容被谷歌拦截，并试图路由至降智模型，已帮您拦截降智路由，请自行排查预设或其他内容"
+	}
+	var payload map[string]any
+	for _, raw := range []json.RawMessage{rpc.ResponseBody, json.RawMessage(rpc.Message)} {
+		if json.Unmarshal(raw, &payload) == nil && payload["error"] != nil {
+			if detail, ok := payload["error"].(map[string]any); ok && message != rpc.Message {
+				detail["message"] = message
+			}
+			return payload, true
+		}
+	}
+	detail := map[string]any{"code": statusFromError(err), "message": message, "status": geminiErrorStatus(err)}
+	if len(rpc.Metadata) > 0 {
+		detail["details"] = []any{map[string]any{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "metadata": rpc.Metadata}}
+	}
+	return map[string]any{"error": detail}, true
+}
+
+func writeUpstreamError(w http.ResponseWriter, err error) bool {
+	payload, ok := upstreamErrorPayload(err)
+	if !ok {
+		return false
+	}
+	setRetryAfter(w, err)
+	if detail, ok := payload["error"].(map[string]any); ok {
+		if message, ok := detail["message"].(string); ok {
+			setAccessLogResponseError(w, message)
+		}
+	}
+	writeJSON(w, statusFromError(err), payload)
+	return true
 }
 
 // setRetryAfter 在错误给出可重试时刻时写入 Retry-After 秒数并返回它，否则返回 0
 func setRetryAfter(w http.ResponseWriter, err error) int64 {
+	seconds := retryAfterSeconds(err)
+	if seconds > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	return seconds
+}
+
+// retryAfterSeconds 返回错误给出的可重试时刻距现在的秒数，没有可重试时刻时返回 0
+func retryAfterSeconds(err error) int64 {
 	var retry interface{ RetryAt(time.Time) time.Time }
 	if !errors.As(err, &retry) {
 		return 0
@@ -351,9 +502,7 @@ func setRetryAfter(w http.ResponseWriter, err error) int64 {
 	if !at.After(now) {
 		return 0
 	}
-	seconds := int64(math.Ceil(at.Sub(now).Seconds()))
-	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
-	return seconds
+	return int64(math.Ceil(at.Sub(now).Seconds()))
 }
 
 func writeAdminError(w http.ResponseWriter, status int, code string, message string) {
@@ -377,10 +526,11 @@ func openAIErrorCode(err error) string {
 	if errors.Is(err, aistudio.ErrNoEligibleAccount) {
 		return "account_required"
 	}
-	if errors.Is(err, aistudio.ErrInvalidArgument) {
-		return "invalid_request"
+	var feedback *aistudio.PromptFeedbackError
+	if errors.As(err, &feedback) {
+		return "invalid_prompt"
 	}
-	if isUnverifiedProtocolError(err) {
+	if errors.Is(err, aistudio.ErrInvalidArgument) || isUnverifiedProtocolError(err) {
 		return "invalid_request"
 	}
 	if contextOverflow(err) {
@@ -437,6 +587,8 @@ func geminiErrorStatus(err error) string {
 		return "PERMISSION_DENIED"
 	case http.StatusNotFound:
 		return "NOT_FOUND"
+	case http.StatusConflict:
+		return "ALREADY_EXISTS"
 	case http.StatusTooManyRequests:
 		return "RESOURCE_EXHAUSTED"
 	case http.StatusServiceUnavailable:

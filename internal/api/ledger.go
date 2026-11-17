@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -51,7 +52,7 @@ type UsageQuery struct {
 	Location *time.Location
 	Filters  UsageFilters
 	Stack    string
-	// SkipPairs 为 true 时不汇总账户与模型组合，账户多时组合明细由前端按行另行读取
+	// SkipPairs 为真时报告不含账户与模型组合明细
 	SkipPairs bool
 }
 
@@ -144,6 +145,17 @@ type RequestAttempt struct {
 	Channel    string `json:"channel"`
 	Error      string `json:"error"`
 	DurationMS int64  `json:"duration_ms"`
+	// Hedge 表示首事件超时后发起的备用请求，Superseded 表示另一方先返回首事件后被取消
+	Hedge      bool `json:"hedge,omitempty"`
+	Superseded bool `json:"superseded,omitempty"`
+}
+
+// FirstEventLatency 是一个模型与通道近期原请求首事件等待的 p95 与样本数
+type FirstEventLatency struct {
+	Model   string `json:"model"`
+	Channel string `json:"channel"`
+	Samples int    `json:"samples"`
+	P95MS   int64  `json:"p95_ms"`
 }
 
 // UsageRecordQuery 选择请求记录的时间范围、筛选、状态码、关键字与分页位置
@@ -182,6 +194,14 @@ func decodeUsageCursor(value string) (*UsageCursor, error) {
 	return &UsageCursor{Time: time.UnixMilli(milliseconds).UTC(), ID: id}, nil
 }
 
+// ProofPhasesMS 是生成 WAA proof 的分项毫秒数：等待操作锁、界面操作、等待 VM 重建与 VM 生成 proof
+type ProofPhasesMS struct {
+	LockMS        float64 `json:"lock_ms"`
+	InteractionMS float64 `json:"interaction_ms"`
+	RefreshMS     float64 `json:"refresh_ms"`
+	ComputeMS     float64 `json:"compute_ms"`
+}
+
 // UsageRecord 是一条已完成请求的账本记录
 type UsageRecord struct {
 	ID              string           `json:"id"`
@@ -196,6 +216,8 @@ type UsageRecord struct {
 	DurationMS      int64            `json:"duration_ms"`
 	FirstEventMS    int64            `json:"first_event_ms"`
 	QueueMS         int64            `json:"queue_ms"`
+	ProofMS         int64            `json:"proof_ms"`
+	ProofPhases     ProofPhasesMS    `json:"proof_phases"`
 	InputTokens     int64            `json:"input_tokens"`
 	CachedTokens    int64            `json:"cached_tokens"`
 	ReasoningTokens int64            `json:"reasoning_tokens"`
@@ -257,18 +279,12 @@ func autoUsageBucket(span time.Duration) time.Duration {
 }
 
 // parseUsageRange 读取 from 与 to，校验先后顺序与最长范围
-func parseUsageRange(values map[string][]string) (time.Time, time.Time, error) {
-	get := func(name string) string {
-		if list := values[name]; len(list) > 0 {
-			return list[0]
-		}
-		return ""
-	}
-	from, err := time.Parse(time.RFC3339, get("from"))
+func parseUsageRange(values url.Values) (time.Time, time.Time, error) {
+	from, err := time.Parse(time.RFC3339, values.Get("from"))
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("from 必须是 RFC 3339 时间")
 	}
-	to, err := time.Parse(time.RFC3339, get("to"))
+	to, err := time.Parse(time.RFC3339, values.Get("to"))
 	if err != nil {
 		return time.Time{}, time.Time{}, fmt.Errorf("to 必须是 RFC 3339 时间")
 	}
@@ -409,18 +425,18 @@ func (s *server) handleRequestBody(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// bodyCapture 保存截断后的正文与原始字节数
+// bodyCapture 保存截断后的正文与原始字节数，result 直接返回已保存的正文不另复制
 type bodyCapture struct {
 	mu   sync.Mutex
-	data []byte
+	data strings.Builder
 	size int64
 }
 
 func (capture *bodyCapture) add(data []byte) {
 	capture.mu.Lock()
 	capture.size += int64(len(data))
-	if room := requestBodyLimit - len(capture.data); room > 0 {
-		capture.data = append(capture.data, data[:min(room, len(data))]...)
+	if room := requestBodyLimit - capture.data.Len(); room > 0 {
+		capture.data.Write(data[:min(room, len(data))])
 	}
 	capture.mu.Unlock()
 }
@@ -428,7 +444,7 @@ func (capture *bodyCapture) add(data []byte) {
 func (capture *bodyCapture) result() (string, int64) {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	return string(capture.data), capture.size
+	return capture.data.String(), capture.size
 }
 
 // captureReader 在读取请求正文时复制前缀
@@ -474,13 +490,10 @@ func requestBodyMiddleware(ledger RequestLedger, next http.Handler) http.Handler
 			return
 		}
 		request, response := &bodyCapture{}, &bodyCapture{}
+		request.data.Grow(int(min(max(r.ContentLength, 0), requestBodyLimit)))
 		r.Body = &captureReader{ReadCloser: r.Body, capture: request}
 		next.ServeHTTP(&captureWriter{ResponseWriter: w, capture: response}, r)
-		metadata, ok := r.Context().Value(accessLogContextKey{}).(*accessLogMetadata)
-		if !ok {
-			return
-		}
-		body := RequestBody{ID: metadata.id(), Time: time.Now().UTC()}
+		body := RequestBody{ID: r.Context().Value(accessLogContextKey{}).(*accessLogMetadata).id(), Time: time.Now().UTC()}
 		body.Request, body.RequestSize = request.result()
 		body.Response, body.ResponseSize = response.result()
 		ledger.SaveBody(body)

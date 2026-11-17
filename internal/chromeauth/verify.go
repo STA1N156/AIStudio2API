@@ -3,90 +3,212 @@ package chromeauth
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
 const aiStudioChatURL = "https://aistudio.google.com/prompts/new_chat"
 
+// maxCookieAuthUsers 是识别同一份 Cookie 中会话的序号上限
+const maxCookieAuthUsers = 10
+
+// ErrSignedOut 表示 Cookie 打开 AI Studio 时被转到登录页
+var ErrSignedOut = errors.New("Cookie 未登录 AI Studio 或已失效")
+
+// accountEmailPattern 匹配 AI Studio 页面全局数据中当前登录账户的邮箱
+var accountEmailPattern = regexp.MustCompile(`"oPEP7c":("(?:[^"\\]|\\.)*")`)
+
 // Verification 保存 AI Studio 登录页与模型目录验收结果
 type Verification struct {
+	Email      string
 	ModelCount int
 }
 
-// Verify 验证账号可访问 WAA 页面并读取实时模型目录
-func Verify(ctx context.Context, state *aistudio.StorageState, proxy string) (Verification, error) {
-	if state == nil {
-		return Verification{}, fmt.Errorf("storage state 为空")
-	}
-	if _, err := aistudio.NewSigner().Sign(*state); err != nil {
-		return Verification{}, err
-	}
-	client, err := aistudio.NewProxyHTTPClient(proxy)
+// CookieAccount 是同一份 Cookie 中一个 Google 会话序号上登录 AI Studio 的账户
+type CookieAccount struct {
+	AuthUser int
+	Email    string
+	// Restricted 是该会话打开 AI Studio 时被转到 Google 受限页的原因，此时邮箱为空
+	Restricted string
+}
+
+// VerifyAuthUser 验证 Cookie 中第 authUser 个会话的账号可访问 WAA 页面并读取实时模型目录
+func VerifyAuthUser(ctx context.Context, state *aistudio.StorageState, proxy string, authUser int) (Verification, error) {
+	client, headers, err := newVerifyClient(ctx, state, proxy)
 	if err != nil {
 		return Verification{}, err
 	}
 	defer client.CloseIdleConnections()
-	headers, err := aistudio.DiscoverPublicHeaders(ctx, client)
+	email, err := verifyChatPage(ctx, client, state, headers.Get("User-Agent"), authUser)
 	if err != nil {
 		return Verification{}, err
+	}
+	models, err := verifyModels(ctx, client, state, headers, authUser)
+	if err != nil {
+		return Verification{}, err
+	}
+	return Verification{Email: email, ModelCount: models}, nil
+}
+
+// CheckAccess 以 Cookie 中第 authUser 个会话打开对话页并读取 GetLoggingContext，Google 拒绝该账户使用 AI Studio 时返回官网跳转页对应的原因，出口地区不受支持不算拒绝
+func CheckAccess(ctx context.Context, state *aistudio.StorageState, proxy string, authUser int) error {
+	client, headers, err := newVerifyClient(ctx, state, proxy)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+	if _, err := verifyChatPage(ctx, client, state, headers.Get("User-Agent"), authUser); err != nil {
+		return err
+	}
+	if err := verifyLoggingContext(ctx, client, state, headers, authUser); err != nil && !errors.Is(err, camoufoxnative.ErrRegionNotSupported) {
+		return err
+	}
+	return nil
+}
+
+// DiscoverCookieAccounts 从 u/0 起依次打开 Cookie 中各会话的对话页，返回各序号登录的账户，被转到受限页的会话记下原因后继续，序号不存在（受限页之后以 GetLoggingContext 返回 401 判断）或账户与前面重复时结束
+func DiscoverCookieAccounts(ctx context.Context, state *aistudio.StorageState, proxy string) ([]CookieAccount, error) {
+	client, headers, err := newVerifyClient(ctx, state, proxy)
+	if err != nil {
+		return nil, err
+	}
+	defer client.CloseIdleConnections()
+	return discoverSessions(ctx, client, state, headers)
+}
+
+// discoverSessions 以验证客户端从 u/0 起依次识别 Cookie 中各会话登录的账户
+func discoverSessions(ctx context.Context, client *http.Client, state *aistudio.StorageState, headers http.Header) ([]CookieAccount, error) {
+	var accounts []CookieAccount
+	for authUser := range maxCookieAuthUsers {
+		email, err := verifyChatPage(ctx, client, state, headers.Get("User-Agent"), authUser)
+		if authUser > 0 && errors.Is(err, ErrSignedOut) {
+			break
+		}
+		if denial := aistudio.RestrictionDenial(err); denial != nil {
+			if authUser > 0 && aistudio.DefinitiveAuthenticationFailure(verifyLoggingContext(ctx, client, state, headers, authUser)) {
+				break
+			}
+			accounts = append(accounts, CookieAccount{AuthUser: authUser, Restricted: denial.Error()})
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		email = strings.ToLower(email)
+		if slices.ContainsFunc(accounts, func(account CookieAccount) bool { return account.Email == email }) {
+			break
+		}
+		accounts = append(accounts, CookieAccount{AuthUser: authUser, Email: email})
+	}
+	return accounts, nil
+}
+
+// newVerifyClient 创建验证用的 HTTP 客户端并读取官网公共请求头，客户端不跟随重定向
+func newVerifyClient(ctx context.Context, state *aistudio.StorageState, proxy string) (*http.Client, http.Header, error) {
+	if _, err := aistudio.NewSigner().Authorization(*state); err != nil {
+		return nil, nil, err
+	}
+	client, err := aistudio.NewProxyHTTPClient(proxy)
+	if err != nil {
+		return nil, nil, err
+	}
+	headers, err := aistudio.DiscoverPublicHeaders(ctx, client)
+	if err != nil {
+		client.CloseIdleConnections()
+		return nil, nil, err
 	}
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	if err := verifyChatPage(ctx, client, state, headers.Get("User-Agent")); err != nil {
-		return Verification{}, err
-	}
-	models, err := verifyModels(ctx, client, state, headers)
-	if err != nil {
-		return Verification{}, err
-	}
-	return Verification{ModelCount: models}, nil
+	return client, headers, nil
 }
 
-func verifyChatPage(ctx context.Context, client *http.Client, state *aistudio.StorageState, userAgent string) error {
-	cookie, err := state.CookieHeader(aiStudioChatURL, time.Now())
-	if err != nil {
-		return err
+// chatURLForAuthUser 返回 Cookie 中第 authUser 个会话的对话页地址
+func chatURLForAuthUser(authUser int) string {
+	if authUser > 0 {
+		return fmt.Sprintf("https://aistudio.google.com/u/%d/prompts/new_chat", authUser)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, aiStudioChatURL, nil)
+	return aiStudioChatURL
+}
+
+// verifyChatPage 以账户 Cookie 打开对话页并返回页面中登录账户的邮箱
+func verifyChatPage(ctx context.Context, client *http.Client, state *aistudio.StorageState, userAgent string, authUser int) (string, error) {
+	targetURL := chatURLForAuthUser(authUser)
+	cookie, err := state.CookieHeader(targetURL, time.Now())
 	if err != nil {
-		return err
+		return "", err
 	}
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	request.Header.Set("Cookie", cookie)
 	request.Header.Set("User-Agent", userAgent)
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("访问 AI Studio 登录页: %w", err)
+		return "", fmt.Errorf("访问 AI Studio 登录页: %w", err)
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, response.Body)
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("AI Studio 登录页返回 HTTP %d", response.StatusCode)
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取 AI Studio 登录页: %w", err)
 	}
-	return mergeResponseCookies(state, response, aiStudioChatURL)
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		if location, err := response.Location(); err == nil {
+			if denial := camoufoxnative.PageDenial(location); denial != nil {
+				return "", denial
+			}
+		}
+		return "", ErrSignedOut
+	}
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("AI Studio 登录页返回 HTTP %d", response.StatusCode)
+	}
+	var email string
+	if match := accountEmailPattern.FindSubmatch(body); match == nil || json.Unmarshal(match[1], &email) != nil || !strings.Contains(email, "@") {
+		return "", fmt.Errorf("AI Studio 页面缺少登录账户")
+	}
+	return email, mergeResponseCookies(state, response, targetURL)
 }
 
-func verifyModels(ctx context.Context, client *http.Client, state *aistudio.StorageState, headers http.Header) (int, error) {
-	url := aistudio.MakerSuiteRPCBase + "ListModels"
+// verifyLoggingContext 以页面的请求头读取 GetLoggingContext，上游拒绝时返回解码后的错误
+func verifyLoggingContext(ctx context.Context, client *http.Client, state *aistudio.StorageState, headers http.Header, authUser int) error {
+	response, err := makerSuiteRequest(ctx, client, state, headers, authUser, "GetLoggingContext")
+	if err != nil {
+		return fmt.Errorf("读取 AI Studio 日志上下文: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return aistudio.DecodeRPCError("GetLoggingContext", response.StatusCode, body)
+	}
+	return mergeResponseCookies(state, response, aistudio.MakerSuiteRPCBase+"GetLoggingContext")
+}
+
+// makerSuiteRequest 以页面的请求头与 Cookie 发出正文为 [] 的 MakerSuite RPC
+func makerSuiteRequest(ctx context.Context, client *http.Client, state *aistudio.StorageState, headers http.Header, authUser int, method string) (*http.Response, error) {
+	url := aistudio.MakerSuiteRPCBase + method
 	cookie, err := state.CookieHeader(url, time.Now())
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	authorization, err := aistudio.NewSigner().Authorization(*state)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("[]")))
-	if err != nil {
-		return 0, err
-	}
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte("[]")))
 	request.Header = headers.Clone()
 	request.Header.Set("Accept", "*/*")
 	request.Header.Set("Authorization", authorization)
@@ -97,7 +219,13 @@ func verifyModels(ctx context.Context, client *http.Client, state *aistudio.Stor
 	request.Header.Set("Sec-Fetch-Dest", "empty")
 	request.Header.Set("Sec-Fetch-Mode", "cors")
 	request.Header.Set("Sec-Fetch-Site", "same-site")
-	response, err := client.Do(request)
+	request.Header.Set("X-Goog-Authuser", strconv.Itoa(authUser))
+	return client.Do(request)
+}
+
+func verifyModels(ctx context.Context, client *http.Client, state *aistudio.StorageState, headers http.Header, authUser int) (int, error) {
+	url := aistudio.MakerSuiteRPCBase + "ListModels"
+	response, err := makerSuiteRequest(ctx, client, state, headers, authUser, "ListModels")
 	if err != nil {
 		return 0, fmt.Errorf("读取 AI Studio 模型目录: %w", err)
 	}

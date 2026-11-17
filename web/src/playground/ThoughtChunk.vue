@@ -1,0 +1,225 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import DisclosureChevron from '@/components/DisclosureChevron.vue'
+import UiCollapse from '@/components/UiCollapse.vue'
+import { useI18n } from '@/i18n'
+import UiIcon from '@/playground/ui/UiIcon.vue'
+import { formatDuration } from './duration'
+import LoadingIndicator from './LoadingIndicator.vue'
+import MarkdownView from './MarkdownView.vue'
+
+const props = defineProps<{
+  text: string
+  streaming: boolean
+  shown?: string
+  raw?: boolean
+  duration?: number | undefined
+  tokens?: number | undefined
+}>()
+const { t, locale } = useI18n()
+const expanded = ref(false)
+
+// heading 按官网取小标题的规则取思考中最后一个含粗体的行的粗体文字
+const heading = computed(
+  () =>
+    props.text
+      .split('\n')
+      .map(
+        (line) =>
+          line
+            .trim()
+            .match(/\*\*(.*)\*\*/)?.[1]
+            ?.trim() ?? '',
+      )
+      .filter(Boolean)
+      .at(-1) ?? '',
+)
+// toggleText 是底栏的展开或折叠提示
+const toggleText = computed(() =>
+  expanded.value ? t('pg.collapseThoughts') : t('pg.expandThoughts'),
+)
+// showHeading 表示折叠的底栏显示最新的思考小标题，没有小标题时提示展开
+const showHeading = computed(() => !expanded.value && heading.value !== '')
+// meta 是思考结束后标题行右侧的思考耗时与思考 token 数
+const meta = computed(() =>
+  [
+    props.duration === undefined ? '' : formatDuration(props.duration / 1000),
+    props.tokens === undefined
+      ? ''
+      : t('pg.tokens').replace('{count}', new Intl.NumberFormat(locale.value).format(props.tokens)),
+  ]
+    .filter(Boolean)
+    .join(' · '),
+)
+
+// onKey 以回车或空格切换展开
+function onKey(event: KeyboardEvent): void {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  expanded.value = !expanded.value
+}
+</script>
+
+<template>
+  <div class="thought-chunk">
+    <div class="thought-panel">
+      <div
+        class="top-panel-header"
+        role="button"
+        tabindex="0"
+        :aria-expanded="expanded"
+        @click="expanded = !expanded"
+        @keydown="onKey"
+      >
+        <UiIcon
+          name="spark"
+          :size="16"
+          class="thinking-progress-icon"
+          :class="{ 'in-progress': streaming }"
+        />
+        <LoadingIndicator v-if="streaming" />
+        <template v-else>{{ t('pg.thoughts') }}</template>
+        <span v-if="!streaming && meta" class="thought-meta">{{ meta }}</span>
+      </div>
+      <UiCollapse :open="expanded">
+        <div class="thought-content">
+          <MarkdownView :text="shown ?? text" :raw="raw" />
+        </div>
+      </UiCollapse>
+      <div
+        v-tooltip="toggleText"
+        class="thought-panel-footer"
+        role="button"
+        tabindex="0"
+        :aria-expanded="expanded"
+        @click="expanded = !expanded"
+        @keydown="onKey"
+      >
+        <div class="thought-collapsed-text-container">
+          <Transition v-if="showHeading" name="fade-slide" mode="out-in">
+            <p :key="heading" class="thought-collapsed-text">{{ heading }}</p>
+          </Transition>
+          <p v-else class="thought-collapsed-text">{{ toggleText }}</p>
+        </div>
+        <DisclosureChevron :open="expanded" :turn="180"
+          ><UiIcon name="chevronRight" :size="20" class="footer-icon"
+        /></DisclosureChevron>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.thought-chunk {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.thought-panel {
+  overflow: hidden;
+  border: 1px solid var(--color-v3-outline-var);
+  border-radius: 12px;
+  background: var(--color-v3-surface-container);
+  box-shadow: var(--shadow-v3-xs);
+}
+
+.top-panel-header {
+  display: flex;
+  align-items: center;
+  min-height: 45px;
+  padding: 12px 12px 12px 16px;
+  color: var(--color-v3-text);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 21px;
+  outline: none;
+}
+
+.top-panel-header:focus-visible,
+.thought-panel-footer:focus-visible {
+  background-color: var(--color-v3-surface-container-high);
+}
+
+.thinking-progress-icon {
+  margin-right: 4px;
+  color: var(--color-v3-text-link);
+}
+
+.thinking-progress-icon.in-progress {
+  animation: rotate 3s linear infinite;
+}
+
+.thought-content {
+  padding: 16px 24px;
+}
+
+.thought-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 16px;
+  border-top: 1px solid var(--color-v3-outline-var);
+  color: var(--color-v3-text);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 21px;
+  outline: none;
+}
+
+.thought-collapsed-text-container {
+  flex: 1;
+  width: 0;
+  overflow: hidden;
+}
+
+.thought-collapsed-text {
+  margin: 0 16px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thought-meta {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--color-v3-text-var);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.footer-icon {
+  transform: rotate(90deg);
+}
+
+.fade-slide-enter-active {
+  transition:
+    opacity 300ms ease-out,
+    transform 300ms ease-out;
+}
+
+.fade-slide-leave-active {
+  transition: opacity 200ms ease-in;
+}
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(100%);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+}
+
+@keyframes rotate {
+  to {
+    transform: rotate(1turn);
+  }
+}
+</style>

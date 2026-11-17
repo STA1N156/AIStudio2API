@@ -35,17 +35,4 @@ func TestOutputSettingsDefaultsAndRoundTrip(t *testing.T) {
 	if decoded.EmptyOutputError || !decoded.LogConsole {
 		t.Fatal("JSON round trip lost switches")
 	}
-	var legacy map[string]any
-	if err := json.Unmarshal(data, &legacy); err != nil {
-		t.Fatal(err)
-	}
-	delete(legacy, "empty_output_error")
-	delete(legacy, "log_console")
-	data, _ = json.Marshal(legacy)
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if !decoded.EmptyOutputError || decoded.LogConsole {
-		t.Fatal("legacy JSON lost default behavior")
-	}
 }

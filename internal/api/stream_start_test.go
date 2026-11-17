@@ -137,8 +137,8 @@ func TestEmptyOutputReturns400(t *testing.T) {
 func TestEmptyOutputDoesNotRejectToolsOrMedia(t *testing.T) {
 	for _, event := range []aistudio.Event{
 		{Kind: aistudio.EventText, Text: "reply"},
-		{Kind: aistudio.EventToolCall, ToolCall: &aistudio.FunctionCall{Name: "tool", Arguments: json.RawMessage(`{}`)}},
-		{Kind: aistudio.EventMedia, Media: &aistudio.Media{MIME: "image/png", Data: []byte{1}}},
+		{Kind: aistudio.EventToolCall, Part: aistudio.Part{FunctionCall: &aistudio.FunctionCall{Name: "tool", Arguments: json.RawMessage(`{}`)}}},
+		{Kind: aistudio.EventMedia, Part: aistudio.Part{InlineData: &aistudio.Blob{MIME: "image/png", Data: []byte{1}}}},
 		{Kind: aistudio.EventExecutableCode, ExecutableCode: &aistudio.ExecutableCode{Code: "print(1)"}},
 	} {
 		var result generationResult
