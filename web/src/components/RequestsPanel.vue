@@ -4,7 +4,6 @@ import { api } from '@/api'
 import { channelLabelKey, useI18n, type TranslationKey } from '@/i18n'
 import { usePaged } from '@/paging'
 import type { Account, Cooldown, RequestState, RequestSummary } from '@/types'
-import DetailDialog from './DetailDialog.vue'
 import UiIcon from './UiIcon.vue'
 import UiPager from './UiPager.vue'
 import UiSelect, { keepSelected } from './UiSelect.vue'
@@ -46,15 +45,28 @@ const visibleRequests = computed(() =>
     .filter((item) => requestModel.value === '' || item.model === requestModel.value)
     .sort((left, right) => Date.parse(right.started_at) - Date.parse(left.started_at)),
 )
-const detail = ref<Cooldown | null>(null)
-const clearing = ref(false)
+const expandedModels = ref(new Set<string>())
+const tiers = ['Ultra', 'Pro', 'Free'] as const
+const tierColors = { Ultra: 'bg-amber-500', Pro: 'bg-blue-500', Free: 'bg-emerald-500' }
 
-// splitReason 把冷却原因拆成冷却类型与上游错误原文
-function splitReason(reason: string | undefined): { category: string; text: string } {
-  const value = reason ?? ''
-  const separator = value.indexOf(': ')
-  if (separator <= 0) return { category: '', text: value }
-  return { category: value.slice(0, separator), text: value.slice(separator + 2) }
+const accountTiers = computed(
+  () =>
+    new Map(
+      props.accounts.map((account) => [
+        account.id,
+        /^ultra/i.test(account.benefit_tier) ? 'Ultra' : account.benefit_tier,
+      ]),
+    ),
+)
+
+function toggleModel(model: string): void {
+  if (expandedModels.value.has(model)) expandedModels.value.delete(model)
+  else expandedModels.value.add(model)
+}
+
+function reasonCategory(reason = ''): string {
+  const separator = reason.indexOf(': ')
+  return separator > 0 ? reason.slice(0, separator) : ''
 }
 
 // categoryLabel 返回冷却类型的当前语言名称，没有类型时为其他
@@ -66,7 +78,7 @@ function categoryLabel(category: string): string {
 const categories = computed(() => {
   const counts = new Map<string, number>()
   for (const cooldown of modelCooldowns.value) {
-    const category = splitReason(cooldown.reason).category
+    const category = reasonCategory(cooldown.reason)
     counts.set(category, (counts.get(category) ?? 0) + 1)
   }
   return [...counts.entries()].sort((left, right) => right[1] - left[1])
@@ -80,16 +92,47 @@ const activeCategory = computed(() =>
     : '',
 )
 
-// visibleCooldowns 是所选类型的冷却，按恢复时间先后排列
+// visibleCooldowns 是所选类型的冷却记录。
 const visibleCooldowns = computed(() =>
-  modelCooldowns.value
-    .filter(
-      (cooldown) =>
-        activeCategory.value === '' ||
-        splitReason(cooldown.reason).category === activeCategory.value,
-    )
-    .sort((left, right) => Date.parse(left.until) - Date.parse(right.until)),
+  modelCooldowns.value.filter(
+    (cooldown) =>
+      activeCategory.value === '' || reasonCategory(cooldown.reason) === activeCategory.value,
+  ),
 )
+
+// 每个模型按账号去重，分母直接使用后端的启用与模型资格统计。
+const cooldownGroups = computed(() => {
+  const groups = new Map<
+    string,
+    {
+      model: string
+      accounts: Set<string>
+      eligible: number
+      rows: { tier: (typeof tiers)[number]; accounts: Set<string>; total: number }[]
+    }
+  >()
+  for (const cooldown of visibleCooldowns.value) {
+    let group = groups.get(cooldown.model_id)
+    if (!group) {
+      group = {
+        model: cooldown.model_id,
+        accounts: new Set(),
+        eligible: cooldown.eligible_accounts,
+        rows: tiers.map((tier) => ({
+          tier,
+          accounts: new Set<string>(),
+          total: cooldown.eligible_tiers?.[tier] ?? 0,
+        })),
+      }
+      groups.set(group.model, group)
+    }
+    group.accounts.add(cooldown.account_id)
+    group.rows
+      .find((row) => row.tier === accountTiers.value.get(cooldown.account_id))
+      ?.accounts.add(cooldown.account_id)
+  }
+  return [...groups.values()].sort((left, right) => left.model.localeCompare(right.model))
+})
 
 // 冷却与请求列表每页 50 条，筛选变化时回到第一页
 const pageSize = 50
@@ -97,7 +140,7 @@ const {
   page: cooldownPage,
   pages: cooldownPages,
   paged: pagedCooldowns,
-} = usePaged(visibleCooldowns, pageSize)
+} = usePaged(cooldownGroups, pageSize)
 const {
   page: requestPage,
   pages: requestPages,
@@ -171,21 +214,6 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
     cancelling.value = ''
   }
 }
-
-// clearCooldown 手动清除详情中的冷却，成功后关闭详情并刷新列表
-async function clearCooldown(cooldown: Cooldown): Promise<void> {
-  clearing.value = true
-  try {
-    await api.clearCooldown(cooldown.account_id, cooldown.scope)
-    detail.value = null
-    emit('notice', t('cooldowns.cleared'), 'success')
-    emit('refresh')
-  } catch (error) {
-    emit('notice', errorText(error), 'error')
-  } finally {
-    clearing.value = false
-  }
-}
 </script>
 
 <template>
@@ -218,7 +246,7 @@ async function clearCooldown(cooldown: Cooldown): Promise<void> {
         <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
           <h3 class="text-sm font-semibold text-gray-200">{{ t('cooldowns.title') }}</h3>
           <span class="min-w-[2ch] font-mono text-xs text-gray-500">{{
-            visibleCooldowns.length
+            cooldownGroups.length
           }}</span>
           <UiSelect
             v-model="cooldownModel"
@@ -266,38 +294,59 @@ async function clearCooldown(cooldown: Cooldown): Promise<void> {
           ref="cooldownList"
           class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
         >
-          <button
-            v-for="cooldown in pagedCooldowns"
-            :key="`${cooldown.account_id}:${cooldown.channel}:${cooldown.model_id}`"
-            type="button"
-            class="flex w-full items-center gap-3 border-b border-line/60 px-4 py-2 text-left transition hover:bg-raised"
-            @click="detail = cooldown"
-          >
-            <div class="min-w-0 flex-1">
-              <span
-                v-tooltip.overflow="cooldown.model_id"
-                class="block truncate text-sm text-gray-200"
-                >{{ cooldown.model_id }}</span
-              >
-              <span
-                v-tooltip.overflow="
-                  `${accountLabel(cooldown.account_id, cooldown.account_label)} · ${t(channelLabelKey(cooldown.channel))}`
-                "
-                class="block truncate text-xs text-gray-500"
-                >{{ accountLabel(cooldown.account_id, cooldown.account_label) }} ·
-                {{ t(channelLabelKey(cooldown.channel)) }}</span
-              >
-            </div>
-            <div class="flex shrink-0 flex-col items-end gap-1">
-              <span class="rounded bg-yellow-500/10 px-2 py-0.5 text-xs text-yellow-300">{{
-                categoryLabel(splitReason(cooldown.reason).category)
+          <div v-for="group in pagedCooldowns" :key="group.model" class="border-b border-line/60">
+            <button
+              type="button"
+              class="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-raised"
+              :aria-expanded="expandedModels.has(group.model)"
+              :aria-controls="`cooldown-${group.model}`"
+              @click="toggleModel(group.model)"
+            >
+              <span class="min-w-0 flex-1 break-words text-sm text-gray-200">{{
+                group.model
               }}</span>
-              <time class="font-mono text-xs whitespace-nowrap text-gray-400">{{
-                formatTime(cooldown.until)
-              }}</time>
+              <span class="shrink-0 font-mono text-xs text-gray-400"
+                >{{ group.accounts.size }} / {{ group.eligible }}</span
+              >
+              <UiIcon
+                name="chevronRight"
+                :size="14"
+                class="shrink-0 text-gray-500 transition-transform"
+                :class="{ 'rotate-90': expandedModels.has(group.model) }"
+              />
+            </button>
+            <div
+              v-if="expandedModels.has(group.model)"
+              :id="`cooldown-${group.model}`"
+              class="space-y-3 bg-canvas/40 px-4 pt-1 pb-4"
+            >
+              <div v-for="row in group.rows" :key="row.tier" class="space-y-1.5">
+                <div class="flex items-center justify-between gap-3 text-xs">
+                  <span class="font-medium text-gray-300">{{ row.tier }}</span>
+                  <span class="font-mono text-gray-400"
+                    >{{ row.accounts.size }} / {{ row.total }}</span
+                  >
+                </div>
+                <div
+                  role="progressbar"
+                  :aria-label="`${group.model} ${row.tier} ${t('state.cooldown')}`"
+                  :aria-valuemin="0"
+                  :aria-valuemax="Math.max(1, row.total)"
+                  :aria-valuenow="row.accounts.size"
+                  :aria-valuetext="`${row.accounts.size} / ${row.total}`"
+                  class="h-1.5 overflow-hidden rounded-full bg-raised"
+                >
+                  <div
+                    class="h-full rounded-full transition-[width]"
+                    :class="tierColors[row.tier]"
+                    :style="{
+                      width: `${row.total ? Math.min(100, (row.accounts.size / row.total) * 100) : 0}%`,
+                    }"
+                  ></div>
+                </div>
+              </div>
             </div>
-            <UiIcon name="chevronRight" :size="14" class="shrink-0 text-gray-600" />
-          </button>
+          </div>
         </div>
         <UiPager v-if="!cooldownError && !loading" v-model="cooldownPage" :pages="cooldownPages" />
       </article>
@@ -384,43 +433,5 @@ async function clearCooldown(cooldown: Cooldown): Promise<void> {
         <UiPager v-if="!requestError && !loading" v-model="requestPage" :pages="requestPages" />
       </article>
     </div>
-
-    <DetailDialog
-      :open="detail !== null"
-      :title="detail?.model_id ?? ''"
-      :description="
-        detail
-          ? `${accountLabel(detail.account_id, detail.account_label)} · ${t(channelLabelKey(detail.channel))}`
-          : ''
-      "
-      :copy-text="detail?.reason"
-      @close="detail = null"
-    >
-      <template v-if="detail">
-        <dl class="mb-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs">
-          <dt class="text-gray-500">{{ t('cooldowns.category') }}</dt>
-          <dd class="text-yellow-300">{{ categoryLabel(splitReason(detail.reason).category) }}</dd>
-          <dt class="text-gray-500">{{ t('cooldowns.until') }}</dt>
-          <dd class="font-mono text-gray-200">{{ formatTime(detail.until) }}</dd>
-        </dl>
-        <pre
-          class="rounded-md border border-line bg-canvas p-3 font-mono text-xs leading-5 whitespace-pre-wrap [overflow-wrap:anywhere] text-gray-300"
-          >{{ logText(splitReason(detail.reason).text) || '—' }}</pre>
-        <div class="mt-4 flex items-center justify-end gap-3">
-          <span v-if="detail.scope === '*'" class="text-xs text-gray-500">{{
-            t('cooldowns.clearAccountHint')
-          }}</span>
-          <button
-            type="button"
-            class="shrink-0 rounded border border-line bg-raised px-3 py-1.5 text-sm text-gray-200 transition hover:bg-line disabled:opacity-50"
-            :disabled="clearing"
-            :aria-busy="clearing"
-            @click="clearCooldown(detail)"
-          >
-            {{ t('cooldowns.clear') }}
-          </button>
-        </div>
-      </template>
-    </DetailDialog>
   </section>
 </template>

@@ -1278,10 +1278,23 @@ func (admin *runtimeAdmin) Cooldowns(context.Context) ([]api.AdminCooldown, erro
 		}
 	}
 	eligible := snapshot.CooldownAccountEligibility(models)
+	accountTiers := make(map[string]string, len(statuses))
+	for _, account := range statuses {
+		accountTiers[account.ID] = account.BenefitTier
+	}
+	eligibleTiers := make(map[string]map[string]int, len(eligible))
+	for model, accounts := range eligible {
+		counts := make(map[string]int, 3)
+		for accountID := range accounts {
+			counts[accountTiers[accountID]]++
+		}
+		eligibleTiers[model] = counts
+	}
 	filtered := cooldowns[:0]
 	for _, cooldown := range cooldowns {
 		if accounts := eligible[cooldown.ModelID]; accounts[cooldown.AccountID] {
 			cooldown.EligibleAccounts = len(accounts)
+			cooldown.EligibleTiers = eligibleTiers[cooldown.ModelID]
 			filtered = append(filtered, cooldown)
 		}
 	}

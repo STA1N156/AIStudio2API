@@ -346,6 +346,8 @@ export interface ThinkingBudget {
 export type UpstreamChannel = 'playground' | 'build' | 'assistant'
 
 export interface Cooldown {
+  eligible_accounts: number
+  eligible_tiers: Record<string, number>
   account_id: string
   account_label: string
   channel: UpstreamChannel

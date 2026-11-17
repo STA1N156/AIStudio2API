@@ -13,6 +13,12 @@ const accounts = ['Ultra', 'Pro', 'Free'].map((tier, i) => ({
   state: 'ready', proxy: '', egress: '', locale: 'zh-CN', timezone: 'Asia/Shanghai',
   models: models.map(model => model.id), benefit_tier: tier, message: '',
 }));
+const cooldowns = [[0, 'gemini-3.8-flash'], [2, 'gemini-3.8-flash'], [1, 'gemini-4-carbon']].map(([index, model]) => ({
+  account_id: accounts[index].id, account_label: accounts[index].label,
+  channel: 'playground', model_id: model, scope: model,
+  until: new Date(Date.now() + 3600000).toISOString(), reason: 'quota: exhausted',
+  eligible_accounts: 3, eligible_tiers: { Ultra: 1, Pro: 1, Free: 1 },
+}));
 const config = {
   model_tiers: {}, empty_output_error: true, log_console: false, auto_start: false,
   hide_dock_icon: false, request_body_log: false, log_file: false, log_max_total_mb: 100,
@@ -53,7 +59,7 @@ http.createServer(async (req, res) => {
     '/api/status': { state: 'STOPPED', running: false, ready: true, version: 'local-preview', active_requests: 0, accounts: { total: 3, ready: 3, busy: 0, cooldown: 0, auth_required: 0 }, camoufox: {}, geoip: {}, chrome_import: false },
     '/api/config': config, '/api/accounts': { accounts }, '/api/models': { models },
     '/api/accounts/exits': { exits: [{ proxy: '', ip: '127.0.0.1', country: '', timezone: 'Asia/Shanghai', locale: 'zh-CN' }] },
-    '/api/cooldowns': { cooldowns: [] }, '/api/requests': { requests: [] },
+    '/api/cooldowns': { cooldowns }, '/api/requests': { requests: [] },
     '/api/accounts/tasks': { tasks: [] }, '/api/first-event-latency': { latencies: [] },
     '/api/update': { current: 'local-preview', latest: 'local-preview', mode: 'development', available: false, updating: false },
     '/api/prompts': { prompts: [], total: 0 },

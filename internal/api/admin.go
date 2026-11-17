@@ -350,14 +350,15 @@ type RuntimeConfig struct {
 
 // AdminCooldown 表示账户模型冷却
 type AdminCooldown struct {
-	EligibleAccounts int       `json:"eligible_accounts"`
-	AccountID        string    `json:"account_id"`
-	AccountLabel     string    `json:"account_label"`
-	Channel          string    `json:"channel"`
-	ModelID          string    `json:"model_id"`
-	Scope            string    `json:"scope"`
-	Until            time.Time `json:"until"`
-	Reason           string    `json:"reason,omitempty"`
+	EligibleAccounts int            `json:"eligible_accounts"`
+	EligibleTiers    map[string]int `json:"eligible_tiers"`
+	AccountID        string         `json:"account_id"`
+	AccountLabel     string         `json:"account_label"`
+	Channel          string         `json:"channel"`
+	ModelID          string         `json:"model_id"`
+	Scope            string         `json:"scope"`
+	Until            time.Time      `json:"until"`
+	Reason           string         `json:"reason,omitempty"`
 }
 
 // AdminRequest 表示活动请求摘要
