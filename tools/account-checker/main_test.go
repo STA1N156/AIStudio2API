@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
 func TestFailureClassification(t *testing.T) {
@@ -67,6 +68,8 @@ func policyAccount(t *testing.T) (*aistudio.AccountStore, *aistudio.AccountPool,
 	t.Helper()
 	store := aistudio.NewAccountStore(t.TempDir())
 	config := aistudio.DefaultAccountConfig("policy@example.com")
+	config.Locale = "en-US"
+	config.Timezone = "UTC"
 	config.Proxy = "http://127.0.0.1:7890"
 	item, published, err := store.Create(config, aistudio.StorageState{Cookies: []aistudio.StateCookie{
 		{Name: "SAPISID", Value: "test-only", Domain: ".google.com", Path: "/", Expires: -1},
@@ -115,6 +118,17 @@ func TestAutomaticDisableFor403(t *testing.T) {
 
 type policyTransport struct{ tier string }
 
+func (transport policyTransport) PageCatalog(context.Context, string, bool) (camoufoxnative.PageCatalog, error) {
+	if transport.tier == "failure" {
+		return camoufoxnative.PageCatalog{}, errors.New("catalog unavailable")
+	}
+	return camoufoxnative.PageCatalog{Logging: []byte(`[]`), Tier: []byte(transport.tier), Models: []byte(`[[]]`)}, nil
+}
+
+func (transport policyTransport) DoProtected(context.Context, aistudio.GenerateRequest, aistudio.RPCRequest) (*aistudio.RPCResponse, error) {
+	return nil, errors.New("unexpected generation")
+}
+
 func (transport policyTransport) Do(_ context.Context, request aistudio.RPCRequest) (*aistudio.RPCResponse, error) {
 	status, body := 200, transport.tier
 	if request.Method != "GetAiStudioBenefitTier" || transport.tier == "failure" {
@@ -129,22 +143,15 @@ func TestFreeTierAndCatalogFailureKeepAccountEnabled(t *testing.T) {
 	for _, tier := range []string{"[0]", "[1]", "[2]", "failure"} {
 		t.Run(tier, func(t *testing.T) {
 			store, pool, id := policyAccount(t)
-			client, err := aistudio.NewClient(aistudio.ClientOptions{
+			client := aistudio.NewClient(aistudio.ClientOptions{
 				Transport: policyTransport{tier: tier},
-				Protected: aistudio.ProtectedTransportFunc(func(context.Context, aistudio.GenerateRequest, aistudio.RPCRequest) (*aistudio.RPCResponse, error) {
-					return nil, errors.New("unexpected generation")
-				}),
+				Protected: policyTransport{tier: tier},
+				Pages:     policyTransport{tier: tier},
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			service, err := aistudio.NewPooledService(pool, client)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = service.RefreshAccountModels(context.Background(), id)
-			if err == nil {
-				t.Fatal("expected the simulated catalog or tier failure")
+			service := aistudio.NewPooledService(pool, client)
+			_, err := service.RefreshAccountModels(context.Background(), id, false)
+			if (err != nil) != (tier == "failure") {
+				t.Fatalf("unexpected catalog result: %v", err)
 			}
 			loaded, err := store.Load()
 			if err != nil {

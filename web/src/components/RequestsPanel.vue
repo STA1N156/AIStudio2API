@@ -162,11 +162,11 @@ const requestStateKeys: Record<RequestState, TranslationKey> = {
   failed: 'state.failed',
 }
 
-const activeCount = computed(
-  () =>
-    visibleRequests.value.filter(
-      (request) => request.state === 'queued' || request.state === 'running',
-    ).length,
+const runningCount = computed(
+  () => visibleRequests.value.filter((request) => request.state === 'running').length,
+)
+const queuedCount = computed(
+  () => visibleRequests.value.filter((request) => request.state === 'queued').length,
 )
 
 const accountLabels = computed(
@@ -376,7 +376,8 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
           class="flex flex-wrap items-center justify-between gap-2 border-b border-line px-4 py-3"
         >
           <h3 class="text-sm font-semibold text-gray-200">{{ t('requests.history') }}</h3>
-          <span class="text-xs text-green-400"> {{ t('requests.live') }}: {{ activeCount }} </span>
+          <span class="text-xs text-green-400">{{ t('state.running') }}: {{ runningCount }}</span>
+          <span class="text-xs text-amber-400">{{ t('state.queued') }}: {{ queuedCount }}</span>
           <UiSelect
             v-model="requestModel"
             :aria-label="t('requests.filterModel')"

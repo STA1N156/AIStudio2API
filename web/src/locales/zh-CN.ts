@@ -1812,6 +1812,7 @@ export const messages = {
   'settings.logMaxTotal': '日志总量上限（MB）',
   'settings.logMaxTotalHelp': '日志目录超过该大小时删除最旧的文件，最小 20。',
   'usage.title': '用量',
+  'usage.clearConfirm': '清空全部用量日志、统计和请求正文？账号、配置及正在进行的请求会保留。',
   'usage.description': '公开 API 请求的数量、结果、Token 与耗时，记录保留 90 天',
   'usage.range': '时间范围',
   'usage.range.1h': '近 1 小时',

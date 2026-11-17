@@ -32,8 +32,17 @@ func (s *PooledService) UseCatalogAccount(accountID string) {
 	s.pool.mu.Lock()
 	defer s.pool.mu.Unlock()
 	if account := s.pool.byID[accountID]; usableCatalogAccount(account) && len(account.Models) > 0 {
-		s.pool.catalogAccountID = accountID
+		s.pool.shareCatalogLocked(account)
 	}
+}
+
+func (p *AccountPool) shareCatalogLocked(source *Account) {
+	p.catalogAccountID = source.ID
+	for _, account := range p.accounts {
+		account.Models = source.Models
+	}
+	p.continuationModels = nil
+	p.notifyLocked()
 }
 
 func (s *PooledService) CatalogFresh(maxAge time.Duration, hidden bool) bool {
@@ -62,7 +71,9 @@ func (s *PooledService) cachedCatalogSource() *AccountPool {
 	if account == nil {
 		return nil
 	}
-	s.pool.catalogAccountID = account.ID
+	if s.pool.catalogAccountID != account.ID {
+		s.pool.shareCatalogLocked(account)
+	}
 	return &AccountPool{
 		accounts: []*Account{{ID: account.ID, Config: account.Config, BenefitTier: account.BenefitTier,
 			Models: account.Models, buildModels: account.buildModels}},

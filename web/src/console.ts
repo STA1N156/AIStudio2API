@@ -19,7 +19,7 @@ const { t, errorText } = useI18n()
 // status 为生成服务状态，null 表示管理接口不可达
 const status = ref<ServiceStatus | null>(null)
 const logs = shallowRef<AdminLog[]>([])
-const accounts = ref<Account[]>([])
+const accounts = shallowRef<Account[]>([])
 // accountTasks 是服务端运行中与已结束、尚未关闭的添加或重新登录账户任务
 const accountTasks = ref<AccountTask[]>([])
 const models = ref<Model[]>([])
@@ -225,16 +225,12 @@ async function retryCamoufox(): Promise<void> {
   }
 }
 
-// exitLookups 是进行中的出口查询数，查询可能开始新一轮出口 IP 库下载
-const exitLookups = ref(0)
-
-// statusTimer 在 Camoufox 或出口 IP 库下载期间、出口查询或账户任务进行中每秒刷新服务状态，服务端不在下载期间推送进度
+// statusTimer 在资源下载或账户任务进行中每秒刷新服务状态。
 let statusTimer: number | undefined
 watch(
   () =>
     status.value?.camoufox.preparing === true ||
     status.value?.geoip.preparing === true ||
-    exitLookups.value > 0 ||
     accountTasks.value.some((task) => task.state === 'running'),
   (polling) => {
     window.clearInterval(statusTimer)
@@ -301,7 +297,11 @@ function upsertRequest(items: RequestSummary[], incoming: RequestSummary): Reque
 // updateAccount 用接口返回的账户替换列表中的同一账户
 function updateAccount(account: Account): void {
   const index = accounts.value.findIndex((item) => item.id === account.id)
-  if (index !== -1) accounts.value[index] = account
+  if (index !== -1) {
+    const updated = accounts.value.slice()
+    updated[index] = account
+    accounts.value = updated
+  }
 }
 
 // waitForRestart 在线更新后等新进程接管再刷新页面：状态接口返回其他版本或要求重新登录都表示旧进程已退出
@@ -387,7 +387,6 @@ function stopConsole(): void {
 // useConsole 返回管理端共享的服务数据与操作
 export function useConsole() {
   return {
-    exitLookups,
     status,
     logs,
     accounts,

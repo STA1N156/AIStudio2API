@@ -1967,6 +1967,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotalHelp':
     'Supprime les fichiers les plus anciens lorsque le dossier des journaux dépasse cette taille. Minimum 20.',
   'usage.title': 'Utilisation',
+  'usage.clearConfirm':
+    'Effacer les journaux d’utilisation, les statistiques et les contenus des requêtes ? Les comptes, paramètres et requêtes en cours seront conservés.',
   'usage.description':
     'Nombre, résultats, jetons et durée des requêtes de l’API publique, conservés 90 jours',
   'usage.range': 'Période',

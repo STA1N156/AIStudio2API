@@ -1916,6 +1916,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotalHelp':
     'ログ ディレクトリがこのサイズを超えると、古いファイルから削除します。最小値は 20 です。',
   'usage.title': '使用量',
+  'usage.clearConfirm':
+    'すべての使用量ログ、統計、リクエスト本文を削除しますか？アカウント、設定、処理中のリクエストは保持されます。',
   'usage.description':
     '公開 API リクエストの件数、結果、トークン、所要時間。記録は 90 日間保存されます',
   'usage.range': '期間',

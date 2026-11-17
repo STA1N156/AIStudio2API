@@ -1929,6 +1929,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotalHelp':
     'Deletes the oldest files when the log directory exceeds this size. Minimum 20.',
   'usage.title': 'Usage',
+  'usage.clearConfirm':
+    'Clear all usage logs, statistics and request bodies? Accounts, settings and active requests will be kept.',
   'usage.description': 'Public API request counts, outcomes, tokens and latency, kept for 90 days',
   'usage.range': 'Time range',
   'usage.range.1h': 'Last hour',

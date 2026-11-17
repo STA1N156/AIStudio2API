@@ -1680,7 +1680,7 @@ type temporaryPageKey struct{}
 // startupReservationKey 是 context 中常驻或按需启动的启动名额预约的键，启动取得名额后结束预约
 type startupReservationKey struct{}
 
-// fillWarm 逐个补足常驻 Worker：候选账户的目录就绪后启动，上一个 Worker 启动结束后再启动下一个
+// fillWarm 按启动并发上限补足常驻 Worker。
 func (manager *accountWorkerManager) fillWarm(ctx context.Context, first chan<- error, cleanup func()) {
 	startedAt := time.Now()
 	defer cleanup()
@@ -1732,7 +1732,7 @@ func (manager *accountWorkerManager) fillWarm(ctx context.Context, first chan<- 
 			return
 		}
 		opening := manager.openingOutside(starting)
-		launch := min(1, limit-len(warm)-opening) - len(starting)
+		launch := min(manager.startup.size(), limit-len(warm)-opening) - len(starting)
 		groups, err := manager.classifyBootstrapCandidates(ctx, warm)
 		var runtimeBusyErr error
 		if err != nil {

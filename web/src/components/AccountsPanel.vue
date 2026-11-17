@@ -12,7 +12,6 @@ import { api, ApiError } from '@/api'
 import { useDownloadProgress, waitsForCamoufox } from '@/camoufox'
 import { useI18n, type TranslationKey } from '@/i18n'
 import { usePaged } from '@/paging'
-import { maskedProxy } from '@/proxy'
 import type {
   Account,
   AccountDraft,
@@ -27,7 +26,6 @@ import type {
 } from '@/types'
 import type { IconName } from '@/icons'
 import AccountEnvironmentFields from './AccountEnvironmentFields.vue'
-import AccountExits from './AccountExits.vue'
 import CamoufoxProgressBar from './CamoufoxProgressBar.vue'
 import DetailDialog from './DetailDialog.vue'
 import DisclosureChevron from './DisclosureChevron.vue'
@@ -206,7 +204,6 @@ function transitionText(account: Account): string {
 const search = ref('')
 const selectedState = ref('')
 const selectedTier = ref('')
-const selectedEgress = ref('*')
 const states = computed(() =>
   keepSelected(
     [...new Set(props.accounts.map((account) => account.state))],
@@ -221,13 +218,6 @@ const tiers = computed(() =>
     '',
   ),
 )
-const egresses = computed(() =>
-  keepSelected(
-    [...new Set(props.accounts.map((account) => account.egress))],
-    selectedEgress.value,
-    '*',
-  ),
-)
 
 // visibleAccounts 是邮箱检索与账户属性筛选的交集
 const visibleAccounts = computed(() => {
@@ -236,8 +226,7 @@ const visibleAccounts = computed(() => {
     (account) =>
       (account.label.toLowerCase().includes(needle) || account.id.toLowerCase().includes(needle)) &&
       (selectedState.value === '' || account.state === selectedState.value) &&
-      (selectedTier.value === '' || account.benefit_tier === selectedTier.value) &&
-      (selectedEgress.value === '*' || account.egress === selectedEgress.value),
+      (selectedTier.value === '' || account.benefit_tier === selectedTier.value),
   )
 })
 // 账户列表每页 50 条，检索或筛选变化时回到第一页
@@ -246,7 +235,7 @@ const {
   pages: accountPages,
   paged: pagedAccounts,
 } = usePaged(visibleAccounts, 50)
-watch([search, selectedState, selectedTier, selectedEgress], () => (accountPage.value = 1))
+watch([search, selectedState, selectedTier], () => (accountPage.value = 1))
 const accountList = ref<HTMLElement>()
 // 翻页后列表回到顶部
 watch(accountPage, () => accountList.value?.scrollTo({ top: 0 }))
@@ -362,7 +351,6 @@ const reason = ref<{ title: string; kind: string; text: string } | null>(null)
 function accountSummary(account: Account): string {
   return [
     account.benefit_tier === 'Unknown' ? t('accounts.tierUnknown') : account.benefit_tier,
-    account.egress ? maskedProxy(account.egress) : t('accounts.direct'),
     account.locale,
     account.timezone,
     ...(account.pairing_renewed_at
@@ -1308,18 +1296,7 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
             {{ tier === 'Unknown' ? t('accounts.tierUnknown') : tier }}
           </option>
         </UiSelect>
-        <UiSelect
-          v-model="selectedEgress"
-          :aria-label="t('accounts.filterEgress')"
-          class="max-w-60 rounded-md border border-line bg-canvas px-2 py-1.5 text-xs text-gray-200"
-        >
-          <option value="*">{{ t('accounts.allEgresses') }}</option>
-          <option v-for="egress in egresses" :key="egress" :value="egress">
-            {{ egress ? maskedProxy(egress) : t('accounts.direct') }}
-          </option>
-        </UiSelect>
       </div>
-      <AccountExits v-if="accounts.length > 0" :accounts="accounts" :geoip="geoip" />
       <p v-if="error" class="flex items-center gap-2 text-sm text-red-300">
         <UiIcon name="warning" :size="15" class="shrink-0" />{{ error }}
       </p>

@@ -3,7 +3,6 @@ import { keepPage } from '@/desktop'
 import type {
   Account,
   AccountDraft,
-  AccountExit,
   AccountLoginInput,
   AccountRefresh,
   AccountTask,
@@ -150,14 +149,13 @@ export const api = {
     link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   },
-  accountExits: async () =>
-    (await requestJSON<{ exits: AccountExit[] }>('/api/accounts/exits')).exits,
   models: async () => (await requestJSON<ModelsResponse>('/api/models')).models,
   cooldowns: async () => (await requestJSON<CooldownsResponse>('/api/cooldowns')).cooldowns,
   requests: async () => (await requestJSON<RequestsResponse>('/api/requests')).requests,
   config: () => requestJSON<ServiceConfig>('/api/config'),
   usage: (query: URLSearchParams, signal: AbortSignal) =>
     requestJSON<UsageReport>(`/api/usage?${query.toString()}`, { signal }),
+  clearUsage: () => requestCommand('/api/usage', { method: 'DELETE' }),
   usageRecords: (query: URLSearchParams, signal: AbortSignal) =>
     requestJSON<UsageRecordPage>(`/api/usage/records?${query.toString()}`, { signal }),
   usageExportURL: (query: URLSearchParams) => `/api/usage/records.csv?${query.toString()}`,

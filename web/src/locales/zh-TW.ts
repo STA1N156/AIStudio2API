@@ -1820,6 +1820,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotal': '記錄檔總量上限（MB）',
   'settings.logMaxTotalHelp': '記錄目錄超過此大小時刪除最舊的檔案，最小值為 20。',
   'usage.title': '用量',
+  'usage.clearConfirm': '清空全部用量日誌、統計和請求內容？帳號、設定及正在進行的請求會保留。',
   'usage.description': '公開 API 請求的數量、結果、Token 與耗時，記錄保留 90 天',
   'usage.range': '時間範圍',
   'usage.range.1h': '過去 1 小時',

@@ -1898,6 +1898,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotalHelp':
     '로그 디렉터리가 이 크기를 넘으면 가장 오래된 파일부터 삭제합니다. 최솟값은 20입니다.',
   'usage.title': '사용량',
+  'usage.clearConfirm':
+    '사용량 로그, 통계 및 요청 본문을 모두 삭제할까요? 계정, 설정 및 진행 중인 요청은 유지됩니다.',
   'usage.description':
     '공개 API 요청의 건수, 결과, 토큰, 소요 시간이며 기록은 90일 동안 보관됩니다',
   'usage.range': '기간',

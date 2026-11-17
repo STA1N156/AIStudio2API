@@ -1961,6 +1961,8 @@ export const messages: Record<TranslationKey, string> = {
   'settings.logMaxTotalHelp':
     'Löscht die ältesten Dateien, sobald das Protokollverzeichnis diese Größe überschreitet. Mindestens 20.',
   'usage.title': 'Nutzung',
+  'usage.clearConfirm':
+    'Alle Nutzungsprotokolle, Statistiken und Anfrageinhalte löschen? Konten, Einstellungen und laufende Anfragen bleiben erhalten.',
   'usage.description':
     'Anzahl, Ergebnisse, Tokens und Dauer der Anfragen an die öffentliche API, 90 Tage aufbewahrt',
   'usage.range': 'Zeitraum',

@@ -38,16 +38,6 @@ export interface Account {
   transition?: 'draining' | 'syncing'
 }
 
-// AccountExit 是一个账户出口代理的公网 IP 与按 IP 定位的国家，proxy 为空时是直连，查询失败时 error 为原因
-export interface AccountExit {
-  proxy: string
-  ip?: string
-  country?: string
-  timezone?: string
-  locale?: string
-  error?: string
-}
-
 interface ProxyPoolEntry {
   proxy: string
   available: boolean

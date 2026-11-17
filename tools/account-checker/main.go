@@ -35,6 +35,20 @@ type accountConfig struct {
 	Timezone string `json:"timezone"`
 }
 
+type preparerProvider func(context.Context, string, string) (aistudio.ProtectedPreparer, error)
+
+func (provider preparerProvider) Worker(ctx context.Context, id, model string) (aistudio.ProtectedPreparer, error) {
+	return provider(ctx, id, model)
+}
+
+func (provider preparerProvider) PageCatalog(ctx context.Context, id string, _ bool) (camoufoxnative.PageCatalog, error) {
+	worker, err := provider(ctx, id, "")
+	if err != nil {
+		return camoufoxnative.PageCatalog{}, err
+	}
+	return worker.(*aistudio.NativeWorker).PageCatalog(), nil
+}
+
 type account struct {
 	accountConfig
 	ID string `json:"id"`
@@ -308,40 +322,32 @@ func probe(ctx context.Context, item exportedAccount, model, fallbackProxy strin
 			worker.Close()
 		}
 	}()
-	protected, err := aistudio.NewWorkerProtectedTransport(aistudio.WorkerProtectedTransportOptions{
-		Transport: transport, SetupTimeout: timeout,
-		Workers: aistudio.ProtectedPreparerProviderFunc(func(ctx context.Context, id, model string) (aistudio.ProtectedPreparer, error) {
-			if worker == nil {
-				var err error
-				worker, err = aistudio.NewGoWorker(ctx, id, camoufoxnative.Options{
-					StorageStatePath: accounts[0].StoragePath, Model: model,
-					Proxy: proxy, Locale: config.Locale, Timezone: config.Timezone,
-					Headless: true, TemporaryChat: true, ReadyTimeout: timeout, Log: io.Discard,
-				})
-				if err != nil {
-					return nil, err
-				}
+	bootstrapModel := model
+	workers := preparerProvider(func(ctx context.Context, id, model string) (aistudio.ProtectedPreparer, error) {
+		if model == "" {
+			model = bootstrapModel
+		}
+		if worker == nil {
+			var err error
+			worker, err = aistudio.NewSpiderMonkeyWorker(ctx, id, camoufoxnative.Options{
+				StorageStatePath: accounts[0].StoragePath, Model: model,
+				Proxy: proxy, Locale: config.Locale, Timezone: config.Timezone,
+				Headless: true, ReadyTimeout: timeout, Log: io.Discard,
+			})
+			if err != nil {
+				return nil, err
 			}
-			return worker, nil
-		}),
+		}
+		return worker, nil
 	})
-	if err != nil {
-		return fail(err)
-	}
-	provider, err := aistudio.NewPoolRequestContextProvider(pool)
-	if err != nil {
-		return fail(err)
-	}
-	client, err := aistudio.NewClient(aistudio.ClientOptions{Transport: transport, Protected: protected, ContextProvider: provider})
-	if err != nil {
-		return fail(err)
-	}
-	service, err := aistudio.NewPooledService(pool, client)
-	if err != nil {
-		return fail(err)
-	}
+	protected := aistudio.NewWorkerProtectedTransport(aistudio.WorkerProtectedTransportOptions{
+		Transport: transport, SetupTimeout: timeout, Workers: workers,
+	})
+	provider := aistudio.NewPoolRequestContextProvider(pool)
+	client := aistudio.NewClient(aistudio.ClientOptions{Transport: transport, Protected: protected, ContextProvider: provider, Pages: workers})
+	service := aistudio.NewPooledService(pool, client)
 	out.Stage = "catalog"
-	if _, err = service.RefreshAccountModels(ctx, accounts[0].ID); err != nil {
+	if _, err = service.RefreshAccountModels(ctx, accounts[0].ID, false); err != nil {
 		return fail(err)
 	}
 	out.Stage = "generation"

@@ -167,6 +167,10 @@ const {
 
 // noticeText 是按界面语言显示的提示正文，服务文案翻译表到达后随之更新
 const noticeText = computed(() => logText(notice.message))
+const queuedCount = computed(
+  () => requests.value.filter((request) => request.state === 'queued').length,
+)
+
 // deletedNotice 是撤销提示的正文：删除一个账户时写账户名，批量删除时写数量
 const deletedNotice = computed(() => {
   const accounts = pendingDelete.value?.accounts ?? []
@@ -323,6 +327,11 @@ onMounted(revealCurrentTab)
           <span v-tooltip.overflow="t(item.label)" class="min-w-0 truncate md:whitespace-normal">{{
             t(item.label)
           }}</span>
+          <span
+            v-if="item.id === 'requests'"
+            class="ml-auto shrink-0 text-xs tabular-nums text-amber-400"
+            >{{ t('state.queued') }} {{ queuedCount }}</span
+          >
           <span
             v-if="item.id === 'version' && update?.available"
             class="size-2 shrink-0 rounded-full bg-amber-400 md:ml-auto"

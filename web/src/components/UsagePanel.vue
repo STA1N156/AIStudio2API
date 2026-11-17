@@ -45,6 +45,9 @@ const updatedAt = ref(0)
 const now = ref(Date.now())
 provide(usageClock, now)
 const recordsRefresh = ref(0)
+const confirmClear = ref(false)
+const clearing = ref(false)
+const clearError = ref('')
 const refreshChoices = [0, 15, 30, 60] as const
 const autoRefresh = ref<number>(
   readPreference('usage.autoRefresh', 30, (value) =>
@@ -122,6 +125,29 @@ async function loadPairs(
 function refresh(): void {
   void load()
   recordsRefresh.value++
+}
+
+function showClearConfirmation(): void {
+  confirmClear.value = true
+  clearError.value = ''
+}
+
+async function clearUsage(): Promise<void> {
+  if (clearing.value) return
+  clearing.value = true
+  clearError.value = ''
+  controller?.abort()
+  try {
+    await api.clearUsage()
+    confirmClear.value = false
+    report.value = null
+    status.value = 'loading'
+    refresh()
+  } catch (reason) {
+    clearError.value = errorText(reason)
+  } finally {
+    clearing.value = false
+  }
 }
 
 watch(
@@ -350,7 +376,39 @@ const statusOptions = computed(() =>
           </option>
         </UiSelect>
       </div>
+      <button
+        type="button"
+        class="flex h-10 items-center gap-2 rounded border border-line px-3 text-sm text-gray-400 hover:bg-raised hover:text-red-400 disabled:opacity-50"
+        :disabled="clearing"
+        @click="showClearConfirmation"
+      >
+        <UiIcon name="trash" :size="14" />
+        {{ t('logs.clear') }}
+      </button>
     </header>
+
+    <div v-if="confirmClear" role="alert" class="page-x border-b border-line py-3 text-sm">
+      <p>{{ t('usage.clearConfirm') }}</p>
+      <p v-if="clearError" class="mt-2 text-red-400">{{ clearError }}</p>
+      <div class="mt-3 flex gap-2">
+        <button
+          type="button"
+          class="rounded bg-red-600 px-3 py-1.5 text-white disabled:opacity-50"
+          :disabled="clearing"
+          @click="clearUsage"
+        >
+          {{ clearing ? t('common.loading') : t('logs.clear') }}
+        </button>
+        <button
+          type="button"
+          class="rounded border border-line px-3 py-1.5 hover:bg-raised disabled:opacity-50"
+          :disabled="clearing"
+          @click="confirmClear = false"
+        >
+          {{ t('common.cancel') }}
+        </button>
+      </div>
+    </div>
 
     <div
       class="page-x sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-canvas/95 py-2.5 backdrop-blur"
