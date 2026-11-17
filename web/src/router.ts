@@ -56,15 +56,11 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: '/library',
-    name: 'library',
-    component: () => import('@/playground/LibraryPage.vue').then(afterTask),
-    meta: studio,
+    redirect: '/prompts/new_chat',
   },
   {
     path: '/prompts/:id',
-    name: 'saved',
-    component: () => import('@/playground/PromptRoute.vue').then(afterTask),
-    meta: studio,
+    redirect: '/prompts/new_chat',
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

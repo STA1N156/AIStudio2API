@@ -21,7 +21,7 @@ export function useTabTitle(route: RouteLocationNormalizedLoaded): void {
   onScopeDispose(() => document.removeEventListener('visibilitychange', onVisibility))
 
   // chat 表示当前页面是对话页
-  const chat = computed(() => route.name === 'prompt' || route.name === 'saved')
+  const chat = computed(() => route.name === 'prompt')
   // viewing 表示用户正看着对话页
   const viewing = computed(() => visible.value && chat.value)
   // unseen 是用户没看着对话页时结束的生成结果，任一窗格出错即为出错
@@ -54,10 +54,7 @@ export function useTabTitle(route: RouteLocationNormalizedLoaded): void {
   // page 是当前页面的标题：对话页为对话标题，未命名时与其他试用页一样为页面名，管理端页面为 AIStudio2API
   const page = computed(() => {
     if (!route.meta.studio) return 'AIStudio2API'
-    const name =
-      route.name === 'library'
-        ? t('pg.history')
-        : (chat.value && panes[0]!.session.title) || t('nav.playground')
+    const name = (chat.value && panes[0]!.session.title) || t('nav.playground')
     return `${name} | AIStudio2API`
   })
 

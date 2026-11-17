@@ -1,9 +1,14 @@
 import '@fontsource-variable/inter'
+import '@fontsource-variable/inter-tight'
+import '@fontsource-variable/google-sans-code'
 import { createApp } from 'vue'
 import ConsoleRoot from './ConsoleRoot.vue'
 import { loadInitialLocale } from './i18n'
 import { router } from './router'
 import { vTooltip } from './tooltip'
+import './playground/styles/tokens.css'
+import './playground/styles/base.css'
+import './styles/select.css'
 import './style.css'
 
 // warmCjkFont 在首帧绘制之后的两帧里各排版一个隐藏的汉字，常规与粗体的中文字体提前载入，之后首次显示中文时不再承担载入字体的耗时；汉字随帧排版，不在任务中强制同步布局

@@ -26,7 +26,7 @@ import {
 
 const props = defineProps<{ models: Model[] }>()
 const { t, errorText } = useI18n()
-const { compact, integer, usd, percent, duration, dateTime, dimensionLabel } = useUsageFormat()
+const { compact, integer, percent, dateTime, dimensionLabel } = useUsageFormat()
 const state = useUsageState()
 
 // filterOptions 返回筛选候选，模型按模型目录顺序排列，目录外的取值排在最后
@@ -230,7 +230,6 @@ const kpis = computed(() => {
   const series = (pick: (bucket: UsageStats) => number | null) =>
     buckets.map(pick).filter((item): item is number => item !== null)
   const otherErrors = totals.failed - totals.rate_limited
-  const first = totals.first_event
   return [
     {
       label: t('usage.requests'),
@@ -311,50 +310,6 @@ const kpis = computed(() => {
       ],
       spark: buckets.map((bucket) => bucket.requests),
       color: '#f59e0b',
-    },
-    {
-      label: t('usage.cost'),
-      icon: 'cost' as const,
-      value: value.cost === 0 && value.unpriced_models.length > 0 ? '—' : usd(value.cost),
-      raw: value.cost === 0 && value.unpriced_models.length > 0 ? null : value.cost,
-      help:
-        value.unpriced_models.length > 0
-          ? `${t('usage.costHelp')} · ${t('usage.unpriced')} ${value.unpriced_models.join(', ')}`
-          : t('usage.costHelp'),
-      details: [
-        {
-          label: t('usage.cacheHitRate'),
-          value:
-            totals.input_tokens > 0 ? percent(totals.cached_tokens / totals.input_tokens) : '—',
-        },
-        ...(value.cost === 0 && value.unpriced_models.length > 0
-          ? [
-              {
-                label: t('usage.unpriced'),
-                value: value.unpriced_models.join(', '),
-                tone: 'text-amber-300',
-              },
-            ]
-          : []),
-      ],
-      delta: delta(relative(value.cost, value.previous_cost), (item) => percent(item), 'none'),
-      spark: buckets.map((bucket) => bucket.cost),
-      color: '#34d399',
-    },
-    {
-      label: `${t('usage.firstEvent')} P50`,
-      icon: 'firstEvent' as const,
-      value: duration(first.p50_ms),
-      raw: first.p50_ms > 0 ? first.p50_ms : null,
-      help: t('usage.firstEventHelp'),
-      details: [{ label: 'P95', value: duration(first.p95_ms) }],
-      delta: delta(
-        relative(first.p50_ms, previous.first_event.p50_ms),
-        (item) => percent(item),
-        'down',
-      ),
-      spark: series((bucket) => (bucket.first_event.p50_ms > 0 ? bucket.first_event.p50_ms : null)),
-      color: '#a78bfa',
     },
   ]
 })
@@ -472,10 +427,10 @@ const statusOptions = computed(() =>
 
       <template v-if="status === 'loading'">
         <div
-          class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[56rem]:grid-cols-3 @min-[110rem]:grid-cols-6"
+          class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[70rem]:grid-cols-4"
           aria-hidden="true"
         >
-          <div v-for="index in 6" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
+          <div v-for="index in 4" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
         </div>
         <div class="h-80 animate-pulse rounded-lg bg-panel" aria-hidden="true"></div>
         <p class="sr-only" role="status">{{ t('common.loading') }}</p>
@@ -520,9 +475,7 @@ const statusOptions = computed(() =>
             </button>
           </div>
           <template v-else>
-            <div
-              class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[56rem]:grid-cols-3 @min-[110rem]:grid-cols-6"
-            >
+            <div class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[70rem]:grid-cols-4">
               <KpiCard
                 v-for="kpi in kpis"
                 :key="kpi.label"

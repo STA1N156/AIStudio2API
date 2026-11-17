@@ -35,10 +35,8 @@ import {
   DropdownMenuRoot,
   DropdownMenuTrigger,
 } from 'reka-ui'
-import { useRouter } from 'vue-router'
 import DisclosureChevron from '@/components/DisclosureChevron.vue'
 import UiCollapse from '@/components/UiCollapse.vue'
-import { useConsole } from '@/console'
 import type { IconName } from '@/playground/ui/icons'
 import UiIcon from '@/playground/ui/UiIcon.vue'
 import {
@@ -77,9 +75,7 @@ const props = defineProps<{
   showLabel: boolean
   responses?: Part[] | undefined
 }>()
-const { t, logText, errorText } = useI18n()
-const router = useRouter()
-const { showNotice } = useConsole()
+const { t, logText } = useI18n()
 const playground = usePlayground()
 const { session } = playground
 
@@ -552,14 +548,9 @@ function plainText(): string {
         .join('')
 }
 
-// branch 从这一轮创建分支并打开
-async function branch(): Promise<void> {
-  try {
-    const id = await playground.branch(props.index)
-    void router.push(`/prompts/${id}`)
-  } catch (error) {
-    showNotice(errorText(error), 'error')
-  }
+// branch 从这一轮在当前页面继续。
+function branch(): void {
+  playground.branch(props.index)
 }
 
 let intersection: IntersectionObserver

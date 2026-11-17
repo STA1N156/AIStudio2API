@@ -1,128 +1,38 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import {
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuRoot,
-  DropdownMenuTrigger,
-} from 'reka-ui'
-import { useRouter } from 'vue-router'
-import { useConsole } from '@/console'
+import { computed } from 'vue'
 import { useI18n } from '@/i18n'
-import UiDialog from '@/playground/ui/UiDialog.vue'
 import UiIcon from '@/playground/ui/UiIcon.vue'
-import SavePromptDialog from './SavePromptDialog.vue'
 import TokenCountTooltip from './TokenCountTooltip.vue'
-import { isOmniModel } from './catalog'
 import { useMediaQuery } from './media-query'
 import { useCompare, usePlayground } from './session'
 
 defineProps<{ settingsOpen: boolean; narrow: boolean }>()
 const emit = defineEmits<{ newChat: []; toggleSettings: [] }>()
-const { t, errorText } = useI18n()
-const { showNotice } = useConsole()
-const router = useRouter()
-const playground = usePlayground()
-const { session } = playground
+const { t } = useI18n()
+const { session } = usePlayground()
 const { comparing, enterCompare, toggleRaw } = useCompare()
-// handset 与官网一致，768 px 及以下没有对比模式
 const handset = useMediaQuery('(max-width: 768px)')
-
-const editing = ref(false)
-const confirmDelete = ref(false)
-
-// hasPrompt 表示对话已有内容或附件，标题可编辑
 const hasPrompt = computed(
   () =>
     session.turns.length > 0 ||
     session.attachments.length > 0 ||
-    session.id !== null ||
     session.settings.systemInstruction.trim() !== '',
 )
-// temporaryLabel 与官网一样在临时对话不可用时显示原因
-const temporaryLabel = computed(() =>
-  isOmniModel(playground.currentModel.value)
-    ? t('pg.temporaryOmni')
-    : session.id !== null
-      ? t('pg.temporarySaved')
-      : t('pg.temporaryChat'),
-)
-// title 是工具栏标题：空白新对话为 Playground，已有内容未命名时为 Untitled prompt
-const title = computed(() =>
-  hasPrompt.value ? session.title || t('pg.untitled') : t('nav.playground'),
-)
-
-// makeCopy 复制当前对话并打开副本
-async function makeCopy(): Promise<void> {
-  try {
-    const id = await playground.copyPrompt()
-    void router.push(`/prompts/${id}`)
-  } catch (error) {
-    showNotice(errorText(error), 'error')
-  }
-}
-
-// removePrompt 删除当前对话并回到新对话
-async function removePrompt(): Promise<void> {
-  confirmDelete.value = false
-  try {
-    await playground.deletePrompt()
-    void router.push('/prompts/new_chat')
-  } catch (error) {
-    showNotice(errorText(error), 'error')
-  }
-}
 </script>
 
 <template>
   <header class="ms-header">
     <div class="toolbar-left">
-      <div class="page-title">
-        <h1 class="mode-title">{{ title }}</h1>
-        <button
-          v-if="hasPrompt && !session.temporary"
-          v-tooltip.below="t('pg.editTitle')"
-          type="button"
-          ms-button
-          class="ms-button-borderless ms-button-icon ms-button-small"
-          :aria-label="t('pg.editTitle')"
-          @click="editing = true"
-        >
-          <UiIcon name="edit" :size="18" />
-        </button>
-      </div>
+      <h1 class="mode-title">{{ t('nav.playground') }}</h1>
       <TokenCountTooltip v-if="!comparing" />
     </div>
     <div class="toolbar-right">
-      <span
-        v-if="session.saveState === 'saving'"
-        v-tooltip.below="t('pg.saving')"
-        role="status"
-        class="saving-indicator"
-        :aria-label="t('pg.saving')"
-      >
-        <UiIcon name="save" :size="18" />
-      </span>
-      <span
-        v-else-if="session.saveState === 'error'"
-        v-tooltip.below="t('pg.saveFailed')"
-        role="status"
-        class="saving-indicator error"
-        :aria-label="t('pg.saveFailed')"
-      >
-        <UiIcon name="warning" :size="18" />
-      </span>
-      <span v-if="session.temporary" class="temporary-badge">
-        <UiIcon name="incognito" :size="18" />
-        {{ t('pg.temporaryChat') }}
-      </span>
       <button
         v-if="!comparing && !handset"
         v-tooltip.below="t('pg.compareMode')"
         type="button"
         ms-button
-        class="compare-button ms-button-borderless ms-button-icon"
+        class="ms-button-borderless ms-button-icon"
         :aria-label="t('pg.compareMode')"
         @click="enterCompare"
       >
@@ -134,110 +44,34 @@ async function removePrompt(): Promise<void> {
         ms-button
         class="ms-button-borderless ms-button-icon"
         :aria-label="t('pg.newChat')"
-        :aria-disabled="!hasPrompt"
-        @click="hasPrompt && emit('newChat')"
+        :disabled="!hasPrompt"
+        @click="emit('newChat')"
       >
         <UiIcon name="add" :size="20" />
       </button>
-      <DropdownMenuRoot :modal="false">
-        <DropdownMenuTrigger
-          v-tooltip.below="t('pg.moreActions')"
-          ms-button
-          class="ms-button-borderless ms-button-icon"
-          :aria-label="t('pg.moreActions')"
-        >
-          <UiIcon name="more" :size="20" />
-        </DropdownMenuTrigger>
-        <DropdownMenuPortal>
-          <DropdownMenuContent align="end" :side-offset="4" class="ms-menu-panel">
-            <DropdownMenuItem
-              v-if="handset"
-              v-tooltip.left="session.id === null ? t('pg.shareNeedsRun') : ''"
-              class="ms-menu-item"
-              disabled
-            >
-              <UiIcon name="share" :size="18" />
-              <span class="ms-menu-item-text">{{ t('pg.share') }}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              class="ms-menu-item"
-              :disabled="session.id !== null || isOmniModel(playground.currentModel.value)"
-              @select="session.temporary = !session.temporary"
-            >
-              <UiIcon name="incognito" :size="18" />
-              <span class="ms-menu-item-text">{{ temporaryLabel }}</span>
-              <UiIcon v-if="session.temporary" name="check" :size="18" />
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              class="ms-menu-item"
-              :disabled="session.temporary || !hasPrompt || session.saveState === 'saved'"
-              @select="playground.save()"
-            >
-              <UiIcon name="save" :size="18" />
-              <span class="ms-menu-item-text">{{
-                !hasPrompt || session.saveState === 'saved' ? t('pg.noChanges') : t('pg.savePrompt')
-              }}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              class="ms-menu-item"
-              :disabled="session.id === null"
-              @select="makeCopy"
-            >
-              <UiIcon name="copy" :size="18" />
-              <span class="ms-menu-item-text">{{ t('pg.makeCopy') }}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              class="ms-menu-item"
-              :disabled="session.id === null"
-              @select="confirmDelete = true"
-            >
-              <UiIcon name="delete" :size="18" />
-              <span class="ms-menu-item-text">{{ t('common.delete') }}</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem class="ms-menu-item" @select="toggleRaw">
-              <UiIcon name="rawMode" :size="18" />
-              <span class="ms-menu-item-text">{{ t('pg.rawMode') }}</span>
-              <UiIcon v-if="session.rawMode" name="check" :size="18" />
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenuPortal>
-      </DropdownMenuRoot>
-      <Transition name="runsettings-toggle">
-        <button
-          v-if="!comparing && (narrow || !settingsOpen)"
-          v-tooltip.below="t('pg.toggleSettings')"
-          type="button"
-          ms-button
-          class="ms-button-primary ms-button-icon"
-          :aria-label="t('pg.toggleSettings')"
-          @click="emit('toggleSettings')"
-        >
-          <UiIcon name="options" :size="20" />
-        </button>
-      </Transition>
+      <button
+        v-tooltip.below="t('pg.rawMode')"
+        type="button"
+        ms-button
+        class="ms-button-borderless ms-button-icon"
+        :aria-label="t('pg.rawMode')"
+        :aria-pressed="session.rawMode"
+        @click="toggleRaw"
+      >
+        <UiIcon name="rawMode" :size="20" />
+      </button>
+      <button
+        v-if="!comparing && (narrow || !settingsOpen)"
+        v-tooltip.below="t('pg.toggleSettings')"
+        type="button"
+        ms-button
+        class="ms-button-primary ms-button-icon"
+        :aria-label="t('pg.toggleSettings')"
+        @click="emit('toggleSettings')"
+      >
+        <UiIcon name="options" :size="20" />
+      </button>
     </div>
-    <SavePromptDialog
-      v-model:open="editing"
-      :title="session.title"
-      :description="session.description"
-      @save="playground.rename"
-    />
-    <UiDialog
-      v-model:open="confirmDelete"
-      :title="t('pg.deleteTitle')"
-      width="500px"
-      :closable="false"
-    >
-      <p class="confirm-text">{{ t('pg.deleteBody') }}</p>
-      <template #actions>
-        <button type="button" ms-button class="ms-button-borderless" @click="confirmDelete = false">
-          {{ t('common.cancel') }}
-        </button>
-        <button type="button" ms-button class="ms-button-primary" @click="removePrompt">
-          {{ t('common.delete') }}
-        </button>
-      </template>
-    </UiDialog>
   </header>
 </template>
 
@@ -248,82 +82,19 @@ async function removePrompt(): Promise<void> {
   align-items: center;
   gap: 4px;
 }
-
 .toolbar-left {
   min-width: 0;
 }
-
 .toolbar-right {
-  position: relative;
   grid-column: 3;
 }
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 24px;
-  margin-inline: 12px;
-  overflow: hidden;
-}
-
 .mode-title {
-  margin: 0;
+  margin: 0 12px;
   overflow: hidden;
   font-size: 16px;
   font-weight: 500;
   line-height: 24px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  animation: fade-in 225ms cubic-bezier(0, 0, 0.2, 1);
-}
-
-.saving-indicator {
-  position: absolute;
-  right: calc(100% + 4px);
-  display: flex;
-  padding: 4px;
-  color: var(--color-v3-text-var);
-}
-
-.saving-indicator.error {
-  color: var(--color-v3-error-text);
-}
-
-.temporary-badge {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 8px;
-  color: var(--color-v3-text-var);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.confirm-text {
-  margin: 0;
-  line-height: 21px;
-}
-
-.runsettings-toggle-enter-active {
-  overflow: hidden;
-  transition:
-    width 225ms cubic-bezier(0, 0, 0.2, 1),
-    opacity 225ms cubic-bezier(0, 0, 0.2, 1);
-}
-
-.runsettings-toggle-enter-from {
-  width: 0;
-  opacity: 0;
-}
-
-.runsettings-toggle-enter-to {
-  width: 32px;
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
 }
 </style>

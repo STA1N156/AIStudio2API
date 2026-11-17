@@ -147,13 +147,3 @@ export interface PaneData {
   settings: RunSettings
   turns: Turn[]
 }
-
-// CompareData 是对比模式的右侧窗格，sync 表示两侧系统指令同步
-export interface CompareData extends PaneData {
-  sync: boolean
-}
-
-// PromptData 是保存到对话库的对话内容，compare 是对比模式的右侧窗格
-export interface PromptData extends PaneData {
-  compare?: CompareData
-}

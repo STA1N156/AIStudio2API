@@ -1,21 +1,21 @@
 @import 'tailwindcss';
 
 @theme {
-  --color-canvas: #0b0f17;
-  --color-panel: #121823;
-  --color-raised: #1a2230;
-  --color-overlay: #171f2b;
-  --color-line: #222b39;
-  --color-line-strong: #36435a;
-  --color-fg: #dce4ef;
-  --color-gray-200: #e5e7eb;
-  --color-gray-300: #d1d9e0;
-  --color-gray-400: #b1bac4;
-  --color-gray-500: #9198a1;
-  --color-gray-600: #7d8590;
-  --color-gray-700: #374151;
-  --color-blue-300: #93c5fd;
-  --color-blue-400: #60a5fa;
+  --color-canvas: var(--color-v3-surface);
+  --color-panel: var(--color-v3-surface-container);
+  --color-raised: var(--color-v3-surface-container-highest);
+  --color-overlay: var(--color-v3-surface-container-high);
+  --color-line: var(--color-v3-outline-var);
+  --color-line-strong: var(--color-v3-outline-active);
+  --color-fg: var(--color-v3-text);
+  --color-gray-200: var(--color-v3-text);
+  --color-gray-300: var(--color-on-surface);
+  --color-gray-400: var(--color-on-surface-variant);
+  --color-gray-500: var(--color-v3-text-var);
+  --color-gray-600: var(--color-v3-text-disable);
+  --color-gray-700: var(--color-v3-outline);
+  --color-blue-300: var(--color-v3-text-link);
+  --color-blue-400: var(--color-v3-text-link);
   --color-blue-500: #3b82f6;
   --color-blue-600: #2563eb;
   --color-blue-900: #1e3a8a;
@@ -31,10 +31,10 @@
   --color-red-500: #ef4444;
   --color-red-600: #dc2626;
   --color-red-900: #7f1d1d;
-  --text-xs: 0.8125rem;
-  --text-xs--line-height: calc(1.125 / 0.8125);
-  --text-sm: 0.9375rem;
-  --text-sm--line-height: calc(1.375 / 0.9375);
+  --text-xs: 12px;
+  --text-xs--line-height: 18px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
   --radius-xs: 3px;
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -46,20 +46,28 @@
 }
 
 @utility page-x {
-  padding-inline: --spacing(4);
+  padding-inline: 16px;
 
   @variant md {
-    padding-inline: max(--spacing(8), calc((100cqw - var(--container-6xl)) / 2 + --spacing(8)));
+    padding-inline: 24px;
   }
 }
 
 :root {
   color-scheme: dark;
+  --color-white: var(--color-v3-text);
+  --font-sans: 'Inter Variable', var(--font-cjk), sans-serif;
+  --font-heading: 'Inter Tight Variable', 'Inter Tight', var(--font-cjk), sans-serif;
+  --font-mono: 'Google Sans Code Variable', 'Google Sans Mono', var(--font-cjk), monospace;
   --font-cjk: 'Microsoft YaHei UI', 'PingFang SC', 'Noto Sans SC';
   font-family:
     'Inter Variable', var(--font-cjk), ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji',
     'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  font-weight: 450;
+  font-size: 14px;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
   background: var(--color-canvas);
   color: var(--color-fg);
   letter-spacing: 0;
@@ -80,25 +88,9 @@
 
 :root[data-theme='light'] {
   color-scheme: light;
-  --color-canvas: #f5f7fb;
-  --color-panel: #ffffff;
-  --color-raised: #eef1f5;
-  --color-overlay: #ffffff;
-  --color-line: #e3e8ef;
-  --color-line-strong: #afb8c1;
-  --color-fg: #1f2328;
-  --color-white: #1f2328;
   --color-gray-100: #111827;
-  --color-gray-200: #1f2328;
-  --color-gray-300: #333b45;
-  --color-gray-400: #57606a;
-  --color-gray-500: #59636e;
-  --color-gray-600: #636c76;
-  --color-gray-700: #d0d7de;
   --color-blue-100: #1e40af;
   --color-blue-200: #1d4ed8;
-  --color-blue-300: #1d4ed8;
-  --color-blue-400: #2563eb;
   --color-blue-900: #3b82f6;
   --color-green-300: #15803d;
   --color-green-400: #1a7f37;
@@ -121,9 +113,8 @@
 
 :root[data-theme='light']
   :is(
-    .bg-blue-600,
-    .bg-green-600,
-    .bg-red-600,
+    .bg-green-600:not(button),
+    .bg-red-600:not(button),
     .bg-yellow-600,
     [data-highlighted].data-\[highlighted\]\:bg-blue-600
   ) {
@@ -144,8 +135,8 @@ body {
   overflow: hidden;
   background-color: var(--color-canvas);
   color: var(--color-fg);
-  font-size: 0.9375rem;
-  line-height: 1.375rem;
+  font-size: 14px;
+  line-height: 20px;
 }
 
 button,
@@ -163,7 +154,7 @@ textarea:disabled {
 code,
 pre,
 .font-mono {
-  font-family: 'JetBrains Mono', Consolas, Menlo, var(--font-cjk), monospace;
+  font-family: var(--font-mono);
 }
 
 ::-webkit-scrollbar {
@@ -193,7 +184,7 @@ pre,
   justify-content: center;
   width: 100%;
   height: 100%;
-  background-color: rgb(0 0 0 / 70%);
+  background-color: var(--color-overlay-background);
   animation: overlay-in 160ms ease-out;
 }
 
@@ -211,10 +202,6 @@ pre,
 :root[data-theme-switching] *::before,
 :root[data-theme-switching] *::after {
   transition: none !important;
-}
-
-:root[data-theme='light'] .modal-overlay {
-  background-color: rgb(15 23 42 / 40%);
 }
 
 .notice-enter-active,
@@ -344,23 +331,15 @@ button[aria-busy='true']:has(> svg)::before {
   }
 }
 
-.ui-select-content[data-state='open'] {
-  animation: overlay-in 120ms ease-out;
-}
-
-.ui-select-content [data-reka-select-viewport] {
-  scrollbar-width: thin;
-}
-
 .ui-tooltip {
   position: fixed;
   z-index: 80;
   max-width: 320px;
-  padding: 4px 8px;
+  padding: 8px 12px;
   border: 1px solid var(--color-line);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--color-overlay);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 40%);
+  box-shadow: var(--shadow-v3-md);
   color: var(--color-fg);
   font-size: 0.8125rem;
   line-height: 1.125rem;
@@ -374,8 +353,121 @@ button[aria-busy='true']:has(> svg)::before {
   opacity: 1;
 }
 
-:root[data-theme='light'] .ui-tooltip {
-  box-shadow: 0 4px 12px rgb(15 23 42 / 12%);
+:is(html:not(.studio), .app-sidebar) :is(h1, h2, h3) {
+  font-family: var(--font-heading);
+  font-weight: 500;
+}
+
+:is(html:not(.studio), .app-sidebar) h2 {
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.app-sidebar {
+  background-color: var(--color-v3-surface-left-nav);
+}
+
+.app-sidebar h1 {
+  font-size: 17px;
+}
+
+.console-nav-item {
+  min-height: 36px;
+  border-radius: 12px;
+  color: var(--color-v3-text-var);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.console-nav-item:hover {
+  background: var(--color-nav-item-hover);
+  color: var(--color-v3-text);
+}
+
+.console-nav-item.is-active {
+  background: var(--color-nav-item-active);
+  color: var(--color-v3-text);
+  font-weight: 500;
+}
+
+:is(html:not(.studio), .app-sidebar)
+  :where(button, a, label):is(.border, .bg-blue-600, .bg-green-600, .bg-red-600):not(
+    [role='switch']
+  ) {
+  min-height: 32px;
+  border-radius: 12px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+:is(html:not(.studio), .app-sidebar) button.h-6.w-6 {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+:is(html:not(.studio), .app-sidebar) :is(button, a, label).bg-blue-600 {
+  border: 1px solid var(--color-v3-outline);
+  background-color: var(--color-v3-button-container-accent);
+  color: var(--color-v3-text-on-button);
+}
+
+:is(html:not(.studio), .app-sidebar) :is(button, a, label).bg-blue-600:hover:not(:disabled) {
+  background-color: var(--color-v3-button-container-accent-hover);
+}
+
+:is(html:not(.studio), .app-sidebar) button.bg-green-600 {
+  border: 1px solid var(--color-v3-outline);
+  background-color: var(--color-v3-button-container);
+  color: var(--color-v3-text-on-button);
+}
+
+:is(html:not(.studio), .app-sidebar) button.bg-green-600:hover:not(:disabled) {
+  background-color: var(--color-v3-button-container-high);
+}
+
+:is(html:not(.studio), .app-sidebar) button.bg-red-600 {
+  border: 1px solid color-mix(in srgb, var(--color-error) 40%, transparent);
+  background-color: color-mix(in srgb, var(--color-error) 10%, var(--color-v3-surface));
+  color: var(--color-error);
+}
+
+:is(html:not(.studio), .app-sidebar)
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='hidden']),
+:is(html:not(.studio), .app-sidebar) textarea {
+  min-height: 32px;
+  border-radius: 8px;
+  border-color: var(--color-v3-outline-var);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+:is(html:not(.studio), .app-sidebar) :is(input, textarea)::placeholder {
+  color: var(--color-v3-text-var);
+}
+
+.console-dialog-overlay {
+  background-color: var(--color-overlay-background);
+}
+
+.detail-dialog {
+  border-radius: 12px;
+  border-color: var(--color-v3-outline-var);
+  box-shadow: var(--shadow-v3-md);
+}
+
+.detail-dialog > header {
+  padding: 24px 20px 16px;
+}
+
+:is(html:not(.studio), .app-sidebar)
+  :is(.ui-popover, [data-reka-popper-content-wrapper] > [role='menu']) {
+  border-color: var(--color-v3-outline-var);
+  border-radius: 8px;
+  box-shadow: var(--shadow-v3-dropdown);
+  background-color: var(--color-v3-surface-container);
+  font-size: 14px;
 }
 
 @media (prefers-reduced-motion: reduce) {

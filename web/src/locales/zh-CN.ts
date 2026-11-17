@@ -421,7 +421,7 @@ export const messages = {
   'settings.requestTimeout': '请求超时',
   'settings.warmWorkerLimit': '常驻 Worker 数',
   'settings.maxActiveWorkers': '峰值 Worker 上限',
-  'settings.warmStartupConcurrency': 'Camoufox 启动并发',
+  'settings.warmStartupConcurrency': '同时启动数',
   'settings.perAccountConcurrency': '单账户请求并发',
   'settings.routingStrategy': '账户选择策略',
   'settings.routingRoundRobin': '轮询',
@@ -441,7 +441,7 @@ export const messages = {
   'settings.section.models': '模型与协议',
   'settings.workerCapacity': 'Worker 容量',
   'settings.workerCapacityHelp':
-    '滑块两端为常驻 Worker 数与峰值 Worker 上限：常驻数是服务启动后预热的账户数，峰值是高峰期最多同时运行的 Worker 数。Camoufox 启动并发是同时冷启动的 Worker 数，单账户请求并发是一个账户同时执行的请求数',
+    '滑块两端为常驻 Worker 数与峰值 Worker 上限：常驻数是服务启动后预热的账户数，峰值是高峰期最多同时运行的 Worker 数。同时启动数适用于两个后端，单账户请求并发是一个账户同时执行的请求数',
   'settings.capacitySummary': '最多同时处理 {requests} 个请求，共 {accounts} 个账户',
   'settings.capacitySummaryOne': '最多同时处理 {requests} 个请求，共 1 个账户',
   'settings.accountOrderDrag': '拖动 {account} 调整顺序',

@@ -2,10 +2,9 @@
 import arrowForward from '@material-symbols/svg-300/outlined/arrow_forward.svg?raw'
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { api } from '@/api'
 import { useConsole } from '@/console'
 import { useI18n, type TranslationKey } from '@/i18n'
-import type { Model, PromptSummary } from '@/types'
+import type { Model } from '@/types'
 import { hasCategory, modelIcon } from '@/playground/catalog'
 import { pageKindOf, pageRoutes } from '@/playground/media/kinds'
 import { usePlayground } from '@/playground/session'
@@ -36,7 +35,6 @@ const query = ref('')
 const selected = ref(-1)
 // firstSelection 是列表刷新后的选中行：/chat 列表默认选中第一行，其余列表不选中
 const firstSelection = (value: PaletteMode = mode.value) => (value === 'chat' ? 0 : -1)
-const saved = ref<PromptSummary[]>([])
 const input = ref<HTMLInputElement>()
 const list = ref<HTMLElement>()
 // chosen 是 /chat 中选定的模型
@@ -115,17 +113,6 @@ function modelItem(model: Model): PaletteItem {
 // matches 判断文字是否包含查询
 const matches = (text: string) => text.toLowerCase().includes(query.value.trim().toLowerCase())
 
-// fuzzy 判断查询中的字符是否按顺序出现在文字中
-function fuzzy(text: string): boolean {
-  const target = text.toLowerCase()
-  let index = 0
-  for (const char of query.value.replace(/\s/g, '').toLowerCase()) {
-    index = target.indexOf(char, index) + 1
-    if (index === 0) return false
-  }
-  return true
-}
-
 // sections 是当前模式下按分组排列的行，相邻分组之间显示分隔线
 const sections = computed<{ title: string; items: PaletteItem[] }[]>(() => {
   const text = query.value.trim()
@@ -189,24 +176,10 @@ const sections = computed<{ title: string; items: PaletteItem[] }[]>(() => {
       run: () => setMode('shortcuts'),
     },
   ]
-  const sessions = (
-    text === '' ? saved.value.slice(0, 10) : saved.value.filter((summary) => fuzzy(summary.title))
-  ).map<PaletteItem>((summary) => ({
-    id: summary.id,
-    icon: 'chatBubble',
-    label: summary.title || t('pg.untitled'),
-    description: t('pg.chatSession'),
-    run: () => openPage(`/prompts/${encodeURIComponent(summary.id)}`),
-  }))
-  if (text === '')
-    return [
-      { title: '', items: commands },
-      { title: t('pg.recentActivity'), items: sessions },
-    ]
+  if (text === '') return [{ title: '', items: commands }]
   const found = commands.filter((item) => item.label.startsWith(text.split(' ')[0] ?? ''))
   if (text.startsWith('/')) return [{ title: '', items: found }]
   return [
-    { title: '', items: sessions },
     {
       title: '',
       items: [
@@ -268,15 +241,11 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 watch(query, () => (selected.value = firstSelection()))
-watch(open, async (value) => {
+watch(open, (value) => {
   if (!value) return
   query.value = ''
   selected.value = firstSelection()
   void nextTick(() => input.value?.focus())
-  if (mode.value === 'root')
-    saved.value = (await api.prompts().catch(() => [] as PromptSummary[])).sort((a, b) =>
-      b.updated_at.localeCompare(a.updated_at),
-    )
 })
 </script>
 

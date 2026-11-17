@@ -24,9 +24,9 @@ const { t } = useI18n()
     class="group/row @container border-b border-line py-3.5 last:border-b-0 [&:has([role=switch])_label]:cursor-pointer"
   >
     <div
-      class="flex flex-col gap-3 has-[[role=switch]]:flex-row has-[[role=switch]]:items-center has-[[role=switch]]:justify-between @xl:flex-row @xl:items-start @xl:justify-between @xl:has-[[role=switch]]:items-start"
+      class="flex flex-col gap-3 has-[[role=switch]]:flex-row has-[[role=switch]]:items-center has-[[role=switch]]:justify-between @xl:grid @xl:grid-cols-[200px_minmax(0,1fr)] @xl:items-start @xl:gap-x-6 @xl:has-[[role=switch]]:items-start"
     >
-      <div class="min-w-0 flex-1 @xl:max-w-md @xl:pt-2">
+      <div class="min-w-0 flex-1 @xl:pt-2">
         <div class="flex flex-wrap items-center gap-2">
           <span v-if="groupId" :id="`${groupId}-label`" class="text-sm font-medium text-gray-200">{{
             label
@@ -53,7 +53,7 @@ const { t } = useI18n()
       <fieldset
         :disabled="env !== undefined"
         class="w-full min-w-0 disabled:opacity-60 has-[[role=switch]]:flex has-[[role=switch]]:w-auto has-[[role=switch]]:shrink-0 @xl:shrink-0 @xl:has-[[role=switch]]:py-[11px]"
-        :class="wide ? '@xl:w-[30rem]' : '@xl:w-80'"
+        :class="wide ? '@xl:max-w-[720px]' : '@xl:max-w-[560px]'"
       >
         <slot />
       </fieldset>

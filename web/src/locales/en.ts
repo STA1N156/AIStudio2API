@@ -439,7 +439,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.requestTimeout': 'Request timeout',
   'settings.warmWorkerLimit': 'Warm workers',
   'settings.maxActiveWorkers': 'Peak worker limit',
-  'settings.warmStartupConcurrency': 'Camoufox startup concurrency',
+  'settings.warmStartupConcurrency': 'Concurrent startups',
   'settings.perAccountConcurrency': 'Concurrent requests per account',
   'settings.routingStrategy': 'Account selection strategy',
   'settings.routingRoundRobin': 'Round robin',
@@ -461,7 +461,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.section.models': 'Models & protocols',
   'settings.workerCapacity': 'Worker capacity',
   'settings.workerCapacityHelp':
-    'The slider ends set warm Workers and the peak limit: warm Workers are the accounts preloaded at startup, the peak limit is the most Workers running at once. Camoufox startup concurrency is how many Workers cold-start together; per-account concurrency is how many requests one account runs at once',
+    'The slider ends set warm Workers and the peak limit: warm Workers are the accounts preloaded at startup, the peak limit is the most Workers running at once. Concurrent startups applies to both backends; per-account concurrency is how many requests one account runs at once',
   'settings.capacitySummary': 'Up to {requests} concurrent requests across {accounts} accounts',
   'settings.capacitySummaryOne': 'Up to {requests} concurrent requests on 1 account',
   'settings.accountOrderDrag': 'Drag {account} to reorder',

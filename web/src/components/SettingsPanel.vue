@@ -447,7 +447,7 @@ async function saveConfig(): Promise<void> {
     >
       <div class="page-x flex flex-col @max-3xl:px-0 @3xl:flex-row">
         <nav
-          class="sticky top-0 z-10 flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-canvas px-4 py-2 @3xl:w-56 @3xl:flex-col @3xl:self-start @3xl:border-b-0 @3xl:px-0 @3xl:py-8"
+          class="sticky top-0 z-10 flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-canvas px-4 py-2 @3xl:w-48 @3xl:flex-col @3xl:self-start @3xl:border-b-0 @3xl:px-0 @3xl:py-6"
           :aria-label="t('section.settings.title')"
         >
           <button
@@ -474,7 +474,7 @@ async function saveConfig(): Promise<void> {
           </button>
         </nav>
 
-        <div class="min-w-0 flex-1 px-4 pt-4 pb-28 @3xl:pt-8 @3xl:pr-0 @3xl:pl-8">
+        <div class="min-w-0 flex-1 px-4 pt-4 pb-28 @3xl:pt-6 @3xl:pr-0 @3xl:pl-6">
           <div
             v-if="config.service_restart_required"
             class="mb-3 rounded-md border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm text-blue-200"

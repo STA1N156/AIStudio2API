@@ -1,20 +1,13 @@
 <script lang="ts">
 import { api, type AdminSession } from '@/api'
-import { afterTask } from '@/lazy'
 import { router } from '@/router'
 
 // initialSession 是页面载入时与路由分块、界面文案同时发出的会话请求
 const initialSession = api.session()
-// loadStudioLayout 加载 API 试用页布局，首个页面属于 API 试用页时与路由分块同时开始加载
-const loadStudioLayout = () => import('./playground/StudioLayout.vue').then(afterTask)
-if (router.resolve(location.pathname).meta.studio) void loadStudioLayout()
-router.beforeEach((to) => {
-  if (to.meta.studio) void loadStudioLayout()
-})
 </script>
 
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from '@/i18n'
 import { useConsole } from '@/console'
@@ -23,7 +16,6 @@ import DesktopTitleBar from './components/DesktopTitleBar.vue'
 import LoginPage from './components/LoginPage.vue'
 import { desktopPlatform, startDesktop } from './desktop'
 
-const StudioLayout = defineAsyncComponent(loadStudioLayout)
 const { t, errorText, locale } = useI18n()
 const route = useRoute()
 const session = ref<AdminSession | null>(null)
@@ -92,14 +84,11 @@ onMounted(() => {
           {{ t('app.refresh') }}
         </button>
       </div>
-      <KeepAlive v-if="session?.authenticated">
-        <StudioLayout
-          v-if="route.meta.studio"
-          :admin-username="session.enabled ? session.username : ''"
-          @logout="logout"
-        />
-        <App v-else :admin-username="session.enabled ? session.username : ''" @logout="logout" />
-      </KeepAlive>
+      <App
+        v-if="session?.authenticated"
+        :admin-username="session.enabled ? session.username : ''"
+        @logout="logout"
+      />
       <LoginPage v-else-if="session" @authenticated="setSession" />
       <div v-else class="flex h-full items-center justify-center text-gray-400">
         {{ t('common.loading') }}

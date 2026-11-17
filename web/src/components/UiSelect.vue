@@ -64,8 +64,7 @@ export function keepSelected<T extends string>(values: T[], selected: string, al
 }
 
 // selectTriggerClass 是下拉框触发器的公共样式
-export const selectTriggerClass =
-  'group flex items-center justify-between gap-2 text-left transition-colors hover:border-gray-600 data-[state=open]:border-blue-500'
+export const selectTriggerClass = 'ms-select-trigger group'
 
 // keepPrimarySelect 拦截非左键松开，中键滚动结束时不选中停留项
 export function keepPrimarySelect(event: PointerEvent) {
@@ -98,26 +97,18 @@ const primed = ref(false)
 <template>
   <SelectRoot v-model="selectedKey" @update:open="primed = true">
     <SelectTrigger v-bind="$attrs" :class="selectTriggerClass" @focus="primed = true">
-      <span class="min-w-0 flex-1 truncate">{{ selectedLabel }}</span>
-      <UiIcon
-        name="chevronDown"
-        :size="12"
-        class="text-gray-500 transition-transform duration-150 group-data-[state=open]:rotate-180"
-      />
+      <span class="ms-select-value">{{ selectedLabel }}</span>
+      <UiIcon name="chevronDown" :size="20" class="ms-select-arrow" />
     </SelectTrigger>
     <SelectPortal v-if="primed">
-      <SelectContent
-        position="popper"
-        :side-offset="4"
-        class="ui-select-content z-[70] max-h-[min(280px,var(--reka-select-content-available-height))] max-w-[var(--reka-select-content-available-width)] min-w-[var(--reka-select-trigger-width)] overflow-hidden rounded-md border border-line bg-panel text-xs shadow-xl shadow-black/40"
-      >
-        <SelectViewport class="py-1" @pointerup.capture="keepPrimarySelect">
+      <SelectContent position="popper" :side-offset="0" class="ms-select-panel">
+        <SelectViewport @pointerup.capture="keepPrimarySelect">
           <SelectItem
             v-for="(option, index) in options"
             :key="`${index}:${option.value}`"
             :value="String(index)"
             :disabled="option.disabled"
-            class="flex cursor-pointer items-center justify-between gap-3 px-3 py-1.5 whitespace-nowrap text-gray-300 outline-none select-none data-[disabled]:cursor-default data-[disabled]:text-gray-500 data-[highlighted]:bg-raised data-[highlighted]:text-white data-[state=checked]:font-medium data-[state=checked]:text-blue-300"
+            class="ms-select-option justify-between gap-3"
           >
             <SelectItemText v-tooltip.overflow="option.label" class="min-w-0 truncate">{{
               option.label

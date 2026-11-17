@@ -35,9 +35,9 @@ async function copy(text: string): Promise<void> {
 <template>
   <DialogRoot :open="open" @update:open="(value: boolean) => !value && emit('close')">
     <DialogPortal>
-      <DialogOverlay class="fixed inset-0 z-[70] bg-black/60" />
+      <DialogOverlay class="console-dialog-overlay fixed inset-0 z-[70]" />
       <DialogContent
-        class="detail-dialog fixed top-1/2 left-1/2 z-[71] flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col rounded-lg border border-line bg-panel shadow-2xl focus:outline-none"
+        class="detail-dialog fixed top-1/2 left-1/2 z-[71] flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 flex-col border border-line bg-panel focus:outline-none"
       >
         <header class="flex items-start gap-3 border-b border-line px-5 py-4">
           <div class="min-w-0 flex-1">

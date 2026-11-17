@@ -22,7 +22,6 @@ import UiIcon from '@/components/UiIcon.vue'
 import { useClampToggle } from '@/clamp'
 import { afterTask } from '@/lazy'
 import { readPreference, writePreference } from '@/preference'
-import { useTabParam } from '@/url'
 import { useRoute, useRouter } from 'vue-router'
 import type { IconName } from '@/icons'
 
@@ -49,6 +48,7 @@ const AccountsPanel = lazyPanel(() => import('@/components/AccountsPanel.vue'))
 const ModelsTable = lazyPanel(() => import('@/components/ModelsTable.vue'))
 const RequestsPanel = lazyPanel(() => import('@/components/RequestsPanel.vue'))
 const SettingsPanel = lazyPanel(() => import('@/components/SettingsPanel.vue'))
+const StudioLayout = defineAsyncComponent(() => import('@/playground/StudioLayout.vue'))
 const validTabs: TabID[] = [
   'logs',
   'accounts',
@@ -59,24 +59,18 @@ const validTabs: TabID[] = [
   'settings',
   'version',
 ]
-const { tab: currentTab, select: selectTab } = useTabParam(validTabs, 'logs')
 const router = useRouter()
 const route = useRoute()
-// currentTab 在从试用页返回时同步目标管理页面
-watch(
-  () => route.fullPath,
-  () => {
-    if (route.name === 'console') {
-      const tab = route.query.tab as TabID
-      currentTab.value = validTabs.includes(tab) ? tab : 'logs'
-    }
-  },
-)
+const currentTab = computed<TabID>(() => {
+  if (route.meta.studio) return 'playground'
+  const tab = route.query.tab as TabID
+  return validTabs.includes(tab) ? tab : 'logs'
+})
 
 // openTab 切换页面，API 试用进入独立的试用页
 function openTab(tab: TabID): void {
   if (tab === 'playground') void router.push('/prompts/new_chat')
-  else selectTab(tab)
+  else void router.push({ path: '/', query: tab === 'logs' ? {} : { tab } })
 }
 const navigationBar = ref<HTMLElement | null>(null)
 
@@ -86,8 +80,9 @@ const wideQuery = window.matchMedia('(min-width: 48rem)')
 // revealCurrentTab 把窄屏横向导航的当前项横向滚入视野
 function revealCurrentTab(): void {
   if (wideQuery.matches) return
-  const bar = navigationBar.value!
-  const item = bar.querySelector('[aria-current="page"]')!
+  const bar = navigationBar.value
+  const item = bar?.querySelector('[aria-current="page"]')
+  if (!bar || !item) return
   const barRect = bar.getBoundingClientRect()
   const itemRect = item.getBoundingClientRect()
   if (itemRect.left < barRect.left) bar.scrollLeft -= barRect.left - itemRect.left
@@ -96,12 +91,13 @@ function revealCurrentTab(): void {
 watch(currentTab, revealCurrentTab, { flush: 'post' })
 
 // defaultSidebarWidth 是宽屏侧栏的默认宽度，双击拖动条恢复
-const defaultSidebarWidth = 256
+const defaultSidebarWidth = 280
 const minSidebarWidth = 176
 const maxSidebarWidth = 360
 const sidebarWidth = ref(
   readPreference('app.sidebarWidth', defaultSidebarWidth, (value) => typeof value === 'number'),
 )
+if (sidebarWidth.value === 256) sidebarWidth.value = defaultSidebarWidth
 const resizingSidebar = ref(false)
 let sidebarResizeStartX = 0
 let sidebarResizeStartWidth = 0
@@ -316,10 +312,8 @@ onMounted(revealCurrentTab)
           v-for="item in navigation"
           :key="item.id"
           :class="[
-            'flex w-auto shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left whitespace-nowrap transition md:w-full',
-            currentTab === item.id
-              ? 'bg-blue-600 text-white'
-              : 'text-gray-400 hover:bg-raised hover:text-white',
+            'console-nav-item flex w-auto shrink-0 items-center gap-2 px-3 py-2 text-left whitespace-nowrap transition md:w-full',
+            currentTab === item.id ? 'is-active' : 'text-gray-400 hover:bg-raised hover:text-white',
           ]"
           type="button"
           :aria-current="currentTab === item.id ? 'page' : undefined"
@@ -427,7 +421,7 @@ onMounted(revealCurrentTab)
 
     <main class="@container flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
       <div
-        v-if="config?.reserved_listen_addr"
+        v-if="!route.meta.studio && config?.reserved_listen_addr"
         role="alert"
         class="page-x overflow-hidden border-b border-amber-500/30 bg-amber-500/10 py-2.5 text-sm break-words text-amber-200 [scrollbar-gutter:stable]"
       >
@@ -438,12 +432,12 @@ onMounted(revealCurrentTab)
         }}
       </div>
       <CamoufoxBanner
-        v-if="status && !camoufoxInTask"
+        v-if="!route.meta.studio && status && !camoufoxInTask"
         :camoufox="status.camoufox"
         @retry="retryCamoufox"
       />
       <div
-        v-if="config?.invalid.length"
+        v-if="!route.meta.studio && config?.invalid.length"
         role="alert"
         class="page-x overflow-hidden border-b border-amber-500/30 bg-amber-500/10 py-2.5 text-sm break-words text-amber-200 [scrollbar-gutter:stable]"
       >
@@ -453,9 +447,10 @@ onMounted(revealCurrentTab)
         </p>
       </div>
       <KeepAlive
-        include="LogsPanel,AccountsPanel,AccessPanel,ModelsTable,RequestsPanel,SettingsPanel,VersionPanel,UsagePanel"
+        include="StudioLayout,LogsPanel,AccountsPanel,AccessPanel,ModelsTable,RequestsPanel,SettingsPanel,VersionPanel,UsagePanel"
       >
-        <LogsPanel v-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
+        <StudioLayout v-if="route.meta.studio" />
+        <LogsPanel v-else-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
         <AccountsPanel
           v-else-if="currentTab === 'accounts'"
           :accounts="visibleAccounts"

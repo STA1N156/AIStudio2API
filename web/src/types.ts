@@ -581,35 +581,6 @@ export type AdminEvent =
   | { type: 'account_tasks'; data: { tasks: AccountTask[] } }
   | { type: 'request'; data: RequestSummary }
 
-// PromptSummary 是对话库列表中的一项
-export interface PromptSummary {
-  id: string
-  title: string
-  model: string
-  description: string
-  created_at: string
-  updated_at: string
-  // turns 是保存时对话的消息条数，没有记录时缺省
-  turns?: number
-  // tokens 是保存时整段对话的 token 数，没有记录时缺省
-  tokens?: number
-}
-
-// PromptInput 是保存对话时提交的内容
-export interface PromptInput<T> {
-  title: string
-  model: string
-  description: string
-  turns?: number
-  tokens?: number
-  data: T
-}
-
-// SavedPrompt 是从对话库读取的完整对话
-export interface SavedPrompt<T> extends PromptSummary {
-  data: T
-}
-
 // SystemInstructionPreset 是保存在服务端对话库中的系统指令预设
 export interface SystemInstructionPreset {
   id: string

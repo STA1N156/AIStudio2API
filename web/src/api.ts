@@ -17,9 +17,6 @@ import type {
   PairingToken,
   PathListing,
   Model,
-  PromptInput,
-  PromptSummary,
-  SavedPrompt,
   SystemInstructionPreset,
   Cooldown,
   RequestBody,
@@ -247,33 +244,6 @@ export const api = {
     requestCommand(`/api/requests/${encodeURIComponent(id)}/cancel`, {
       method: 'POST',
     }),
-  prompts: async () => (await requestJSON<{ prompts: PromptSummary[] }>('/api/prompts')).prompts,
-  promptPage: (pageSize: number, pageToken: string) => {
-    const query = new URLSearchParams({ page_size: String(pageSize) })
-    if (pageToken !== '') query.set('page_token', pageToken)
-    return requestJSON<{ prompts: PromptSummary[]; next_page_token?: string }>(
-      `/api/prompts?${query.toString()}`,
-    )
-  },
-  prompt: <T>(id: string) => requestJSON<SavedPrompt<T>>(`/api/prompts/${encodeURIComponent(id)}`),
-  savePrompt: <T>(id: string, prompt: PromptInput<T>, keepalive = false) =>
-    requestJSON<PromptSummary>(`/api/prompts/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      body: jsonBody(prompt),
-      keepalive,
-    }),
-  renamePrompt: (id: string, title: string, description: string) =>
-    requestJSON<PromptSummary>(`/api/prompts/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: jsonBody({ title, description }),
-    }),
-  copyPrompt: (id: string, copy: string, title: string) =>
-    requestJSON<PromptSummary>(`/api/prompts/${encodeURIComponent(id)}/copy`, {
-      method: 'POST',
-      body: jsonBody({ id: copy, title }),
-    }),
-  deletePrompt: (id: string) =>
-    requestCommand(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   generateTitle: async (model: string, prompt: string, answer: string) =>
     (
       await requestJSON<{ title: string }>('/api/prompts/title', {

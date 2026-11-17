@@ -846,7 +846,6 @@ defineExpose({ focus })
   z-index: 1;
   display: block;
   width: 100%;
-  max-width: 1000px;
   margin: 0 auto;
 }
 
