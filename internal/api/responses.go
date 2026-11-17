@@ -188,6 +188,7 @@ type SavedState struct {
 
 type responseStateStore struct {
 	mu      sync.Mutex
+	writeMu sync.Mutex
 	states  map[string]responseState
 	order   []string
 	persist StateStore
@@ -209,19 +210,29 @@ func newResponseStateStore(persist StateStore) *responseStateStore {
 	return store
 }
 
-// persistLocked 把仍存在且已结束的节点写入 persist，并删除已移除的节点；进行中的后台响应与交互在服务重启后不能继续，只保存终态
-func (store *responseStateStore) persistLocked(saved, removed []string) {
+// snapshot 返回只读目录；写入方复制目录并替换节点，读取方在锁外整理内容。
+func (store *responseStateStore) snapshot() (map[string]responseState, []string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return store.states, store.order
+}
+
+// commit 发布完整目录后按 writeMu 的顺序落盘，编码和磁盘等待不占用读取锁。
+func (store *responseStateStore) commit(states map[string]responseState, order, saved, removed []string) {
+	store.mu.Lock()
+	store.states, store.order = states, order
+	store.mu.Unlock()
 	if store.persist == nil {
 		return
 	}
-	states := make([]SavedState, 0, len(saved))
+	writes := make([]SavedState, 0, len(saved))
 	for _, id := range saved {
-		if state, exists := store.states[id]; exists && state.finished() {
+		if state, exists := states[id]; exists && state.finished() {
 			data, _ := json.Marshal(state)
-			states = append(states, SavedState{ID: id, Data: data})
+			writes = append(writes, SavedState{ID: id, Data: data})
 		}
 	}
-	store.persist.Save(states, removed)
+	store.persist.Save(writes, removed)
 }
 
 // finished 返回节点的响应或交互是否已不在进行中
@@ -241,10 +252,9 @@ func (state responseState) finished() bool {
 }
 
 func (store *responseStateStore) Load(id string) (responseHistory, bool) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	states, _ := store.snapshot()
 	history := responseHistory{ID: id, Contents: make([]aistudio.Content, 0), InlineInstructions: make([]string, 0)}
-	if state, exists := store.states[id]; exists {
+	if state, exists := states[id]; exists {
 		history.Interaction = state.Interaction != nil
 		if state.Interaction != nil {
 			history.Upstream, history.AccountID, history.Agent = state.Interaction.upstream, state.Interaction.account, state.Interaction.agent
@@ -255,7 +265,7 @@ func (store *responseStateStore) Load(id string) (responseHistory, bool) {
 	}
 	chain := make([]responseState, 0)
 	for id != "" {
-		state, exists := store.states[id]
+		state, exists := states[id]
 		if !exists {
 			return responseHistory{}, false
 		}
@@ -280,9 +290,15 @@ func (store *responseStateStore) Store(id string, previous responseHistory, resu
 		state.Contents = append(state.Contents, output)
 	}
 	state.InlineInstructions = append([]string(nil), state.InlineInstructions...)
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if _, exists := store.states[previous.ID]; previous.ID != "" && !exists {
+	if state.Record != nil {
+		record := *state.Record
+		state.Record = &record
+	}
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	states, order := store.snapshot()
+	states, order = maps.Clone(states), slices.Clone(order)
+	if _, exists := states[previous.ID]; previous.ID != "" && !exists {
 		state.ParentID = ""
 		state.Contents = append(cloneResponseContents(previous.Contents), state.Contents...)
 		state.InlineInstructions = append(append([]string(nil), previous.InlineInstructions...), state.InlineInstructions...)
@@ -290,25 +306,25 @@ func (store *responseStateStore) Store(id string, previous responseHistory, resu
 			state.Record.Input = append(append([]storedItem(nil), previous.Items...), state.Record.Input...)
 		}
 	}
-	if _, exists := store.states[id]; !exists {
-		store.order = append(store.order, id)
+	if _, exists := states[id]; !exists {
+		order = append(order, id)
 	}
-	store.states[id] = state
+	states[id] = state
 	saved, removed := []string{id}, []string(nil)
-	for len(store.order) > responseStateCapacity {
-		evicted := store.order[0]
-		store.order = store.order[1:]
-		saved = append(saved, store.removeLocked(evicted)...)
+	for len(order) > responseStateCapacity {
+		evicted := order[0]
+		order = order[1:]
+		saved = append(saved, removeResponseState(states, evicted)...)
 		removed = append(removed, evicted)
 	}
-	store.persistLocked(saved, removed)
+	store.commit(states, order, saved, removed)
 }
 
-// removeLocked 删除一个节点，并把它的上下文并入以它为续接起点的子节点，返回这些子节点的 ID
-func (store *responseStateStore) removeLocked(id string) []string {
-	parent := store.states[id]
+// removeResponseState 删除副本中的节点，并把上下文并入其子节点。
+func removeResponseState(states map[string]responseState, id string) []string {
+	parent := states[id]
 	var children []string
-	for childID, child := range store.states {
+	for childID, child := range states {
 		if child.ParentID != id {
 			continue
 		}
@@ -320,18 +336,17 @@ func (store *responseStateStore) removeLocked(id string) []string {
 			merged.Input = append(append(append([]storedItem(nil), parent.Record.Input...), parent.Record.Output...), child.Record.Input...)
 			child.Record = &merged
 		}
-		store.states[childID] = child
+		states[childID] = child
 		children = append(children, childID)
 	}
-	delete(store.states, id)
+	delete(states, id)
 	return children
 }
 
 // Response 返回 Responses 接口保存的完整响应对象及其是否以后台模式创建
 func (store *responseStateStore) Response(id string, include []string) (json.RawMessage, bool, bool) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	state, exists := store.states[id]
+	states, _ := store.snapshot()
+	state, exists := states[id]
 	if !exists || state.Record == nil {
 		return nil, false, false
 	}
@@ -351,9 +366,8 @@ func (store *responseStateStore) Response(id string, include []string) (json.Raw
 
 // Stream 返回以 background 与 stream 创建的响应的事件记录
 func (store *responseStateStore) Stream(id string) (*streamLog, bool) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	state, exists := store.states[id]
+	states, _ := store.snapshot()
+	state, exists := states[id]
 	if !exists || state.Record == nil || state.Record.Stream == nil {
 		return nil, false
 	}
@@ -362,23 +376,21 @@ func (store *responseStateStore) Stream(id string) (*streamLog, bool) {
 
 // Interaction 返回 Interactions 接口保存的交互资源
 func (store *responseStateStore) Interaction(id string) (*interactionRecord, bool) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	interaction := store.states[id].Interaction
+	states, _ := store.snapshot()
+	interaction := states[id].Interaction
 	return interaction, interaction != nil
 }
 
 // InputItems 返回生成该响应时的全部输入项：续接链上各前序响应的输入与输出，以及本次输入
 func (store *responseStateStore) InputItems(id string) ([]storedItem, bool) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	state, exists := store.states[id]
+	states, _ := store.snapshot()
+	state, exists := states[id]
 	if !exists || state.Record == nil {
 		return nil, false
 	}
 	items := append([]storedItem(nil), state.Record.Input...)
 	for parentID := state.ParentID; parentID != ""; {
-		parent := store.states[parentID]
+		parent := states[parentID]
 		if parent.Record != nil {
 			items = append(append(append([]storedItem(nil), parent.Record.Input...), parent.Record.Output...), items...)
 		}
@@ -389,13 +401,16 @@ func (store *responseStateStore) InputItems(id string) ([]storedItem, bool) {
 
 // Delete 删除 Responses 接口保存的响应，interaction 为 true 时删除 Interactions 接口保存的交互，以它为起点的续接保留完整上下文
 func (store *responseStateStore) Delete(id string, interaction bool) bool {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if state, exists := store.states[id]; !exists || (state.Interaction != nil) != interaction {
+	store.writeMu.Lock()
+	defer store.writeMu.Unlock()
+	states, order := store.snapshot()
+	if state, exists := states[id]; !exists || (state.Interaction != nil) != interaction {
 		return false
 	}
-	store.persistLocked(store.removeLocked(id), []string{id})
-	store.order = slices.DeleteFunc(store.order, func(value string) bool { return value == id })
+	states, order = maps.Clone(states), slices.Clone(order)
+	saved := removeResponseState(states, id)
+	order = slices.DeleteFunc(order, func(value string) bool { return value == id })
+	store.commit(states, order, saved, []string{id})
 	return true
 }
 
@@ -405,14 +420,13 @@ func (store *responseStateStore) ResolveItems(input splitInput) (splitInput, err
 		return input, nil
 	}
 	items := slices.Clone(input.items)
-	store.mu.Lock()
-	defer store.mu.Unlock()
+	states, _ := store.snapshot()
 	for index, head := range input.heads {
 		if !head.reference() {
 			continue
 		}
 		found := false
-		for _, state := range store.states {
+		for _, state := range states {
 			if state.Record == nil {
 				continue
 			}

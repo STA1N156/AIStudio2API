@@ -118,7 +118,7 @@ type UsageRecent struct {
 	Tokens   int64 `json:"tokens"`
 }
 
-// UsageReport 返回用量看板的汇总、上一周期、当前吞吐、估算费用与未计价模型、逐桶趋势、堆叠序列、分项与筛选候选
+// UsageReport 返回用量看板汇总。费用字段保留响应兼容，不再计算。
 type UsageReport struct {
 	From           time.Time               `json:"from"`
 	To             time.Time               `json:"to"`

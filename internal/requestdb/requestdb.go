@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS requests (
  cached_tokens INTEGER NOT NULL DEFAULT 0, proof_ms INTEGER NOT NULL DEFAULT 0, proof_lock_ms INTEGER NOT NULL DEFAULT 0,
  proof_interaction_ms INTEGER NOT NULL DEFAULT 0, proof_refresh_ms INTEGER NOT NULL DEFAULT 0, proof_compute_ms INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS requests_time ON requests(time);
-CREATE INDEX IF NOT EXISTS requests_cost ON requests(time, model, input_tokens, cached_tokens, reasoning_tokens, reply_tokens);
+DROP INDEX IF EXISTS requests_cost;
 CREATE INDEX IF NOT EXISTS requests_model_time ON requests(model, time);
 CREATE INDEX IF NOT EXISTS requests_account_time ON requests(account, time);
 CREATE INDEX IF NOT EXISTS requests_state_time ON requests(state, time);

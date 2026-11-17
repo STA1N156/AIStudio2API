@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/api"
-	"github.com/Mag1cFall/AIStudio2API/internal/pricing"
 )
 
 // stackLimit 是堆叠趋势单独显示的维度取值数，其余合并为其他
@@ -390,65 +389,10 @@ func (store *Store) scanRateExclusions(ctx context.Context, from, to int64, filt
 	return errors.Join(rows.Err(), rows.Close())
 }
 
-// cost 是一段时间内按 API 单价估算的美元费用、各分桶费用与有 token 但没有单价的模型
-type cost struct {
-	total    float64
-	buckets  []float64
-	unpriced map[string]bool
-}
-
-// scanCost 在 SQL 中按分桶、模型与长上下文分档汇总 [from, to) 内符合筛选的原始记录 token，再按单价累加费用，starts 非空时同时累加到各分桶
-func (store *Store) scanCost(ctx context.Context, from, to int64, starts []int64, filters api.UsageFilters) (cost, error) {
-	clause, filterArgs := filterSQL(filters)
-	var slots strings.Builder
-	var args []any
-	for index := range max(len(starts), 1) {
-		start, stop := from, to
-		if starts != nil {
-			start = max(starts[index], from)
-			if index+1 < len(starts) {
-				stop = starts[index+1]
-			}
-		}
-		if index > 0 {
-			slots.WriteByte(',')
-		}
-		slots.WriteString("(?,?,?)")
-		args = append(args, index, start, stop)
-	}
-	tier := "input_tokens > " + strconv.Itoa(pricing.LongContext)
-	rows, err := store.db.QueryContext(ctx, `WITH slots(slot, start, stop) AS (VALUES `+slots.String()+`)
- SELECT slot, model, `+tier+`, SUM(input_tokens), SUM(cached_tokens), SUM(reasoning_tokens + reply_tokens)
- FROM slots JOIN requests ON time >= start AND time < stop`+clause+`
- GROUP BY slot, model, `+tier, append(args, filterArgs...)...)
-	if err != nil {
-		return cost{}, err
-	}
-	result := cost{buckets: make([]float64, len(starts)), unpriced: map[string]bool{}}
-	var slot int
-	var long bool
-	var input, cached, output int64
-	var model string
-	for rows.Next() {
-		if err := rows.Scan(&slot, &model, &long, &input, &cached, &output); err != nil {
-			return cost{}, errors.Join(err, rows.Close())
-		}
-		if input+output > 0 && !pricing.Priced(model) {
-			result.unpriced[model] = true
-		}
-		value := pricing.TierCost(model, long, input, cached, output)
-		result.total += value
-		if starts != nil {
-			result.buckets[slot] += value
-		}
-	}
-	return result, errors.Join(rows.Err(), rows.Close())
-}
-
 // usageDimensions 是报告分项包含的维度，比筛选维度多出 HTTP 状态码
 var usageDimensions = append(slices.Clone(api.UsageDimensions), "status")
 
-// Usage 返回时间范围内的汇总、上一周期、估算费用、逐桶趋势、堆叠序列、分项与筛选候选
+// Usage 返回时间范围内的汇总、上一周期、逐桶趋势、堆叠序列、分项与筛选候选
 func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageReport, error) {
 	now := time.Now()
 	from, to := query.From.UnixMilli(), query.To.UnixMilli()
@@ -513,24 +457,14 @@ func (store *Store) Usage(ctx context.Context, query api.UsageQuery) (api.UsageR
 	if err := store.scan(ctx, segment{from: now.Add(-recentWindow).UnixMilli(), to: now.UnixMilli() + 1}, query.Filters, recent.add); err != nil {
 		return api.UsageReport{}, err
 	}
-	current, err := store.scanCost(ctx, from, to, starts, query.Filters)
-	if err != nil {
-		return api.UsageReport{}, err
-	}
-	before, err := store.scanCost(ctx, from-(to-from), from, nil, query.Filters)
-	if err != nil {
-		return api.UsageReport{}, err
-	}
-	unpriced := slices.AppendSeq([]string{}, maps.Keys(current.unpriced))
-	slices.Sort(unpriced)
 	report := api.UsageReport{
 		From: query.From.UTC(), To: query.To.UTC(), BucketSeconds: int64(query.Bucket / time.Second), GeneratedAt: now.UTC(),
-		Totals: totals.stats(), Previous: previous.stats(), Cost: current.total, PreviousCost: before.total, UnpricedModels: unpriced, StackBy: query.Stack,
+		Totals: totals.stats(), Previous: previous.stats(), UnpricedModels: []string{}, StackBy: query.Stack,
 		Recent:  api.UsageRecent{Minutes: int(recentWindow / time.Minute), Requests: recent.requests, Tokens: recent.totalTokens},
 		Buckets: make([]api.UsageBucket, len(starts)), Groups: map[string][]api.UsageGroup{}, Pairs: []api.UsagePair{},
 	}
 	for index, start := range starts {
-		report.Buckets[index] = api.UsageBucket{At: time.UnixMilli(start).UTC(), Cost: current.buckets[index], UsageStats: buckets[index].stats()}
+		report.Buckets[index] = api.UsageBucket{At: time.UnixMilli(start).UTC(), UsageStats: buckets[index].stats()}
 	}
 	for _, dimension := range usageDimensions {
 		report.Groups[dimension] = rankGroups(groups[dimension])
