@@ -304,7 +304,9 @@ func public400Message(status int, message string) string {
 	}
 	switch {
 	case strings.Contains(message, "AI Studio 因内容策略结束生成: PROHIBITED_CONTENT"),
-		strings.Contains(message, "AI Studio 拒绝当前输入: prohibited_content"):
+		strings.Contains(message, "AI Studio 因内容政策结束生成: PROHIBITED_CONTENT"):
+		return aistudio.EmptyModelOutputMessage
+	case strings.Contains(message, "AI Studio 拒绝当前输入: prohibited_content"):
 		return "输入内容违反了Google内容政策，请切换抗截断模型以解决"
 	case strings.Contains(message, "Request contains an invalid argument."):
 		return "请求参数错误，请核对客户端请求参数"

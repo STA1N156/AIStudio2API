@@ -42,7 +42,8 @@ func TestPublic400Messages(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"output policy", &aistudio.ContentPolicyError{Reason: "prohibited_content", Message: "policy detail"}, "输入内容违反了Google内容政策，请切换抗截断模型以解决"},
+		{"output policy", &aistudio.ContentPolicyError{Reason: "prohibited_content", Message: "policy detail"}, "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"},
+		{"output policy wording", rpc("AI Studio 因内容政策结束生成: PROHIBITED_CONTENT: The model output could not be generated. This output contains sensitive words that violate Google's Generative AI Prohibited Use policy."), "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"},
 		{"input policy", &aistudio.PromptFeedbackError{Reason: "prohibited_content", Message: "policy detail"}, "输入内容违反了Google内容政策，请切换抗截断模型以解决"},
 		{"argument", rpc("Request contains an invalid argument."), "请求参数错误，请核对客户端请求参数"},
 		{"tool order", rpc("Please ensure that function call turn comes immediately after a user turn or after a function response turn."), "工具调用顺序错误，工具轮次需在用户轮次/另一工具轮次之后"},
