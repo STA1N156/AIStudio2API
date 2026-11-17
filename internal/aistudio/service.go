@@ -301,40 +301,31 @@ func (p *PoolRequestContextProvider) RequestContext(_ context.Context, accountID
 	return RequestContext{Timezone: account.Config.Timezone}, nil
 }
 
-// Models 刷新可用账户并返回实时模型并集
+// Models 从一个可用账户读取目录，失败时才尝试下一个。
 func (s *PooledService) Models(ctx context.Context) ([]Model, error) {
 	if lease, ok := AccountLeaseFromContext(ctx); ok {
 		return s.modelsForLease(ctx, lease, false)
 	}
-	statuses := s.pool.Status()
-	targets := make([]AccountStatus, 0, len(statuses))
-	for _, status := range statuses {
-		if status.Enabled && (status.State == AccountReady || status.State == AccountBusy) {
-			targets = append(targets, status)
-		}
-	}
-	models := make([]Model, 0)
-	available := 0
 	var failures GroupedErrors
-	for _, result := range s.refreshModelCatalogs(ctx, targets) {
-		models = mergeModels(models, result.models)
-		if result.available {
-			available++
+	for _, accountID := range s.CatalogAccountIDs() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		if result.err != nil {
-			failures.Add(result.accountID, result.err)
+		models, err := s.RefreshAccountModels(ctx, accountID, false)
+		if err != nil {
+			failures.Add(accountID, err)
+			continue
 		}
-	}
-	if ctx.Err() != nil {
-		failures.Add("", ctx.Err())
-	}
-	if available == 0 {
-		if len(failures) > 0 {
-			return nil, failures.Join(AccountError)
+		if len(models) == 0 {
+			continue
 		}
-		return nil, ErrNoEligibleAccount
+		s.UseCatalogAccount(accountID)
+		return s.CachedModels(), nil
 	}
-	return models, nil
+	if len(failures) > 0 {
+		return nil, failures.Join(AccountError)
+	}
+	return nil, ErrNoEligibleAccount
 }
 
 // RefreshAccountModels 占用指定账户的一个普通槽位刷新其权益与模型目录，不受账户启用、调度状态与冷却限制；reload 为 true 时重新载入账户页面
@@ -427,85 +418,13 @@ func (s *PooledService) checkAccountVerification(ctx context.Context, lease *Acc
 	return s.pool.clearRestriction(accountID)
 }
 
-// CachedModels 返回启用账户最近同步目录的并集
+// CachedModels 返回单个来源的目录，保留该账户的 Build 专用入口。
 func (s *PooledService) CachedModels() []Model {
-	s.pool.mu.Lock()
-	defer s.pool.mu.Unlock()
-	models := make([]Model, 0)
-	for _, account := range s.pool.accounts {
-		if account != nil && account.Config.Enabled {
-			models = mergeModels(models, account.Models)
-		}
-	}
-	return mergeModels(models, s.pool.buildOnlyModelsLocked())
-}
-
-type accountModelsResult struct {
-	accountID string
-	models    []Model
-	available bool
-	err       error
-}
-
-func (s *PooledService) refreshModelCatalogs(ctx context.Context, statuses []AccountStatus) []accountModelsResult {
-	results := make(chan accountModelsResult, len(statuses))
-	var refreshes sync.WaitGroup
-	for _, status := range statuses {
-		refreshes.Add(1)
-		go func(status AccountStatus) {
-			defer refreshes.Done()
-			results <- s.modelsForStatus(ctx, status)
-		}(status)
-	}
-	go func() {
-		refreshes.Wait()
-		close(results)
-	}()
-	collected := make([]accountModelsResult, 0, len(statuses))
-	for result := range results {
-		collected = append(collected, result)
-	}
-	return collected
-}
-
-func (s *PooledService) modelsForStatus(ctx context.Context, status AccountStatus) accountModelsResult {
-	cached := s.cachedModels(status.ID)
-	if status.State == AccountBusy {
-		if len(cached) > 0 {
-			return accountModelsResult{models: cached, available: true}
-		}
-		return accountModelsResult{accountID: status.ID, err: errors.New("正在使用且没有缓存模型目录")}
-	}
-	lease, err := s.pool.AcquireFor(ctx, AccountSelection{AccountID: status.ID})
-	if err != nil {
-		return accountModelsResult{
-			accountID: status.ID, models: cached, available: len(cached) > 0,
-			err: fmt.Errorf("获取模型目录租约: %w", err),
-		}
-	}
-	accountModels, requestErr := s.modelsForLease(ContextWithAccountLease(ctx, lease), lease, false)
-	releaseErr := lease.Release()
-	if requestErr != nil {
-		failure := fmt.Errorf("刷新模型目录: %w", errors.Join(requestErr, releaseErr))
-		return accountModelsResult{accountID: status.ID, models: cached, available: len(cached) > 0, err: failure}
-	}
-	if releaseErr != nil {
-		return accountModelsResult{
-			accountID: status.ID, models: accountModels, available: true,
-			err: fmt.Errorf("释放模型目录租约: %w", releaseErr),
-		}
-	}
-	return accountModelsResult{models: accountModels, available: true}
-}
-
-func (s *PooledService) cachedModels(accountID string) []Model {
-	s.pool.mu.Lock()
-	defer s.pool.mu.Unlock()
-	account := s.pool.byID[accountID]
-	if account == nil {
+	view := s.cachedCatalogSource()
+	if view == nil {
 		return nil
 	}
-	return cloneModels(account.Models)
+	return append(cloneModels(view.accounts[0].Models), view.buildOnlyModelsLocked()...)
 }
 
 func (l *AccountLease) MarkRequestFailure(err error) error {
@@ -915,74 +834,6 @@ func forwardEventsWithLease(
 	}
 }
 
-func mergeModels(base []Model, additions []Model) []Model {
-	merged := make(map[string]Model, len(base)+len(additions))
-	for _, model := range append(cloneModels(base), cloneModels(additions)...) {
-		current, exists := merged[model.ID]
-		if !exists {
-			merged[model.ID] = model
-			continue
-		}
-		current.Methods = unionOrdered(current.Methods, model.Methods)
-		if current.Name == "" {
-			current.Name = model.Name
-		}
-		if current.Description == "" {
-			current.Description = model.Description
-		}
-		current.InputTokenLimit = minimumPositive(current.InputTokenLimit, model.InputTokenLimit)
-		current.OutputTokenLimit = minimumPositive(current.OutputTokenLimit, model.OutputTokenLimit)
-		if current.Capabilities == nil && len(model.Capabilities) > 0 {
-			current.Capabilities = make(map[string]bool, len(model.Capabilities))
-		}
-		for name, enabled := range model.Capabilities {
-			current.Capabilities[name] = current.Capabilities[name] || enabled
-		}
-		if current.CapabilityOptions == nil && len(model.CapabilityOptions) > 0 {
-			current.CapabilityOptions = make(map[string][]string, len(model.CapabilityOptions))
-		}
-		for name, values := range model.CapabilityOptions {
-			current.CapabilityOptions[name] = unionOrdered(current.CapabilityOptions[name], values)
-		}
-		if len(current.VoiceDetails) == 0 {
-			current.VoiceDetails = model.VoiceDetails
-		}
-		if len(current.Languages) == 0 {
-			current.Languages = model.Languages
-		}
-		current.AccessModes = unionInt64(current.AccessModes, model.AccessModes)
-		current.Paid = current.Paid || model.Paid
-		merged[model.ID] = current
-	}
-	result := make([]Model, 0, len(merged))
-	for _, id := range upstreamModelOrder(base, additions) {
-		model := merged[id]
-		model.Methods = unionOrdered(nil, model.Methods)
-		result = append(result, model)
-	}
-	return result
-}
-
-// upstreamModelOrder 按各目录的上游顺序合并模型 ID
-func upstreamModelOrder(lists ...[]Model) []string {
-	var order []string
-	for _, models := range lists {
-		previous := len(order) - 1
-		if index := slices.IndexFunc(models, func(model Model) bool { return slices.Contains(order, model.ID) }); index >= 0 {
-			previous = slices.Index(order, models[index].ID) - 1
-		}
-		for _, model := range models {
-			if index := slices.Index(order, model.ID); index >= 0 {
-				previous = index
-				continue
-			}
-			previous++
-			order = slices.Insert(order, previous, model.ID)
-		}
-	}
-	return order
-}
-
 func unionInt64(left []int64, right []int64) []int64 {
 	values := make(map[int64]struct{}, len(left)+len(right))
 	for _, value := range left {
@@ -1008,14 +859,4 @@ func unionOrdered(left []string, right []string) []string {
 		}
 	}
 	return result
-}
-
-func minimumPositive(left int64, right int64) int64 {
-	if left <= 0 {
-		return right
-	}
-	if right <= 0 || left < right {
-		return left
-	}
-	return right
 }

@@ -499,6 +499,7 @@ type AccountPool struct {
 	modelTiers            map[string][]string
 	orderedIndices        []int
 	continuationModels    map[string]Model
+	catalogAccountID      string
 	accountOrder          map[string]int
 	changed               chan struct{}
 	// sessionCheck 以官网页面的方式打开 AI Studio 检查账户会话，为空时认证失败直接标记需要重新登录

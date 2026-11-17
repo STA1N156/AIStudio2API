@@ -190,6 +190,9 @@ type trackedService struct {
 }
 
 type modelCatalogService interface {
+	CatalogAccountIDs() []string
+	UseCatalogAccount(string)
+	CatalogFresh(time.Duration, bool) bool
 	RefreshAccountModels(context.Context, string, bool) ([]aistudio.Model, error)
 	RefreshAccountState(context.Context, string, bool) (aistudio.AccountRefresh, error)
 	ReclaimExpiredResources(context.Context) error
@@ -709,23 +712,26 @@ type accountModelRefreshResult struct {
 	accountID string
 	models    []aistudio.Model
 	err       error
-	skipped   bool
 }
 
-// startModelCatalogRefresh 刷新目录缓存缺失或已满 accountStateRefreshInterval 的账户目录并持续处理失败目录
+// startModelCatalogRefresh 刷新一个可用来源的目录并持续处理后续目录更新。
 func (service *trackedService) startModelCatalogRefresh(ctx context.Context) (<-chan error, <-chan struct{}, <-chan struct{}) {
 	ready := make(chan error, 1)
 	synced := make(chan struct{})
 	done := make(chan struct{})
-	accountIDs := service.modelCatalogAccountIDs()
-	cached := len(accountIDs)
-	accountIDs = service.staleCatalogAccountIDs(accountIDs)
-	cached -= len(accountIDs)
+	accountIDs := service.catalog.CatalogAccountIDs()
+	cached := 0
+	if service.catalog.CatalogFresh(accountStateRefreshInterval, service.discoverHiddenModels) {
+		accountIDs, cached = nil, 1
+	}
 	go func() {
 		defer close(done)
 		startedAt := time.Now()
 		lastPublished := startedAt
-		firstReady := false
+		firstReady := cached > 0
+		if firstReady {
+			ready <- nil
+		}
 		synchronized := 0
 		refreshed := 0
 		var failures aistudio.GroupedErrors
@@ -793,53 +799,36 @@ func (service *trackedService) modelCatalogAccountIDs() []string {
 	return service.pool.ByBenefitTier(accountIDs)
 }
 
-// staleCatalogAccountIDs 返回 accountIDs 中没有目录缓存、缓存最近一次同步已满 accountStateRefreshInterval 或缓存与官网隐藏模型探测设置不一致的账户
-func (service *trackedService) staleCatalogAccountIDs(accountIDs []string) []string {
-	now := time.Now()
-	fresh := make(map[string]bool)
-	for _, status := range service.pool.Status() {
-		fresh[status.ID] = len(status.Models) > 0 && now.Sub(status.CatalogSyncedAt) < accountStateRefreshInterval &&
-			status.HiddenDiscovered == service.discoverHiddenModels && (service.discoverHiddenModels || status.HiddenModels == 0)
-	}
-	return slices.DeleteFunc(accountIDs, func(accountID string) bool { return fresh[accountID] })
-}
-
-// refreshAccountModelCatalogs 同步账户目录并按完成顺序发出结果：还没有目录的账户并发载入页面，已有目录的账户逐个载入
+// refreshAccountModelCatalogs 顺次尝试来源，取得第一份非空目录后立即结束。
 func (service *trackedService) refreshAccountModelCatalogs(
 	ctx context.Context,
 	accountIDs []string,
 	pendingOnly bool,
 ) <-chan accountModelRefreshResult {
-	results := make(chan accountModelRefreshResult, len(accountIDs))
-	refresh := func(accountID string) {
-		if pendingOnly && !service.modelRetryPending(accountID) {
-			results <- accountModelRefreshResult{accountID: accountID, skipped: true}
-			return
-		}
-		models, err := service.refreshAccountModelCatalog(ctx, accountID, pendingOnly)
-		results <- accountModelRefreshResult{accountID: accountID, models: models, err: err}
-	}
-	catalogued := make(map[string]bool)
-	for _, status := range service.pool.Status() {
-		catalogued[status.ID] = len(status.Models) > 0
-	}
-	var refreshes sync.WaitGroup
-	var known []string
-	for _, accountID := range accountIDs {
-		if catalogued[accountID] {
-			known = append(known, accountID)
-			continue
-		}
-		refreshes.Go(func() { refresh(accountID) })
-	}
-	refreshes.Go(func() {
-		for _, accountID := range known {
-			refresh(accountID)
-		}
-	})
+	results := make(chan accountModelRefreshResult, 1)
 	go func() {
-		refreshes.Wait()
-		close(results)
+		defer close(results)
+		for _, accountID := range accountIDs {
+			if ctx.Err() != nil {
+				return
+			}
+			if pendingOnly && !service.modelRetryPending(accountID) {
+				continue
+			}
+			models, err := service.refreshAccountModelCatalog(ctx, accountID, pendingOnly)
+			ok := err == nil && len(models) > 0
+			if ok {
+				service.catalog.UseCatalogAccount(accountID)
+			}
+			select {
+			case results <- accountModelRefreshResult{accountID: accountID, models: models, err: err}:
+			case <-ctx.Done():
+				return
+			}
+			if ok {
+				return
+			}
+		}
 	}()
 	return results
 }
@@ -982,12 +971,23 @@ func (service *trackedService) patrolAccountStates(ctx context.Context, startedA
 		round := time.Now()
 		service.catalogRoundAt = round
 		service.catalogRoundMu.Unlock()
-		service.refreshAccountStates(ctx, func() {
+		finished := func() {
 			service.catalogRoundMu.Lock()
 			service.catalogRoundDone = nil
 			service.catalogRoundMu.Unlock()
 			close(done)
-		})
+		}
+		if woken {
+			for result := range service.refreshAccountModelCatalogs(ctx, service.catalog.CatalogAccountIDs(), false) {
+				if result.err == nil && len(result.models) > 0 {
+					service.applyCachedModelCatalog()
+					service.publishModelAccess()
+				}
+			}
+			finished()
+		} else {
+			service.refreshAccountStates(ctx, finished)
+		}
 		timer.Reset(time.Until(round.Add(accountStateRefreshInterval)))
 	}
 }
@@ -1084,24 +1084,18 @@ func (service *trackedService) retryAccountModelCatalogs(ctx context.Context) bo
 	}
 	accountIDs := service.pendingModelRetryIDs()
 	authRequiredBefore := service.authRequiredAccountIDs()
-	changed := false
 	for result := range service.refreshAccountModelCatalogs(ctx, accountIDs, true) {
 		if ctx.Err() != nil {
 			return false
 		}
-		if !result.skipped && result.err == nil && len(result.models) > 0 {
+		if result.err == nil && len(result.models) > 0 {
 			service.applyCachedModelCatalog()
 			service.publishModelAccess()
 			service.requests.log(result.accountID, "INFO", "模型目录已更新", "models", len(result.models))
 		}
 	}
 	authChanged := !maps.Equal(service.authRequiredAccountIDs(), authRequiredBefore)
-	if changed {
-		service.modelSyncMu.Lock()
-		service.applyCachedModelCatalog()
-		service.modelSyncMu.Unlock()
-	}
-	if changed || authChanged {
+	if authChanged {
 		service.publishModelAccess()
 	}
 	return true
