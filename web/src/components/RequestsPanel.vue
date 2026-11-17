@@ -315,6 +315,24 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
                 :class="{ 'rotate-90': expandedModels.has(group.model) }"
               />
             </button>
+            <div class="px-4 pb-3">
+              <div
+                role="progressbar"
+                :aria-label="`${group.model} ${t('cooldowns.title')}`"
+                :aria-valuemin="0"
+                :aria-valuemax="Math.max(1, group.eligible)"
+                :aria-valuenow="group.accounts.size"
+                :aria-valuetext="`${group.accounts.size} / ${group.eligible}`"
+                class="h-1.5 overflow-hidden rounded-full bg-raised"
+              >
+                <div
+                  class="h-full rounded-full bg-yellow-500 transition-[width]"
+                  :style="{
+                    width: `${group.eligible ? Math.min(100, (group.accounts.size / group.eligible) * 100) : 0}%`,
+                  }"
+                ></div>
+              </div>
+            </div>
             <div
               v-if="expandedModels.has(group.model)"
               :id="`cooldown-${group.model}`"
