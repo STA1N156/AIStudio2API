@@ -1,12 +1,48 @@
 package aistudio
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
+
+func TestIncompletePageCatalogDisablesOnlyFailedAccount(t *testing.T) {
+	pool, next := permissionTestLeases(t)
+	original := pool.byID["a"].Config
+	_, _, failure := (&Client{}).ApplyPageCatalog(context.Background(), "a", camoufoxnative.PageCatalog{})
+	if !errors.Is(failure, ErrIncompletePageCatalog) {
+		t.Fatalf("missing page data: %v", failure)
+	}
+	failure = errors.Join(errors.New("prepare generation"), failure)
+	if err := next("a").MarkRequestFailure(failure); err != nil {
+		t.Fatal(err)
+	}
+	original.Enabled = false
+	if pool.byID["a"].Config != original || pool.byID["a"].State != AccountDisabled || !pool.byID["b"].Config.Enabled {
+		t.Fatal("only the failing account must be disabled, preserving its other settings")
+	}
+	data, err := os.ReadFile(pool.byID["a"].ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct{ Enabled bool }
+	if err := json.Unmarshal(data, &saved); err != nil || saved.Enabled {
+		t.Fatalf("disabled state was not saved: %v", err)
+	}
+	if !retryableAccountError(failure) || len(pool.byID["a"].runtime.Cooldowns) != 0 {
+		t.Fatal("missing page data must switch accounts without adding quota cooldown")
+	}
+	if err := next("b").MarkRequestFailure(errors.New("temporary network failure")); err != nil || !pool.byID["b"].Config.Enabled {
+		t.Fatal("unrelated errors must not disable the other account")
+	}
+}
 
 func permissionTestLeases(t *testing.T) (*AccountPool, func(string) *AccountLease) {
 	t.Helper()

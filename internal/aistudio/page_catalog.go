@@ -10,6 +10,8 @@ import (
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
 
+var ErrIncompletePageCatalog = errors.New("会话页面载入没有取得 GetLoggingContext、GetAiStudioBenefitTier 与 ListModels 的响应")
+
 // PageCatalogProvider 返回账户会话页面载入时目录 RPC 的响应：reload 为 false 时取最近一次载入，账户没有载入过页面时先载入；reload 为 true 时重新载入页面
 type PageCatalogProvider interface {
 	PageCatalog(ctx context.Context, accountID string, reload bool) (camoufoxnative.PageCatalog, error)
@@ -27,7 +29,7 @@ func (c *Client) loadPageCatalog(ctx context.Context, accountID string, reload b
 // ApplyPageCatalog 以账户会话页面载入时的响应更新条款状态、权益与模型目录，账户尚未同意条款时按官网条款对话框发送 AcceptTerms，本进程同意过的账户不再发送
 func (c *Client) ApplyPageCatalog(ctx context.Context, accountID string, page camoufoxnative.PageCatalog) (BenefitTier, []Model, error) {
 	if page.Logging == nil || page.Tier == nil || page.Models == nil {
-		return BenefitTierFree, nil, errors.New("会话页面载入没有取得 GetLoggingContext、GetAiStudioBenefitTier 与 ListModels 的响应")
+		return BenefitTierFree, nil, ErrIncompletePageCatalog
 	}
 	if err := c.acceptTerms(ctx, accountID, page.Logging); err != nil {
 		return BenefitTierFree, nil, err

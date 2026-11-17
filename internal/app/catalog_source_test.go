@@ -38,3 +38,15 @@ func TestSingleCatalogRefreshStopsAtFirstSuccess(t *testing.T) {
 		}
 	}
 }
+
+func TestIncompletePageCatalogSwitchesAccount(t *testing.T) {
+	err := errors.Join(errors.New("prepare generation"), aistudio.ErrIncompletePageCatalog)
+	if !retryableGenerateAccountError(context.Background(), err) {
+		t.Fatal("incomplete page data must allow retrying another account")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if retryableGenerateAccountError(ctx, err) {
+		t.Fatal("a canceled request must not retry")
+	}
+}

@@ -2749,6 +2749,9 @@ func collectGenerateEvents(ctx context.Context, source <-chan aistudio.Event, on
 }
 
 func retryableGenerateAccountError(ctx context.Context, err error) bool {
+	if errors.Is(err, aistudio.ErrIncompletePageCatalog) {
+		return ctx.Err() == nil
+	}
 	if errors.Is(err, errStreamClosedBeforeFirstEvent) || errors.Is(err, aistudio.ErrAccountCoolingDown) {
 		return true
 	}

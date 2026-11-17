@@ -428,6 +428,11 @@ func (s *PooledService) CachedModels() []Model {
 }
 
 func (l *AccountLease) MarkRequestFailure(err error) error {
+	if errors.Is(err, ErrIncompletePageCatalog) {
+		l.pool.recordCatalogFailure(l.account.ID, err)
+		_, failure := l.pool.SetEnabled(l.account.ID, false)
+		return failure
+	}
 	var rpc *RPCError
 	if errors.As(err, &rpc) && rpc.StatusCode == http.StatusForbidden {
 		if strings.TrimSuffix(strings.TrimSpace(rpc.Message), ".") == "The caller does not have permission" {
@@ -471,6 +476,9 @@ func modelBoundRPCMethod(method string) bool {
 
 // markRetryableFailure 记录可换号的失败：认证失败时确认账户会话，其余失败以收到失败的时刻为检查时刻按额度或 30 秒冷却该账户
 func (s *PooledService) markRetryableFailure(ctx context.Context, lease *AccountLease, modelAccessScope string, err error) error {
+	if errors.Is(err, ErrIncompletePageCatalog) {
+		return lease.MarkRequestFailure(err)
+	}
 	accountID := lease.Account().ID
 	if DefinitiveAuthenticationFailure(err) {
 		return lease.ConfirmAuthenticationFailure(ctx, err)
@@ -539,6 +547,9 @@ func (s *PooledService) modelsForLease(ctx context.Context, lease *AccountLease,
 
 // catalogFailure 认证失败时确认账户会话并把已失效的账户标为需要登录，Google 拒绝该账户时标为服务受限，其余失败记为该账户最近一次目录读取错误
 func (s *PooledService) catalogFailure(ctx context.Context, lease *AccountLease, err error) error {
+	if errors.Is(err, ErrIncompletePageCatalog) {
+		return errors.Join(err, lease.MarkRequestFailure(err))
+	}
 	if DefinitiveAuthenticationFailure(err) {
 		return errors.Join(err, lease.ConfirmAuthenticationFailure(ctx, err))
 	}
@@ -750,7 +761,7 @@ func retryableAccountError(err error) bool {
 	if driveAuthorizationMissing(err) {
 		return false
 	}
-	if errors.Is(err, ErrAccountCoolingDown) {
+	if errors.Is(err, ErrAccountCoolingDown) || errors.Is(err, ErrIncompletePageCatalog) {
 		return true
 	}
 	var rpcError *RPCError
