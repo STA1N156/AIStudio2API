@@ -75,6 +75,9 @@ func TestPublic400Messages(t *testing.T) {
 				if got := geminiErrorPayload(test.err, 0)["message"]; got != test.want {
 					t.Fatalf("Gemini stream message = %q, want %q", got, test.want)
 				}
+				if got := interactionErrorEvent(test.err, "event-1")["error"].(map[string]any)["message"]; got != test.want {
+					t.Fatalf("Interactions stream message = %q, want %q", got, test.want)
+				}
 			}
 			if test.err.Error() != original || statusFromError(test.err) != 400 {
 				t.Fatal("internal error or status changed")
