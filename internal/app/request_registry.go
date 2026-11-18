@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -45,7 +46,6 @@ const (
 	adminLogRetain             = 2000
 	adminLogCompactAt          = 2200
 	adminLogInitialEvents      = 200
-	adminRequestRetain         = 512
 	adminRequestCompactAt      = 640
 	adminRequestRefreshLatency = 50 * time.Millisecond
 )
@@ -119,14 +119,19 @@ func (registry *requestRegistry) finish(id string, state string) {
 
 func (registry *requestRegistry) list() []api.AdminRequest {
 	registry.mu.Lock()
-	requests := make([]api.AdminRequest, 0, len(registry.active))
-	for _, tracked := range registry.active {
-		requests = append(requests, tracked.request)
-	}
+	requests := registry.activeRequestsLocked()
 	registry.mu.Unlock()
 	sort.Slice(requests, func(left int, right int) bool {
 		return requests[left].StartedAt.Before(requests[right].StartedAt)
 	})
+	return requests
+}
+
+func (registry *requestRegistry) activeRequestsLocked() []api.AdminRequest {
+	requests := make([]api.AdminRequest, 0, len(registry.active))
+	for _, tracked := range registry.active {
+		requests = append(requests, tracked.request)
+	}
 	return requests
 }
 
@@ -249,9 +254,17 @@ func newEventSubscriber(ctx context.Context) *eventSubscriber {
 	}
 }
 
-func (subscriber *eventSubscriber) enqueue(event api.AdminEvent) {
+func (subscriber *eventSubscriber) enqueue(event api.AdminEvent, activeRequests func() []api.AdminRequest) {
 	subscriber.mu.Lock()
 	subscriber.enqueueLocked(event)
+	if subscriber.pendingRequests >= adminRequestCompactAt {
+		// 用快照取代积压的请求事件，避免丢掉结束通知后留下幽灵请求。
+		subscriber.pending = slices.DeleteFunc(subscriber.pending, func(event api.AdminEvent) bool {
+			return event.Type == "request" || event.Type == "requests"
+		})
+		subscriber.pending = append(subscriber.pending, api.AdminEvent{Type: "requests", Data: activeRequests()})
+		subscriber.pendingRequests = 0
+	}
 	subscriber.mu.Unlock()
 	subscriber.notify()
 }
@@ -280,32 +293,15 @@ func (subscriber *eventSubscriber) enqueueLocked(event api.AdminEvent) {
 	}
 	subscriber.pending = append(subscriber.pending, event)
 	if subscriber.pendingLogs >= adminLogCompactAt {
-		subscriber.trimPendingLocked("log", adminLogRetain)
-	}
-	if subscriber.pendingRequests >= adminRequestCompactAt {
-		subscriber.trimPendingLocked("request", adminRequestRetain)
-	}
-}
-
-func (subscriber *eventSubscriber) trimPendingLocked(eventType string, retain int) {
-	count := subscriber.pendingLogs
-	if eventType == "request" {
-		count = subscriber.pendingRequests
-	}
-	drop := count - retain
-	compacted := subscriber.pending[:0]
-	for _, event := range subscriber.pending {
-		if event.Type == eventType && drop > 0 {
+		drop := subscriber.pendingLogs - adminLogRetain
+		subscriber.pending = slices.DeleteFunc(subscriber.pending, func(event api.AdminEvent) bool {
+			if event.Type != "log" || drop == 0 {
+				return false
+			}
 			drop--
-			continue
-		}
-		compacted = append(compacted, event)
-	}
-	subscriber.pending = compacted
-	if eventType == "request" {
-		subscriber.pendingRequests = retain
-	} else {
-		subscriber.pendingLogs = retain
+			return true
+		})
+		subscriber.pendingLogs = adminLogRetain
 	}
 }
 
@@ -319,7 +315,7 @@ func (subscriber *eventSubscriber) activate(initial []api.AdminEvent) {
 		subscriber.enqueueLocked(event)
 	}
 	for _, event := range buffered {
-		if event.Type != "log" {
+		if event.Type != "log" && event.Type != "request" && event.Type != "requests" {
 			subscriber.enqueueLocked(event)
 		}
 	}
@@ -399,22 +395,13 @@ func (registry *requestRegistry) activateSubscriber(
 	if len(initialLogs) > adminLogInitialEvents {
 		initialLogs = initialLogs[len(initialLogs)-adminLogInitialEvents:]
 	}
-	initial := make([]api.AdminEvent, 0, len(prefix)+len(initialLogs)+len(suffix)+len(registry.active))
+	initial := make([]api.AdminEvent, 0, len(prefix)+len(initialLogs)+len(suffix)+1)
 	initial = append(initial, prefix...)
 	for _, entry := range initialLogs {
 		initial = append(initial, api.AdminEvent{Type: "log", Data: entry})
 	}
 	initial = append(initial, suffix...)
-	requests := make([]api.AdminRequest, 0, len(registry.active))
-	for _, tracked := range registry.active {
-		requests = append(requests, tracked.request)
-	}
-	sort.Slice(requests, func(left int, right int) bool {
-		return requests[left].StartedAt.Before(requests[right].StartedAt)
-	})
-	for _, request := range requests {
-		initial = append(initial, api.AdminEvent{Type: "request", Data: request})
-	}
+	initial = append(initial, api.AdminEvent{Type: "requests", Data: registry.activeRequestsLocked()})
 	subscriber.activate(initial)
 	registry.mu.Unlock()
 	go subscriber.run()
@@ -423,7 +410,7 @@ func (registry *requestRegistry) activateSubscriber(
 
 func (registry *requestRegistry) publishLocked(event api.AdminEvent) {
 	for subscriber := range registry.subscribers {
-		subscriber.enqueue(event)
+		subscriber.enqueue(event, registry.activeRequestsLocked)
 	}
 }
 

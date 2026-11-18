@@ -24,7 +24,7 @@ const accounts = shallowRef<Account[]>([])
 const accountTasks = ref<AccountTask[]>([])
 const models = ref<Model[]>([])
 const cooldowns = ref<Cooldown[]>([])
-// requests 是页面打开以来的请求，最近开始的在前，每次变化替换整个数组
+// requests 保存当前活动请求与页面保留的近期记录，每次变化替换整个数组
 const requests = shallowRef<RequestSummary[]>([])
 const config = ref<ServiceConfig | null>(null)
 const update = ref<UpdateStatus | null>(null)
@@ -131,8 +131,10 @@ async function loadCooldowns(): Promise<void> {
 async function loadRequests(): Promise<void> {
   loading.requests = requests.value.length === 0
   errors.requests = ''
+  const before = requests.value
   try {
-    requests.value = await api.requests()
+    const snapshot = await api.requests()
+    if (requests.value === before) applyRequestSnapshot(snapshot)
   } catch (error) {
     errors.requests = errorText(error)
   } finally {
@@ -278,6 +280,13 @@ async function clearLogs(): Promise<void> {
 // requestHistoryLimit 是请求列表保留的请求数，超出时去掉最早结束的请求
 const requestHistoryLimit = 512
 
+function applyRequestSnapshot(active: RequestSummary[]): void {
+  const history = requests.value
+    .filter((request) => request.state !== 'queued' && request.state !== 'running')
+    .slice(0, Math.max(0, requestHistoryLimit - active.length))
+  requests.value = [...active, ...history]
+}
+
 // upsertRequest 返回替换同一请求或在开头加入新请求后的列表
 function upsertRequest(items: RequestSummary[], incoming: RequestSummary): RequestSummary[] {
   const index = items.findIndex((item) => item.id === incoming.id)
@@ -346,6 +355,10 @@ function handleAdminEvent(event: AdminEvent): void {
     accountTasks.value = event.data.tasks
     return
   }
+  if (event.type === 'requests') {
+    applyRequestSnapshot(event.data)
+    return
+  }
   requests.value = upsertRequest(requests.value, event.data)
 }
 
@@ -368,7 +381,6 @@ async function startConsole(): Promise<void> {
   )
   eventConnection = openAdminEvents(handleAdminEvent, () => {
     resetLogs()
-    requests.value = []
   })
 }
 

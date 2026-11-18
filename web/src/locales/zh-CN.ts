@@ -405,6 +405,7 @@ export const messages = {
   'cooldowns.title': '模型冷却',
   'cooldowns.until': '恢复时间',
   'cooldowns.all': '全部',
+  'cooldowns.projectedUsage': '预计用量（北京时间 16:00）',
   'cooldowns.other': '其他',
   'cooldowns.category': '类别',
   'cooldowns.empty': '当前没有冷却中的账户',

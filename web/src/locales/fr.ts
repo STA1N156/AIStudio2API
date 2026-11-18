@@ -428,6 +428,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.title': 'Refroidissements par modèle',
   'cooldowns.until': 'Disponible à',
   'cooldowns.all': 'Tout',
+  'cooldowns.projectedUsage': 'Utilisation prévue à 16 h (UTC+8)',
   'cooldowns.other': 'Autre',
   'cooldowns.category': 'Catégorie',
   'cooldowns.empty': 'Aucun compte en refroidissement',

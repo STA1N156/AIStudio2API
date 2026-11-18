@@ -337,7 +337,7 @@ async function logout(): Promise<void> {
               >
                 <UiIcon :name="item.icon" :size="16" class="shrink-0" />
                 <span
-                  v-tooltip.overflow="t(item.label)"
+                  v-tooltip.overflow="wide ? t(item.label) : undefined"
                   class="min-w-0 truncate whitespace-normal"
                   >{{ t(item.label) }}</span
                 >

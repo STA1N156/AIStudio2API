@@ -425,6 +425,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.title': 'Modell-Cooldowns',
   'cooldowns.until': 'Verfügbar ab',
   'cooldowns.all': 'Alle',
+  'cooldowns.projectedUsage': 'Erwartete Auslastung um 16:00 (UTC+8)',
   'cooldowns.other': 'Sonstige',
   'cooldowns.category': 'Kategorie',
   'cooldowns.empty': 'Kein Konto im Cooldown',

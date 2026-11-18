@@ -426,6 +426,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.title': 'モデルのクールダウン',
   'cooldowns.until': '回復予定',
   'cooldowns.all': 'すべて',
+  'cooldowns.projectedUsage': '16:00（UTC+8）の予測使用率',
   'cooldowns.other': 'その他',
   'cooldowns.category': '種類',
   'cooldowns.empty': 'クールダウン中のアカウントはありません',

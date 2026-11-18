@@ -571,6 +571,7 @@ export type AdminEvent =
   | { type: 'models'; data: { models: Model[] } }
   | { type: 'cooldowns'; data: Cooldown[] }
   | { type: 'account_tasks'; data: { tasks: AccountTask[] } }
+  | { type: 'requests'; data: RequestSummary[] }
   | { type: 'request'; data: RequestSummary }
 
 // SystemInstructionPreset 是保存在服务端对话库中的系统指令预设

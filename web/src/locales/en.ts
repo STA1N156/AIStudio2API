@@ -422,6 +422,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.title': 'Model cooldowns',
   'cooldowns.until': 'Available at',
   'cooldowns.all': 'All',
+  'cooldowns.projectedUsage': 'Projected usage at 16:00 (UTC+8)',
   'cooldowns.other': 'Other',
   'cooldowns.category': 'Category',
   'cooldowns.empty': 'No accounts are cooling down',

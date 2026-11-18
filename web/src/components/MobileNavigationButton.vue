@@ -8,7 +8,6 @@ const { t } = useI18n()
 
 <template>
   <DialogTrigger
-    v-tooltip="t('nav.open')"
     class="flex size-10 shrink-0 items-center justify-center rounded hover:bg-raised md:hidden"
     :aria-label="t('nav.open')"
   >

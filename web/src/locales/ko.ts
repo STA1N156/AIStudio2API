@@ -423,6 +423,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.title': '모델 쿨다운',
   'cooldowns.until': '복구 시간',
   'cooldowns.all': '전체',
+  'cooldowns.projectedUsage': '16:00(UTC+8) 예상 사용률',
   'cooldowns.other': '기타',
   'cooldowns.category': '유형',
   'cooldowns.empty': '쿨다운 중인 계정이 없습니다',

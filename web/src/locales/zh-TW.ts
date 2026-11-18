@@ -410,6 +410,7 @@ export const messages: Record<TranslationKey, string> = {
   'cooldowns.title': '模型冷卻',
   'cooldowns.until': '恢復時間',
   'cooldowns.all': '全部',
+  'cooldowns.projectedUsage': '預計用量（北京時間 16:00）',
   'cooldowns.other': '其他',
   'cooldowns.category': '類別',
   'cooldowns.empty': '目前沒有冷卻中的帳號',

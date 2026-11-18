@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import MobileNavigationButton from './MobileNavigationButton.vue'
-import { computed, ref, watch } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { api } from '@/api'
 import { channelLabelKey, useI18n, type TranslationKey } from '@/i18n'
 import { usePaged } from '@/paging'
@@ -26,7 +26,7 @@ const emit = defineEmits<{
 const { locale, t, errorText, logText } = useI18n()
 const cancelling = ref('')
 const refreshing = ref(false)
-const selectedCategory = ref('')
+const selectedCategory = ref<string | null>(null)
 const cooldownModel = ref('')
 const requestModel = ref('')
 const cooldownModels = computed(() =>
@@ -75,7 +75,8 @@ function categoryLabel(category: string): string {
   return category ? logText(category) : t('cooldowns.other')
 }
 
-// categories 是全部与各冷却类型的数量，类型按数量从多到少排列
+const minuteLimit = '分钟限额'
+// 各冷却类型按数量从多到少排列。
 const categories = computed(() => {
   const counts = new Map<string, number>()
   for (const cooldown of modelCooldowns.value) {
@@ -84,21 +85,43 @@ const categories = computed(() => {
   }
   return [...counts.entries()].sort((left, right) => right[1] - left[1])
 })
+const minuteLimitCount = computed(
+  () => categories.value.find(([category]) => category === minuteLimit)?.[1] ?? 0,
+)
+const showCategories = computed(() => categories.value.length > 1 || minuteLimitCount.value > 0)
+const allCooldownCount = computed(() => modelCooldowns.value.length - minuteLimitCount.value)
 
 // activeCategory 是当前生效的冷却类型，所选类型已无冷却时为全部
 const activeCategory = computed(() =>
-  categories.value.length > 1 &&
-  categories.value.some(([category]) => category === selectedCategory.value)
+  showCategories.value && categories.value.some(([category]) => category === selectedCategory.value)
     ? selectedCategory.value
-    : '',
+    : null,
 )
+
+const now = ref(Date.now())
+const forecastTimer = window.setInterval(() => (now.value = Date.now()), 60_000)
+onScopeDispose(() => window.clearInterval(forecastTimer))
+const minutesPerDay = 24 * 60
+// 北京时间 16:00 是 UTC 08:00，不依赖浏览器的时区。
+const cycleMinutes = computed(() => (Math.floor(now.value / 60_000) - 8 * 60) % minutesPerDay)
+const showForecast = computed(
+  () =>
+    (activeCategory.value === null || activeCategory.value === '每日限额') &&
+    cycleMinutes.value > 0,
+)
+
+function projectedUsage(cooled: number, eligible: number): number {
+  return Math.round(((cooled / eligible) * minutesPerDay * 100) / cycleMinutes.value)
+}
 
 // visibleCooldowns 是所选类型的冷却记录。
 const visibleCooldowns = computed(() =>
-  modelCooldowns.value.filter(
-    (cooldown) =>
-      activeCategory.value === '' || reasonCategory(cooldown.reason) === activeCategory.value,
-  ),
+  modelCooldowns.value.filter((cooldown) => {
+    const category = reasonCategory(cooldown.reason)
+    return activeCategory.value === null
+      ? category !== minuteLimit
+      : category === activeCategory.value
+  }),
 )
 
 // 每个模型按账号去重，分母直接使用后端的启用与模型资格统计。
@@ -259,10 +282,10 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
             <option value="">{{ t('requests.allModels') }}</option>
             <option v-for="model in cooldownModels" :key="model" :value="model">{{ model }}</option>
           </UiSelect>
-          <div v-if="categories.length > 1" class="ml-auto flex flex-wrap gap-1">
+          <div v-if="showCategories" class="ml-auto flex flex-wrap gap-1">
             <button
-              v-for="[category, count] in [['', modelCooldowns.length] as const, ...categories]"
-              :key="category || 'all'"
+              v-for="[category, count] in [[null, allCooldownCount] as const, ...categories]"
+              :key="category ?? 'all'"
               type="button"
               class="rounded px-2 py-0.5 text-xs transition"
               :class="
@@ -273,7 +296,7 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
               :aria-pressed="activeCategory === category"
               @click="selectedCategory = category"
             >
-              {{ category === '' ? t('cooldowns.all') : categoryLabel(category) }} {{ count }}
+              {{ category === null ? t('cooldowns.all') : categoryLabel(category) }} {{ count }}
             </button>
           </div>
         </div>
@@ -339,8 +362,17 @@ async function cancelRequest(request: RequestSummary): Promise<void> {
             <div
               v-if="expandedModels.has(group.model)"
               :id="`cooldown-${group.model}`"
-              class="space-y-3 bg-canvas/40 px-4 pt-1 pb-4"
+              class="mx-4 mb-3 space-y-3 rounded-md border border-line/70 bg-canvas/40 px-3 py-3"
             >
+              <div
+                v-if="showForecast && group.eligible > 0"
+                class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs text-gray-400"
+              >
+                <span>{{ t('cooldowns.projectedUsage') }}</span>
+                <span class="font-mono text-gray-200">
+                  {{ projectedUsage(group.accounts.size, group.eligible) }}%
+                </span>
+              </div>
               <div v-for="row in group.rows" :key="row.tier" class="space-y-1.5">
                 <div class="flex items-center justify-between gap-3 text-xs">
                   <span class="font-medium text-gray-300">{{ row.tier }}</span>
