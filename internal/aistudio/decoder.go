@@ -51,7 +51,7 @@ type ContentPolicyError struct {
 
 func (e *ContentPolicyError) HTTPStatus() int { return http.StatusBadRequest }
 
-const EmptyModelOutputMessage = "正文输出为空，请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
+const EmptyModelOutputMessage = "正文输出为空（因思考内容中存在违规内容），请立即降低思考强度，如后缀high换low，并检查客户端内置思考强度设置/是否含有过多敏感内容"
 
 type RequiredToolCallError struct{}
 
