@@ -2542,15 +2542,14 @@ func (service *trackedService) settleAttempt(
 	protectedTransport := errors.Is(err, aistudio.ErrProtectedTransport) && requestCtx.Err() == nil
 	localWorkerFailure := (workerFailed || workerReplaced) && requestCtx.Err() == nil
 	retryable := retryableGenerateAccountError(requestCtx, err) || localWorkerFailure
-	if stateErr := lease.MarkRequestFailure(err); stateErr != nil {
-		err = errors.Join(err, stateErr)
-		retryable = false
-	}
 	if aistudio.DefinitiveAuthenticationFailure(err) {
 		if stateErr := lease.ConfirmAuthenticationFailure(requestCtx, err); stateErr != nil {
 			err = errors.Join(err, stateErr)
 			retryable = false
 		}
+	} else if stateErr := lease.MarkRequestFailure(err); stateErr != nil {
+		err = errors.Join(err, stateErr)
+		retryable = false
 	}
 	cooldown, quotaFailure := aistudio.QuotaCooldownForError(err, time.Now())
 	if quotaFailure {

@@ -1536,10 +1536,16 @@ func (l *AccountLease) markAuthenticationValidAt(checkedAt time.Time) error {
 
 // confirmAuthenticationFailureAt 在账户会话失效时保存长连接中指定轮次的认证失败状态，会话检查被转到 Google 受限页时把账户标为服务受限
 func (l *AccountLease) confirmAuthenticationFailureAt(ctx context.Context, cause error, checkedAt time.Time) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	l.pool.mu.Lock()
 	check := l.pool.sessionCheck
 	l.pool.mu.Unlock()
-	if check != nil && !errors.Is(cause, camoufoxnative.ErrAuthenticationRequired) {
+	if !errors.Is(cause, camoufoxnative.ErrAuthenticationRequired) {
+		if check == nil {
+			return nil
+		}
 		l.sessionOnce.Do(func() {
 			_, l.sessionErr, _ = l.pool.sessions.Do(l.account.ID, func() (any, error) {
 				err := check(ctx, l.account)
@@ -1549,6 +1555,9 @@ func (l *AccountLease) confirmAuthenticationFailureAt(ctx context.Context, cause
 				return nil, err
 			})
 		})
+		if ctx.Err() != nil {
+			return nil
+		}
 		if denial := RestrictionDenial(l.sessionErr); denial != nil {
 			return l.pool.MarkRestricted(l.account.ID, denial)
 		}
