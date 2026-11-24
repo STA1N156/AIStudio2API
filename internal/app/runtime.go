@@ -1973,7 +1973,7 @@ func (service *trackedService) generateWithRetry(
 	} else {
 		preferredAccountID = service.pool.InlineMediaAccount(request.Contents)
 	}
-	hedgeable := !request.Background && !assistant && !service.pool.InteractionAgentModel(modelID) && (service.hedgeAuto || service.hedgeAfter > 0) && slices.Contains(service.hedgeModels, modelID)
+	hedgeable := !request.Background && !assistant && (service.hedgeAuto || service.hedgeAfter > 0) && slices.Contains(service.hedgeModels, modelID)
 	hedged := false
 	var winner *generateAttempt
 	var activity *upstreamActivity

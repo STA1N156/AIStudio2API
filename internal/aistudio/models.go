@@ -85,8 +85,6 @@ type GenerationDefaults struct {
 	OutputResolution bool
 	// InteractionStream 表示官网经 CreateInteractionStream 生成的模型
 	InteractionStream bool
-	// InteractionTask 表示官网经 CreateInteraction 创建后台任务、经 GetInteractionStream 读取结果的模型
-	InteractionTask bool
 	// VideoResolution 为视频输出分辨率选项中的第一项，Interaction 视频输出格式的默认分辨率
 	VideoResolution string
 	// ContinuedOutputTokens 表示自动续写模型的输出总上限，其他模型为 0
@@ -271,36 +269,29 @@ func decodeModelRow(raw json.RawMessage, rowIndex int) (modelEntry, error) {
 		AccessModes:       append([]int64(nil), accessModes...),
 		Paid:              paidCode == 2,
 	}
+	defaults, err := decodeGenerationDefaults(row, path, raw, capabilities)
+	if err != nil {
+		return modelEntry{}, err
+	}
 	if config := rawAt(row, 78); !isJSONNull(config) {
-		// field 79 InteractionConfig 的 field 3 表示经 CreateInteraction 后台任务生成，field 6 是 agent 默认使用的模型
+		// InteractionConfig field 3 is the background flag; field 4 distinguishes agents from models.
 		interaction, err := rawArray(config, path+"[78]", raw)
 		if err != nil {
 			return modelEntry{}, withMethod(err, "ListModels")
-		}
-		if value := rawAt(interaction, 2); !isJSONNull(value) {
-			background, err := rawBool(value, path+"[78][2]", raw)
-			if err != nil {
-				return modelEntry{}, withMethod(err, "ListModels")
-			}
-			model.Capabilities["interaction_task"] = background
 		}
 		kind, err := optionalIntField(interaction, 3, path+"[78]", raw)
 		if err != nil {
 			return modelEntry{}, withMethod(err, "ListModels")
 		}
-		// field 4 为 2 且不是后台任务的模型经 CreateInteractionStream 生成，与官网一样以内联数据发送图片
-		model.Capabilities["interaction_stream"] = kind == 2 && !model.Capabilities["interaction_task"]
-		if value := rawAt(interaction, 5); !isJSONNull(value) {
-			agentModel, err := rawString(value, path+"[78][5]", raw)
+		background := false
+		if value := rawAt(interaction, 2); !isJSONNull(value) {
+			background, err = rawBool(value, path+"[78][2]", raw)
 			if err != nil {
 				return modelEntry{}, withMethod(err, "ListModels")
 			}
-			model.AgentModel = strings.TrimPrefix(agentModel, "models/")
 		}
-	}
-	defaults, err := decodeGenerationDefaults(row, path, raw, capabilities)
-	if err != nil {
-		return modelEntry{}, err
+		defaults.InteractionStream = kind == 2 && !background
+		model.Capabilities["interaction_stream"] = defaults.InteractionStream
 	}
 	if capabilities["output_continuation"] {
 		defaults.ContinuedOutputTokens = inputLimit
@@ -540,26 +531,6 @@ func decodeGenerationDefaults(row []json.RawMessage, path string, evidence json.
 		}
 		converted := int(value)
 		defaults.TopK = &converted
-	}
-	if raw := rawAt(row, 78); !isJSONNull(raw) {
-		// field 79 InteractionConfig：field 3 为后台任务，field 4 类型 1 为 agent、2 为模型
-		interaction, err := rawArray(raw, path+"[78]", evidence)
-		if err != nil {
-			return GenerationDefaults{}, withMethod(err, "ListModels")
-		}
-		kind, err := optionalIntField(interaction, 3, path+"[78]", evidence)
-		if err != nil {
-			return GenerationDefaults{}, err
-		}
-		background := false
-		if value := rawAt(interaction, 2); !isJSONNull(value) {
-			background, err = rawBool(value, path+"[78][2]", evidence)
-			if err != nil {
-				return GenerationDefaults{}, withMethod(err, "ListModels")
-			}
-		}
-		defaults.InteractionStream = kind == 2 && !background
-		defaults.InteractionTask = background
 	}
 	if video := rawAt(row, 70); !isJSONNull(video) {
 		items, err := rawArray(video, path+"[70]", evidence)

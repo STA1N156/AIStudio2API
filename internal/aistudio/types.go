@@ -439,8 +439,6 @@ type GenerateRequest struct {
 	AgentConfig *AgentConfig `json:"agent_config,omitempty"`
 	// Environment 是 agent 的远程环境，nil 时为官网默认的新环境
 	Environment *AgentEnvironment `json:"environment,omitempty"`
-	// PreviousInteractionID 是上一轮 agent 后台任务的上游 interaction ID，有值时只发送上一模型轮之后的输入
-	PreviousInteractionID string `json:"previous_interaction_id,omitempty"`
 	// ImageRoute 内部标记：图像生成模型（由模型目录能力推导）
 	ImageRoute bool `json:"-"`
 	// Unary 标记单次非流式请求（在 Build 代理中使用 ProxyUnaryCall）

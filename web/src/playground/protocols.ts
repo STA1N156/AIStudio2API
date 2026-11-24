@@ -973,7 +973,7 @@ function interactionsInput(request: GenerateRequest): Record<string, unknown>[] 
   return steps
 }
 
-// interactionsRequest 组合 Interactions 创建请求：agent 名称、输入步骤、续接的交互 ID、系统指令、工具与 agent 的 agent_config、environment 字段，工具顺序与官网相同；工具全部关闭时发送空列表，与官网一样不使用工具
+// interactionsRequest 组合 Interactions 创建请求：模型名称、输入步骤、续接的交互 ID、系统指令与工具
 function interactionsRequest(
   modelID: string,
   request: GenerateRequest,
@@ -1008,7 +1008,7 @@ function interactionsRequest(
   ]
   const system = systemText(request)
   return {
-    agent: modelID,
+    model: modelID,
     input: interactionsInput(request),
     ...(previous !== undefined && { previous_interaction_id: previous }),
     ...(system !== '' && { system_instruction: system }),

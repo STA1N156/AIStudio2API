@@ -784,7 +784,7 @@ func validateGenerateEntry(request GenerateRequest, entry modelEntry) error {
 	if err := validateTranscriptionConfig(request.Config.TranscriptionConfig, entry.model); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
-	if entry.defaults.InteractionStream || entry.defaults.InteractionTask {
+	if entry.defaults.InteractionStream {
 		return nil
 	}
 	if _, err := encodeGenerationConfig(applyModelMediaDefaults(request.Config, entry.model), entry.defaults); err != nil {
@@ -811,7 +811,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	}
 	apiKey, _ := ctx.Value(apiKeyContextKey{}).(string)
 	assistant := entry.model.Capabilities["assistant_route"]
-	restoring := request.restoreModelTurns && !build && !assistant && !entry.defaults.InteractionStream && !entry.defaults.InteractionTask
+	restoring := request.restoreModelTurns && !build && !assistant && !entry.defaults.InteractionStream
 	if restoring {
 		var tip turnLink
 		request.Contents, request.turnToken, tip = c.turns.restore(apiKey, request.Contents)
@@ -831,7 +831,6 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 		}
 	}
 	interaction := entry.defaults.InteractionStream && !build
-	task := entry.defaults.InteractionTask && !build
 	if interaction {
 		request.Tools = Tools{}
 	}
@@ -850,9 +849,6 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	}
 	if interaction {
 		return c.generateInteraction(ctx, request, entry)
-	}
-	if task {
-		return c.generateInteractionTask(ctx, request, entry)
 	}
 	request.Config = applyModelMediaDefaults(request.Config, entry.model)
 	request.ImageRoute = entry.defaults.ImageRoute

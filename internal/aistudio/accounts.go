@@ -888,21 +888,18 @@ func (p *AccountPool) PublicModels(models []Model) []Model {
 	return callableFirst(public)
 }
 
-// callableFirst 保持原顺序依次排列有通道的普通模型、经后台任务生成的 agent 与没有通道的普通模型
+// callableFirst 保持原顺序，将有通道的模型排在前面
 func callableFirst(models []Model) []Model {
 	ordered := make([]Model, 0, len(models))
-	var agents, restricted []Model
+	var restricted []Model
 	for _, model := range models {
-		switch {
-		case model.Capabilities["interaction_task"]:
-			agents = append(agents, model)
-		case len(model.Channels) == 0:
+		if len(model.Channels) == 0 {
 			restricted = append(restricted, model)
-		default:
+		} else {
 			ordered = append(ordered, model)
 		}
 	}
-	return append(append(ordered, agents...), restricted...)
+	return append(ordered, restricted...)
 }
 
 // MissingModel 判断已载入的实时目录中没有该模型，请求会以 ErrModelNotFound 失败

@@ -7,19 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
-	"time"
 )
 
 // interactionThinkingLevels 把 GenerateContent thinking level 换算为 Interaction 枚举
 var interactionThinkingLevels = map[int64]int64{4: 1, 1: 2, 2: 3, 3: 4}
-
-// interactionCancelTimeout 是取消后台任务的期限，包含等待账户请求槽位的时间
-const interactionCancelTimeout = time.Minute
 
 // interactionMediaMIME 是 content delta 各媒体字段的 MIME 枚举表，与官网前端相同
 var interactionMediaMIME = map[int]interactionMIME{
@@ -309,18 +304,11 @@ func (c *Client) generateInteraction(ctx context.Context, request GenerateReques
 	if err != nil {
 		return nil, err
 	}
-	return c.interactionEvents(ctx, request, entry, "CreateInteractionStream", response, nil)
+	return c.interactionEvents(ctx, request, entry, "CreateInteractionStream", response)
 }
 
-// interactionTask 是 CreateInteraction 后台任务的上游 interaction ID、所属账户与取消任务的函数
-type interactionTask struct {
-	id      string
-	account string
-	cancel  func()
-}
-
-// interactionEvents 解码 Interaction 流并映射为规范事件；task 为后台任务时结束事件带上 interaction ID 与账户，流在读到最终 interaction 之前因调用方取消而结束时取消任务
-func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest, entry modelEntry, method string, response *RPCResponse, task *interactionTask) (<-chan Event, error) {
+// interactionEvents 解码 Interaction 流并映射为规范事件
+func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest, entry modelEntry, method string, response *RPCResponse) (<-chan Event, error) {
 	matcher := newStopSequenceMatcher(request.Config.StopSequences)
 	var stopTokenCount <-chan tokenCountResult
 	cancelTokenCount := context.CancelFunc(func() {})
@@ -349,9 +337,6 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 				ready <- nil
 			}
 			event.ProviderModel = entry.model.ID
-			if event.Kind == EventFinish && task != nil {
-				event.InteractionID, event.AccountID = task.id, task.account
-			}
 			select {
 			case events <- event:
 				return nil
@@ -361,7 +346,6 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 		}
 		var output Output
 		var usage *Event
-		finished := false
 		matchedStopSequence := ""
 		// forward 暂存用量，在补发 stop sequence 暂存文本后随终态发送
 		forward := func(event Event) error {
@@ -370,7 +354,6 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 				usage = &event
 				return nil
 			case EventFinish:
-				finished = true
 				if usage != nil {
 					if err := send(*usage); err != nil {
 						return err
@@ -381,22 +364,11 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 			}
 			return send(event)
 		}
-		emit := func(event Event) error {
-			if event.Kind == EventFinish {
-				finished = true
-			}
-			return send(event)
-		}
+		emit := send
 		if matcher != nil {
 			emit = stopSequenceEmitter(matcher, forward, &matchedStopSequence)
 		}
-		var err error
-		defer func() {
-			if !finished && task != nil && (ctx.Err() != nil || err != nil) {
-				task.cancel()
-			}
-		}()
-		err = DecodeInteractionStream(method, observeStreamActivity(ctx, response.Body), emit)
+		err := DecodeInteractionStream(method, observeStreamActivity(ctx, response.Body), emit)
 		if errors.Is(err, errStopSequenceMatched) {
 			_ = response.Body.Close()
 			finishAtStopSequence(ctx, request, output, stopTokenCount, matchedStopSequence, send)
@@ -429,7 +401,7 @@ func (c *Client) interactionEvents(ctx context.Context, request GenerateRequest,
 	return events, nil
 }
 
-// DecodeInteractionStream 按网络顺序解码 CreateInteractionStream 或 GetInteractionStream 的事件与流尾状态
+// DecodeInteractionStream 按网络顺序解码 CreateInteractionStream 的事件与流尾状态
 func DecodeInteractionStream(method string, source io.Reader, emit func(Event) error) error {
 	decoder := json.NewDecoder(newSparseJSONReader(source))
 	decoder.UseNumber()
@@ -643,145 +615,6 @@ func decodeInteractionUsage(method string, raw json.RawMessage, evidence json.Ra
 	return usage, nil
 }
 
-// agentTools 按官网的构造编码 CreateInteraction field 8 的工具列表，依次为代码执行、函数声明、Google 搜索与网址读取；请求带有工具列表字段时只用列出的工具，否则在目录 field 82 默认开启的工具上加入请求的工具
-func agentTools(tools Tools, model Model) ([]any, error) {
-	switch {
-	case len(tools.MCPServers) > 0:
-		return nil, fmt.Errorf("agent 不接受 %s 工具", "mcp_server")
-	case len(tools.FileSearch) > 0:
-		return nil, fmt.Errorf("agent 不接受 %s 工具", "file_search")
-	case tools.ComputerUse != nil:
-		return nil, fmt.Errorf("agent 不接受 %s 工具", "computer_use")
-	}
-	code, search, fetch := false, tools.GoogleSearch != nil && tools.GoogleSearch.WebSearch, false
-	for _, name := range tools.Google {
-		switch name {
-		case "code_execution":
-			code = true
-		case "google_search":
-			search = true
-		case "url_context":
-			fetch = true
-		default:
-			return nil, fmt.Errorf("agent 不接受 %s 工具", name)
-		}
-	}
-	if !tools.Explicit {
-		code = code || model.Capabilities["default_capability_code_9"]
-		search = search || model.Capabilities["default_capability_code_12"]
-		fetch = fetch || model.Capabilities["default_capability_code_13"]
-	}
-	var list []any
-	if code {
-		list = append(list, []any{nil, []any{}})
-	}
-	for _, function := range tools.Functions {
-		// Tool field 1 为函数声明：field 1 名称、field 2 说明、field 3 以 Value 表示的参数
-		declaration := []any{function.Name, nil, nil}
-		if function.Description != "" {
-			declaration[1] = function.Description
-		}
-		if len(function.Parameters) > 0 {
-			var parameters any
-			if err := json.Unmarshal(function.Parameters, &parameters); err != nil {
-				return nil, fmt.Errorf("function %q parameters: %w", function.Name, err)
-			}
-			declaration[2] = encodeWireValue(parameters)
-		}
-		list = append(list, []any{declaration})
-	}
-	if search {
-		list = append(list, []any{nil, nil, nil, nil, nil, []any{}})
-	}
-	if fetch {
-		list = append(list, []any{nil, nil, []any{}})
-	}
-	return list, nil
-}
-
-// AgentInput 按官网选取 agent 后台任务实际发送的输入内容：续接上游 interaction 时只取最后一个模型轮之后的内容，否则只取用户内容
-func AgentInput(contents []Content, continued bool) []Content {
-	if continued {
-		for index := len(contents) - 1; index >= 0; index-- {
-			if contents[index].Role == RoleAssistant {
-				return contents[index+1:]
-			}
-		}
-		return contents
-	}
-	return slices.DeleteFunc(slices.Clone(contents), func(content Content) bool { return content.Role != RoleUser })
-}
-
-// deepResearchConfig 返回 Deep Research 的 agent 配置：field 1 思考摘要（1 auto、2 none），field 2 可视化（2 auto、1 off），field 3 协作规划，取值同官网的构造，未设置时为官网默认的 [1,2]
-func deepResearchConfig(config *AgentConfig) []any {
-	value := []any{int64(1), int64(2)}
-	if config == nil {
-		return value
-	}
-	if config.ThinkingSummaries == "none" {
-		value[0] = int64(2)
-	}
-	if config.Visualization == "off" {
-		value[1] = int64(1)
-	}
-	if config.CollaborativePlanning {
-		value = append(value, true)
-	}
-	return value
-}
-
-// environmentSourceTypes 是环境源类型在官网请求中的枚举值
-var environmentSourceTypes = map[string]int64{"gcs": 2, "inline": 3, "repository": 4}
-
-// setInteractionEnvironment 按官网运行设置写出 agent 环境：只引用已有环境时 field 24 为环境 ID，否则 field 23 为环境配置（field 1 源、field 2 出站白名单、field 3 禁止出站、field 4 已有环境 ID），未设置时为官网默认的禁止出站新环境
-func setInteractionEnvironment(interaction []any, environment *AgentEnvironment) error {
-	if environment == nil {
-		environment = &AgentEnvironment{}
-	}
-	if environment.ID != "" && len(environment.Sources) == 0 && len(environment.Allowlist) == 0 && !environment.NetworkDisabled {
-		interaction[23] = environment.ID
-		return nil
-	}
-	config := make([]any, 4)
-	if len(environment.Sources) > 0 {
-		sources := make([]any, 0, len(environment.Sources))
-		for index, source := range environment.Sources {
-			kind, ok := environmentSourceTypes[source.Type]
-			if !ok {
-				return fmt.Errorf("environment.sources[%d].type %q 应为 gcs、inline 或 repository", index, source.Type)
-			}
-			sources = append(sources, trimWireNil([]any{kind, emptyNil(source.Source), emptyNil(source.Target), emptyNil(source.Content), emptyNil(source.Encoding)}))
-		}
-		config[0] = sources
-	}
-	switch {
-	case len(environment.Allowlist) > 0:
-		rules := make([]any, 0, len(environment.Allowlist))
-		for _, rule := range environment.Allowlist {
-			// 与官网一致，设置凭据时只发送凭据，否则发送请求头
-			wire := []any{rule.Domain, nil, nil}
-			if rule.Credential != "" {
-				wire[2] = rule.Credential
-			} else if len(rule.Headers) > 0 {
-				headers := make([]any, 0, len(rule.Headers))
-				for _, name := range slices.Sorted(maps.Keys(rule.Headers)) {
-					headers = append(headers, []any{name, rule.Headers[name]})
-				}
-				wire[1] = headers
-			}
-			rules = append(rules, trimWireNil(wire))
-		}
-		config[1] = []any{rules}
-	case environment.NetworkDisabled || environment.ID == "":
-		config[2] = int64(1)
-	}
-	if environment.ID != "" {
-		config[3] = environment.ID
-	}
-	interaction[22] = trimWireNil(config)
-	return nil
-}
-
 // emptyNil 把空字符串换为 nil，使未设置的字段不出现在请求中
 func emptyNil(value string) any {
 	if value == "" {
@@ -796,157 +629,6 @@ func trimWireNil(values []any) []any {
 		values = values[:len(values)-1]
 	}
 	return values
-}
-
-// EncodeCreateInteractionRequest 编码官网后台 agent 的 CreateInteraction 请求并返回参与 WAA 绑定的文本内容
-func EncodeCreateInteractionRequest(request GenerateRequest, model Model) ([]byte, []Content, error) {
-	agent := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
-	// kind 是该 agent 的 agent_config 类型：带默认模型的 agent 为 antigravity，其余为 deep-research
-	kind := "deep-research"
-	if model.AgentModel != "" {
-		kind = "antigravity"
-	}
-	if config := request.AgentConfig; config != nil && config.Type != kind {
-		return nil, nil, fmt.Errorf("agent_config.type %q 与 agent %s 不匹配，应为 %q", config.Type, agent, kind)
-	}
-	steps, binding, _, err := encodeInteractionSteps(AgentInput(request.Contents, request.PreviousInteractionID != ""))
-	if err != nil {
-		return nil, nil, err
-	}
-	tools, err := agentTools(request.Tools, model)
-	if err != nil {
-		return nil, nil, err
-	}
-	interaction := make([]any, 27)
-	if system := strings.TrimSpace(SystemText(request.System)); system != "" {
-		interaction[6] = system
-	}
-	if len(tools) > 0 {
-		interaction[7] = tools
-	}
-	// field 17 为续接的上一轮 interaction ID
-	if request.PreviousInteractionID != "" {
-		interaction[16] = request.PreviousInteractionID
-	}
-	// field 19 为 agent 目标：field 1 agent 名称，Deep Research 的 field 3 为 agent 配置
-	target := []any{agent, nil, deepResearchConfig(request.AgentConfig)}
-	if model.AgentModel != "" {
-		// Antigravity：field 12 为所选模型与 token 上限
-		target = target[:1]
-		if config := request.AgentConfig; config != nil && (config.Model != "" || config.MaxTotalTokens > 0) {
-			antigravity := make([]any, 7)
-			if config.Model != "" {
-				antigravity[0] = strings.TrimPrefix(config.Model, "models/")
-			}
-			if config.MaxTotalTokens > 0 {
-				antigravity[6] = config.MaxTotalTokens
-			}
-			target = append(target, make([]any, 11)...)
-			target[11] = antigravity
-		}
-	}
-	if request.Environment != nil || model.AgentModel != "" {
-		if err := setInteractionEnvironment(interaction, request.Environment); err != nil {
-			return nil, nil, err
-		}
-	}
-	interaction[18] = target
-	interaction[26] = []any{steps}
-	body, _ := json.Marshal([]any{nil, int64(1), int64(1), interaction, nil, int64(1)})
-	return body, binding, nil
-}
-
-// EncodeGetInteractionStreamRequest 编码按 interaction ID 读取后台任务增量与终态的请求
-func EncodeGetInteractionStreamRequest(id string, model string) ([]byte, error) {
-	return json.Marshal([]any{id, int64(1), nil, nil, nil, int64(1), wireModelName(model)})
-}
-
-// decodeCreateInteractionResponse 读取 CreateInteraction 返回的 interaction ID
-func decodeCreateInteractionResponse(raw []byte) (string, error) {
-	values, err := rawArray(raw, "$", raw)
-	if err != nil || len(values) == 0 {
-		return "", &ProtocolEvidenceError{Method: "CreateInteraction", Path: "$", Detail: "响应不是 interaction", Raw: cloneRaw(raw)}
-	}
-	id, err := rawString(values[0], "$[0]", raw)
-	if err != nil || strings.TrimSpace(id) == "" {
-		return "", &ProtocolEvidenceError{Method: "CreateInteraction", Path: "$[0]", Detail: "缺少 interaction ID", Raw: cloneRaw(raw)}
-	}
-	return id, nil
-}
-
-// generateInteractionTask 经 CreateInteraction 创建后台任务，再经 GetInteractionStream 读取增量与终态，调用方中途取消时发送 CancelInteraction
-func (c *Client) generateInteractionTask(ctx context.Context, request GenerateRequest, entry modelEntry) (<-chan Event, error) {
-	reason := ""
-	if request.Unary {
-		reason = "该模型使用 CreateInteraction 后台任务，收集完成后返回"
-	}
-	reportUpstreamMode(ctx, "GetInteractionStream", "stream", 0, reason)
-	body, binding, err := EncodeCreateInteractionRequest(request, entry.model)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
-	}
-	rpc := newRPCRequest("CreateInteraction", request.AccountID, request.ID, body, false)
-	c.applyBenefitTier(rpc.Method, request.AccountID, rpc.Header)
-	bindingRequest := request
-	bindingRequest.Contents = binding
-	response, err := c.protected.DoProtected(ctx, bindingRequest, rpc)
-	if err != nil {
-		return nil, fmt.Errorf("发送 AI Studio CreateInteraction: %w", err)
-	}
-	response, err = validateRPCResponse("CreateInteraction", response)
-	if err != nil {
-		return nil, err
-	}
-	created, err := io.ReadAll(response.Body)
-	if closeErr := response.Body.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return nil, fmt.Errorf("读取 AI Studio CreateInteraction: %w", err)
-	}
-	id, err := decodeCreateInteractionResponse(created)
-	if err != nil {
-		return nil, err
-	}
-	accountID := request.AccountID
-	if lease, ok := AccountLeaseFromContext(ctx); ok {
-		accountID = lease.Account().ID
-	}
-	// cancel 在后台以该账户发送 CancelInteraction，调用方仍持有的账户租约释放后才取得请求槽位
-	cancel := func() {
-		go func() {
-			body, _ := json.Marshal([]any{"interactions/" + id})
-			cancelCtx, stop := context.WithTimeout(context.Background(), interactionCancelTimeout)
-			defer stop()
-			response, err := c.do(cancelCtx, "CancelInteraction", accountID, "", body, false)
-			if err == nil {
-				err = response.Body.Close()
-			}
-			if err != nil {
-				slog.Warn("Deep Research 任务取消失败", "account", accountID, "interaction", id, "error", err)
-			}
-		}()
-	}
-	streamBody, err := EncodeGetInteractionStreamRequest(id, request.Model)
-	if err != nil {
-		return nil, err
-	}
-	stream := newRPCRequest("GetInteractionStream", request.AccountID, request.ID, streamBody, true)
-	c.applyBenefitTier(stream.Method, request.AccountID, stream.Header)
-	// GetInteractionStream 的 WAA 绑定输入是 interaction ID
-	streamRequest := request
-	streamRequest.Contents = []Content{{Role: RoleUser, Parts: []Part{{Text: id}}}}
-	response, err = c.protected.DoProtected(ctx, streamRequest, stream)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("发送 AI Studio GetInteractionStream: %w", err)
-	}
-	response, err = validateRPCResponse("GetInteractionStream", response)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	return c.interactionEvents(ctx, request, entry, "GetInteractionStream", response, &interactionTask{id: id, account: accountID, cancel: cancel})
 }
 
 // decodeInteractionCitations 解码 content field 10 的引用：每项为正文中引用标记的起止字符位置与来源网址
