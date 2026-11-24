@@ -2256,10 +2256,6 @@ func (service *trackedService) runAttempt(
 		if model.ID != modelID {
 			continue
 		}
-		if model.Capabilities["interaction_task"] {
-			// agent 后台任务只发送 AgentInput 选出的内容，其余轮次的文件不复制、附件不上传
-			request.Contents = aistudio.AgentInput(request.Contents, request.PreviousInteractionID != "")
-		}
 		inlineImages = model.Capabilities["interaction_stream"]
 	}
 	originalContents := request.Contents
