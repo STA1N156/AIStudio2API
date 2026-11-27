@@ -423,6 +423,7 @@ type GenerateRequest struct {
 	Model string `json:"model"`
 	// System 是系统指令的各段文本
 	System    []string         `json:"system,omitempty"`
+	SystemTail string          `json:"-"`
 	Contents  []Content        `json:"contents"`
 	Config    GenerationConfig `json:"config,omitempty"`
 	Tools     Tools            `json:"tools,omitempty"`
@@ -467,6 +468,7 @@ type GenerateRequest struct {
 type TokenCountRequest struct {
 	Model    string    `json:"model"`
 	System   []string  `json:"system,omitempty"`
+	SystemTail string  `json:"-"`
 	Contents []Content `json:"contents"`
 	Tools    Tools     `json:"tools,omitempty"`
 	// MediaResolution 为请求级输入媒体分辨率，取 Gemini API 枚举名

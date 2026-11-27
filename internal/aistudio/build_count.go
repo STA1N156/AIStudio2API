@@ -16,7 +16,7 @@ func EncodeBuildCountTokensRequest(request TokenCountRequest) (string, []byte, e
 		return "", nil, err
 	}
 	generate := map[string]any{"model": "models/" + model, "contents": contents}
-	if system := buildSystemInstruction(request.System); system != nil {
+	if system := buildSystemInstruction(systemWithTail(request.System, request.SystemTail)); system != nil {
 		generate["systemInstruction"] = system
 	}
 	tools, err := encodeBuildTools(request.Tools)

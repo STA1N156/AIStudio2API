@@ -506,6 +506,8 @@ type AccountPool struct {
 	sessionCheck func(context.Context, *Account) error
 	// sessions 合并同一账户并发的会话检查
 	sessions singleflight.Group
+	cooldownChecks singleflight.Group
+	confirmedCooling map[coolingScope]coolingDecision
 	// fileBindMu 串行化文件绑定，使公开文件名的重名检查与绑定成为一步
 	fileBindMu sync.Mutex
 }
@@ -1071,13 +1073,13 @@ func (p *AccountPool) Remove(accountID string, deleteDirectory func(*Account) er
 		return nil, fmt.Errorf("%w: %s", ErrAccountLeased, accountID)
 	}
 	account.exclusive = true
-	p.notifyLocked()
+	p.notifyActivityLocked()
 	p.mu.Unlock()
 	leaseLock, err := acquireAccountFileLease(account.StoragePath)
 	if err != nil {
 		p.mu.Lock()
 		account.exclusive = false
-		p.notifyLocked()
+		p.notifyActivityLocked()
 		p.mu.Unlock()
 		if errors.Is(err, ErrAccountLeased) {
 			return nil, fmt.Errorf("%w: %s", ErrAccountLeased, accountID)
@@ -1093,7 +1095,7 @@ func (p *AccountPool) Remove(accountID string, deleteDirectory func(*Account) er
 		}
 		p.mu.Lock()
 		account.exclusive = false
-		p.notifyLocked()
+		p.notifyActivityLocked()
 		p.mu.Unlock()
 		return nil, err
 	}
@@ -1115,7 +1117,7 @@ func (p *AccountPool) Remove(accountID string, deleteDirectory func(*Account) er
 	if deleteErr != nil {
 		p.mu.Lock()
 		account.exclusive = false
-		p.notifyLocked()
+		p.notifyActivityLocked()
 		p.mu.Unlock()
 		return nil, errors.Join(deleteErr, releaseErr)
 	}
@@ -1148,12 +1150,12 @@ func (p *AccountPool) AcquireAccount(ctx context.Context, accountID string) (*Ac
 		return nil, fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
 	}
 	waitingAccount.exclusiveWaiters++
-	p.notifyLocked()
+	p.notifyActivityLocked()
 	p.mu.Unlock()
 	defer func() {
 		p.mu.Lock()
 		waitingAccount.exclusiveWaiters--
-		p.notifyLocked()
+		p.notifyActivityLocked()
 		p.mu.Unlock()
 	}()
 	for {
@@ -1601,6 +1603,7 @@ func (l *AccountLease) markAuthenticationStateAt(required bool, reason string, c
 		checkedAt.Before(l.account.authCheckedAt) {
 		return nil
 	}
+	oldState := l.account.State
 	l.account.authCheckedAt = checkedAt
 	if !l.account.Config.Enabled {
 		l.account.State = AccountDisabled
@@ -1614,7 +1617,10 @@ func (l *AccountLease) markAuthenticationStateAt(required bool, reason string, c
 	} else if l.account.State == AccountReady {
 		l.account.stateMessage = ""
 	}
-	l.pool.notifyLocked()
+	if oldState != l.account.State {
+		clear(l.pool.confirmedCooling)
+	}
+	l.pool.notifyActivityLocked()
 	return nil
 }
 
@@ -1682,12 +1688,12 @@ func (l *AccountLease) WaitForAuthRefresh(ctx context.Context, generation uint64
 func (l *AccountLease) BeginOpeningWait() func() {
 	l.pool.mu.Lock()
 	l.account.openingWaiters++
-	l.pool.notifyLocked()
+	l.pool.notifyActivityLocked()
 	l.pool.mu.Unlock()
 	return func() {
 		l.pool.mu.Lock()
 		l.account.openingWaiters--
-		l.pool.notifyLocked()
+		l.pool.notifyActivityLocked()
 		l.pool.mu.Unlock()
 	}
 }
@@ -1752,12 +1758,12 @@ func (l *AccountLease) BeginAuthRefresh() (func(), bool) {
 		return nil, false
 	}
 	l.account.authRefreshers++
-	l.pool.notifyLocked()
+	l.pool.notifyActivityLocked()
 	l.pool.mu.Unlock()
 	return func() {
 		l.pool.mu.Lock()
 		l.account.authRefreshers--
-		l.pool.notifyLocked()
+		l.pool.notifyActivityLocked()
 		l.pool.mu.Unlock()
 	}, true
 }
@@ -2042,7 +2048,7 @@ func (l *AccountLease) releaseLocked() {
 		}
 		l.account.leaseLock = nil
 	}
-	l.pool.notifyLocked()
+	l.pool.notifyActivityLocked()
 	l.pool.mu.Unlock()
 }
 
@@ -2903,17 +2909,25 @@ func (p *AccountPool) ClassifyCandidates(
 			return AccountCandidateGroups{}, err
 		}
 	}
+	key, cacheable := coolingScopeOf(selection)
 	for attempt := 0; attempt < 2; attempt++ {
 		p.mu.Lock()
+		if cd, ok := p.cachedCoolingLocked(key); cacheable && ok {
+			p.mu.Unlock()
+			return AccountCandidateGroups{Eligible: true, EarliestCooldown: cd}, nil
+		}
 		groups, err := p.classifyCandidatesLocked(selection, warmAccountIDs)
 		p.mu.Unlock()
 		if err != nil {
 			return AccountCandidateGroups{}, err
 		}
-		available := len(groups.WarmReady)+len(groups.WarmAvailable)+len(groups.WarmBusy)+
-			len(groups.StandbyReady)+len(groups.StandbyBusy) > 0
-		if attempt == 0 && (!groups.Eligible || !available && !groups.EarliestCooldown.Until.IsZero()) {
-			if err := p.refreshSelectionRuntimes(ctx, selection); err != nil {
+		if attempt == 0 && (!groups.Eligible || groups.allCooling()) {
+			if cacheable && groups.allCooling() {
+				err = p.confirmCooling(ctx, selection, key)
+			} else {
+				err = p.refreshSelectionRuntimes(ctx, selection)
+			}
+			if err != nil {
 				return AccountCandidateGroups{}, err
 			}
 			continue
@@ -3352,6 +3366,11 @@ func (p *AccountPool) Changed() <-chan struct{} {
 }
 
 func (p *AccountPool) notifyLocked() {
+	clear(p.confirmedCooling)
+	p.notifyActivityLocked()
+}
+
+func (p *AccountPool) notifyActivityLocked() {
 	close(p.changed)
 	p.changed = make(chan struct{})
 }
@@ -3730,9 +3749,10 @@ func (p *AccountPool) updateRuntimeContext(
 	account.runtimeData = data
 	if apply != nil {
 		apply(account)
+		clear(p.confirmedCooling)
 	}
 	if changed || refreshed || synced || apply != nil {
-		p.notifyLocked()
+		p.notifyActivityLocked()
 	}
 	return changed, nil
 }
@@ -3779,6 +3799,7 @@ func (p *AccountPool) syncAccountRuntimeLocked(account *Account, runtimeState ac
 			account.State, account.stateMessage = AccountReady, ""
 		}
 	}
+	p.invalidateRuntimeCoolingLocked(account.runtime, runtimeState)
 	account.runtime = cloneRuntime(runtimeState)
 	account.BenefitTier = runtimeState.BenefitTier
 	for resourceID := range runtimeState.Resources {
@@ -3872,7 +3893,7 @@ func (p *AccountPool) refreshAccountRuntime(ctx context.Context, account *Accoun
 		account.runtimeData = data
 	}
 	if changed {
-		p.notifyLocked()
+		p.notifyActivityLocked()
 	}
 	return err
 }

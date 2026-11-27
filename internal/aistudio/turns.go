@@ -53,6 +53,17 @@ func normalizeTurns(system []string, contents []Content, rewrite bool, prompt st
 	return system, contents
 }
 
+// systemWithTail 在客户端与工具指令组装完成后追加请求专属的末尾说明。
+func systemWithTail(system []string, tail string) []string {
+	if tail == "" || (len(system) > 0 && strings.HasSuffix(system[len(system)-1], tail)) {
+		return system
+	}
+	if len(system) > 0 {
+		tail = "\n" + tail
+	}
+	return appendSystem(system, tail)
+}
+
 // SystemText 返回系统指令各段文本按顺序连接的结果
 func SystemText(system []string) string {
 	return strings.Join(system, "")

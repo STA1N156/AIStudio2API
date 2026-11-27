@@ -1463,14 +1463,23 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 	failedWorkers := make(map[string]struct{})
 	var promoteFailure error
 	dispatch := service.workers.dispatch
-	waiter := dispatch.join(dispatchKey(selection))
-	defer dispatch.leave(waiter)
+	var waiter *dispatchWaiter
 	wait := func(delay time.Duration) error {
 		return waitScheduling(ctx, waiter.wake, delay)
 	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if !quotaFallback {
+			if cd, ok := service.pool.ConfirmedCooldown(ctx, selection); ok &&
+				(time.Until(cd.Until) > cooldownQueueLimit-*cooled || strings.HasPrefix(cd.Reason, aistudio.AccountRejectionKind)) {
+				return nil, &aistudio.AllCoolingError{ModelID: selection.ModelID, Until: cd.Until, Reason: cd.Reason}
+			}
+		}
+		if waiter == nil {
+			waiter = dispatch.join(dispatchKey(selection))
+			defer dispatch.leave(waiter)
 		}
 		if !dispatch.turn(waiter) {
 			if err := wait(schedulingRecheck); err != nil {

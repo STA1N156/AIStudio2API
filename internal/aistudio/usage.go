@@ -6,7 +6,7 @@ import (
 
 func localCompleteUsage(request GenerateRequest, output Output) *Usage {
 	inputTokens := localContentsTokens(request.Contents)
-	if system := SystemText(request.System); system != "" {
+	if system := SystemText(systemWithTail(request.System, request.SystemTail)); system != "" {
 		inputTokens += localTextTokens(system) + 1
 	}
 	toolTokens := localToolTokens(request.Tools)
@@ -42,7 +42,7 @@ func StartInputTokenEstimate(request GenerateRequest) <-chan int64 {
 			texts = append(texts, partTexts(part)...)
 		}
 	}
-	if system := SystemText(request.System); system != "" {
+	if system := SystemText(systemWithTail(request.System, request.SystemTail)); system != "" {
 		inputTokens++
 		texts = append(texts, system)
 	}

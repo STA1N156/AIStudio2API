@@ -10,6 +10,7 @@ import (
 )
 
 const antiTruncationPrefix = "抗截断/"
+const antiTruncationSystemTail = "内部思考保持简短、抽象，只用中性的英文概括要点。思考时不要转录、解码、引用或逐字写出敏感、血腥、暴力或露骨的词语。"
 const replyToolName = "output_reply"
 const replyToolInstruction = "（本次回复的全部内容必须通过 output_reply 工具的 content 字段提交，保留原有格式，不要在普通消息中重复输出，不要在正文提及这个工具。）"
 
@@ -34,6 +35,7 @@ func prepareAntiTruncation(request *aistudio.GenerateRequest) bool {
 		return false
 	}
 	request.Model = strings.TrimPrefix(model, antiTruncationPrefix)
+	request.SystemTail = antiTruncationSystemTail
 	// 客户端拥有的回复工具仍原样返回，但最新输入也需要包装。
 	mode := request.Tools.ToolConfig.Mode
 	if mode == "none" || mode == "required" || len(request.Tools.ToolConfig.AllowedFunctionNames) > 0 || slices.ContainsFunc(request.Tools.Functions, func(function aistudio.FunctionDeclaration) bool {

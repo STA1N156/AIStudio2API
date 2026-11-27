@@ -200,7 +200,7 @@ func EncodeAssistantRequest(request GenerateRequest, defaults GenerationDefaults
 	wire[0] = contents
 	wire[5] = int64(1)
 	wire[7] = wireModelName(assistantBaseModelID(request.Model))
-	if system := SystemText(request.System); system != "" {
+	if system := SystemText(systemWithTail(request.System, request.SystemTail)); system != "" {
 		wire[8] = system
 	}
 	wire[11] = target.applet

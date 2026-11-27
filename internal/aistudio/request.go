@@ -24,6 +24,7 @@ func (e *UnverifiedProtocolError) Error() string {
 
 // EncodeCountTokensRequest 编码 CountTokens 请求
 func EncodeCountTokensRequest(request TokenCountRequest) ([]byte, error) {
+	request.System = systemWithTail(request.System, request.SystemTail)
 	tools, explicitTools, err := encodeRequestedTools(request.Tools)
 	if err != nil {
 		return nil, err

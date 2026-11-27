@@ -408,6 +408,7 @@ func (manager *runtimeManager) CountTokens(ctx context.Context, request aistudio
 	stripChatboxRuntimeDescription(&prepared)
 	prepareAntiTruncation(&prepared)
 	request.Model, request.System, request.Contents, request.Tools = prepared.Model, prepared.System, prepared.Contents, prepared.Tools
+	request.SystemTail = prepared.SystemTail
 	return manager.current.service.CountTokens(ctx, request)
 }
 

@@ -47,7 +47,7 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 		return "", nil, fmt.Errorf("GenerateContent contents 不能为空")
 	}
 	body := map[string]any{"contents": contents}
-	if system := buildSystemInstruction(request.System); system != nil {
+	if system := buildSystemInstruction(systemWithTail(request.System, request.SystemTail)); system != nil {
 		body["systemInstruction"] = system
 	}
 	tools, err := encodeBuildTools(request.Tools)

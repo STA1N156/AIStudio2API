@@ -590,7 +590,11 @@ func (s *PooledService) CountTokens(ctx context.Context, request TokenCountReque
 		return s.client.CountTokensForAccount(ctx, accountID, request)
 	})
 	if systemOnly && len(count.Contents) == 1 {
+		tail := count.System
 		count = systemOnlyCount(count)
+		if request.SystemTail != "" && tail != nil {
+			count.System.PartTokens = append(count.System.PartTokens, tail.PartTokens...)
+		}
 	}
 	return count, err
 }

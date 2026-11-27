@@ -129,7 +129,7 @@ func (l *AccountLease) finishAssistantGeneration() {
 	}
 	l.assistantDone = true
 	l.account.assistantBusy = false
-	l.pool.notifyLocked()
+	l.pool.notifyActivityLocked()
 }
 
 // assistantTrajectoryAccount 返回对话可续接的 trajectory 所在的账户，没有时为空

@@ -87,8 +87,8 @@ func EncodeGenerateContentRequest(request GenerateRequest, defaults GenerationDe
 		wire[2] = encodeSafetySettings(safety)
 	}
 	wire[3] = config
-	if len(request.System) > 0 {
-		wire[5] = encodeSystemInstruction(request.System)
+	if system := systemWithTail(request.System, request.SystemTail); len(system) > 0 {
+		wire[5] = encodeSystemInstruction(system)
 	}
 	if explicitTools {
 		wire[6] = tools
@@ -1131,7 +1131,7 @@ func (c *Client) countStopInput(ctx context.Context, request GenerateRequest) (<
 	countContext, cancel := context.WithCancel(ctx)
 	results := make(chan tokenCountResult, 1)
 	countRequest := TokenCountRequest{
-		Model: request.Model, System: request.System, Contents: request.Contents, Tools: request.Tools,
+		Model: request.Model, System: request.System, SystemTail: request.SystemTail, Contents: request.Contents, Tools: request.Tools,
 	}
 	go func() {
 		count, err := c.CountTokensForAccount(countContext, request.AccountID, countRequest)
@@ -1198,7 +1198,7 @@ func (c *Client) truncateRequest(ctx context.Context, request GenerateRequest, l
 	}
 	fits := func(index int) (bool, error) {
 		count, err := c.CountTokensForAccount(ctx, request.AccountID, TokenCountRequest{
-			Model: request.Model, System: request.System, Contents: request.Contents[starts[index]:], Tools: request.Tools,
+			Model: request.Model, System: request.System, SystemTail: request.SystemTail, Contents: request.Contents[starts[index]:], Tools: request.Tools,
 		})
 		return err == nil && count.InputTokens <= limit, err
 	}
@@ -1302,7 +1302,7 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 	for {
 		decoder := NewFrameDecoder()
 		decoder.continuable = defaults.ContinuedOutputTokens > 0
-		if len(request.System) > 0 {
+		if len(request.System) > 0 || request.SystemTail != "" {
 			decoder.systemRoleTokens = 1
 		}
 		decoder.continueAtMaxTokens = int64(request.continuationRound+1)*continuationRoundTokens < total

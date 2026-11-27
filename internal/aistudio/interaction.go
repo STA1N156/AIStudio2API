@@ -92,7 +92,7 @@ func EncodeCreateInteractionStreamRequest(request GenerateRequest, defaults Gene
 		}
 	}
 	interaction := make([]any, 54)
-	if system := strings.TrimSpace(SystemText(request.System)); system != "" {
+	if system := strings.TrimSpace(SystemText(systemWithTail(request.System, request.SystemTail))); system != "" {
 		interaction[6] = system
 	}
 	interaction[17] = []any{wireModelName(request.Model), config}
